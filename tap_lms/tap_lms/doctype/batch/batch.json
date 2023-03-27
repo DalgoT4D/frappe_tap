@@ -1,6 +1,8 @@
 {
  "actions": [],
  "allow_import": 1,
+ "allow_rename": 1,
+ "autoname": "format:BT{#####}",
  "creation": "2023-02-13 14:15:57.404192",
  "default_view": "List",
  "doctype": "DocType",
@@ -35,10 +37,11 @@
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2023-02-14 14:12:25.788580",
+ "modified": "2023-03-27 15:11:49.488132",
  "modified_by": "Administrator",
  "module": "Tap Lms",
  "name": "Batch",
+ "naming_rule": "Expression",
  "owner": "Administrator",
  "permissions": [
   {

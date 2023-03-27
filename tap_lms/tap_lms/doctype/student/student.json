@@ -10,11 +10,11 @@
   "name1",
   "phone",
   "gender",
-  "schoold_id",
-  "batch_id",
-  "course_id",
+  "school_id",
   "grade",
-  "section"
+  "section",
+  "shared_users",
+  "status"
  ],
  "fields": [
   {
@@ -23,18 +23,6 @@
    "in_list_view": 1,
    "label": "Name",
    "reqd": 1
-  },
-  {
-   "fieldname": "batch_id",
-   "fieldtype": "Link",
-   "label": "Batch",
-   "options": "Batch"
-  },
-  {
-   "fieldname": "course_id",
-   "fieldtype": "Link",
-   "label": "Course",
-   "options": "Course"
   },
   {
    "fieldname": "phone",
@@ -62,15 +50,26 @@
    "options": "A\nB\nC\nD\nE\nF\nG\nH"
   },
   {
-   "fieldname": "schoold_id",
+   "fieldname": "school_id",
    "fieldtype": "Link",
    "label": "School",
-   "options": "School"
+   "options": "School",
+   "reqd": 1
+  },
+  {
+   "fieldname": "shared_users",
+   "fieldtype": "Int",
+   "label": "Shared Users"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Data",
+   "label": "Status"
   }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2023-02-14 14:11:17.383565",
+ "modified": "2023-03-27 14:12:59.521311",
  "modified_by": "Administrator",
  "module": "Tap Lms",
  "name": "Student",

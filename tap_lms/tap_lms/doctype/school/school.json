@@ -1,13 +1,17 @@
 {
  "actions": [],
  "allow_rename": 1,
+ "autoname": "format:SC{#####}",
  "creation": "2023-02-14 12:18:09.201445",
  "default_view": "List",
  "doctype": "DocType",
  "editable_grid": 1,
  "engine": "InnoDB",
  "field_order": [
-  "name1"
+  "name1",
+  "type",
+  "city",
+  "is_inschool_"
  ],
  "fields": [
   {
@@ -16,14 +20,36 @@
    "in_list_view": 1,
    "label": "Name",
    "reqd": 1
+  },
+  {
+   "fieldname": "type",
+   "fieldtype": "Select",
+   "label": "Type",
+   "options": "APS\nGOV\nNGO",
+   "reqd": 1
+  },
+  {
+   "fieldname": "city",
+   "fieldtype": "Select",
+   "label": "City",
+   "options": "Hyderabad\nAhmedabad\nMumbai\nPune\nDelhi",
+   "reqd": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "is_inschool_",
+   "fieldtype": "Check",
+   "label": "Is inschool ?",
+   "reqd": 1
   }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2023-02-14 13:12:35.149613",
+ "modified": "2023-03-27 15:12:42.902068",
  "modified_by": "Administrator",
  "module": "Tap Lms",
  "name": "School",
+ "naming_rule": "Expression",
  "owner": "Administrator",
  "permissions": [
   {
