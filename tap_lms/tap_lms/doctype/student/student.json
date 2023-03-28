@@ -29,7 +29,8 @@
    "fieldtype": "Data",
    "in_list_view": 1,
    "label": "Phone",
-   "reqd": 1
+   "reqd": 1,
+   "unique": 1
   },
   {
    "fieldname": "gender",
@@ -69,7 +70,7 @@
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2023-03-27 14:12:59.521311",
+ "modified": "2023-03-28 11:12:22.927243",
  "modified_by": "Administrator",
  "module": "Tap Lms",
  "name": "Student",
@@ -90,5 +91,6 @@
  ],
  "sort_field": "modified",
  "sort_order": "DESC",
- "states": []
+ "states": [],
+ "title_field": "name1"
 }

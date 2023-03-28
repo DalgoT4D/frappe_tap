@@ -190,3 +190,6 @@ app_license = "MIT"
 # auth_hooks = [
 #	"tap_lms.auth.validate"
 # ]
+
+{ "doctype": "Custom Script", "filters": [ ["name", "in", ( "PhoneNoValidation", )] ] }
+
