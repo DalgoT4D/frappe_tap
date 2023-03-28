@@ -191,5 +191,5 @@ app_license = "MIT"
 #	"tap_lms.auth.validate"
 # ]
 
-fixtures = [{ "doctype": "Client Script", "filters": [ ["module", "in", ( "tap_lms" )] ] }]
+fixtures = [{ "doctype": "Client Script", "filters": [ ["module", "in", ( "Tap Lms" )] ] }]
 
