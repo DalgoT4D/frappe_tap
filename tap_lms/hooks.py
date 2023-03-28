@@ -191,5 +191,5 @@ app_license = "MIT"
 #	"tap_lms.auth.validate"
 # ]
 
-{ "doctype": "Custom Script", "filters": [ ["name", "in", ( "PhoneNoValidation", )] ] }
+fixtures = [{ "doctype": "Client Script", "filters": [ ["module", "in", ( "tap_lms" )] ] }]
 
