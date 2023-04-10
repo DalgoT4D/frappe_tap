@@ -1,5 +1,19 @@
 {
- "actions": [],
+ "actions": [
+  {
+   "action": "app/enrollment",
+   "action_type": "Route",
+   "custom": 1,
+   "label": "Add Enrollment"
+  },
+  {
+   "action": "app/performance",
+   "action_type": "Route",
+   "custom": 1,
+   "label": "Add Performance"
+  }
+ ],
+ "allow_import": 1,
  "allow_rename": 1,
  "creation": "2023-02-14 14:11:17.383565",
  "default_view": "List",
@@ -70,7 +84,7 @@
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2023-03-28 11:12:22.927243",
+ "modified": "2023-04-10 12:59:40.679313",
  "modified_by": "Administrator",
  "module": "Tap Lms",
  "name": "Student",
