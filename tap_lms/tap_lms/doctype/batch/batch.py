@@ -4,10 +4,16 @@
 # import frappe
 from frappe.model.document import Document
 
-import uuid
-
+import datetime
 class Batch(Document):
 	
-	def before_save(self):
-		print(self)
-		self.uuid = str(uuid.uuid4())
+	@property
+	def title(self):
+		title = ''
+		if self.name:
+			title += self.name1
+
+		if self.start_date:
+			title += ' ' + f"({self.start_date.strftime('%b %y')})"
+
+		return title

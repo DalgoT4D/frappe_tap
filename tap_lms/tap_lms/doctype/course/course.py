@@ -6,5 +6,13 @@ from frappe.model.document import Document
 
 class Course(Document):
 	
-	def before_save(self):
-		self.fmt_name = f'{self.name1} {self.type}'
+	@property
+	def title(self):
+		title = ''
+		if self.name:
+			title += self.name1
+
+		if self.type:
+			title += ' ' + f"({self.type})"
+
+		return title
