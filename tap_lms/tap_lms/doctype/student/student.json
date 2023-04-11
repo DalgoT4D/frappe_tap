@@ -13,6 +13,7 @@
    "label": "Add Performance"
   }
  ],
+ "allow_events_in_timeline": 1,
  "allow_import": 1,
  "allow_rename": 1,
  "creation": "2023-02-14 14:11:17.383565",
@@ -28,7 +29,9 @@
   "grade",
   "section",
   "shared_users",
-  "status"
+  "joined_on",
+  "status",
+  "enrollment"
  ],
  "fields": [
   {
@@ -78,13 +81,26 @@
   },
   {
    "fieldname": "status",
-   "fieldtype": "Data",
-   "label": "Status"
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "active\ninactive"
+  },
+  {
+   "fieldname": "joined_on",
+   "fieldtype": "Date",
+   "label": "Joined On"
+  },
+  {
+   "fieldname": "enrollment",
+   "fieldtype": "Table",
+   "label": "enrollments",
+   "options": "Enrollment"
   }
  ],
+ "hide_toolbar": 1,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2023-04-10 12:59:40.679313",
+ "modified": "2023-04-10 23:17:34.390976",
  "modified_by": "Administrator",
  "module": "Tap Lms",
  "name": "Student",
@@ -106,5 +122,7 @@
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": [],
- "title_field": "name1"
+ "title_field": "name1",
+ "track_changes": 1,
+ "track_views": 1
 }
