@@ -11,7 +11,8 @@
  "field_order": [
   "name1",
   "start_date",
-  "end_date"
+  "end_date",
+  "title"
  ],
  "fields": [
   {
@@ -33,11 +34,18 @@
    "fieldname": "end_date",
    "fieldtype": "Date",
    "label": "End Date"
+  },
+  {
+   "fieldname": "title",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "is_virtual": 1,
+   "label": "Title"
   }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2023-03-27 15:11:49.488132",
+ "modified": "2023-04-11 17:29:53.652248",
  "modified_by": "Administrator",
  "module": "Tap Lms",
  "name": "Batch",
