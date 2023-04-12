@@ -4,7 +4,7 @@
 # import frappe
 from frappe.model.document import Document
 
-import datetime
+from datetime import datetime
 class Batch(Document):
 	
 	def before_save(self):
@@ -13,6 +13,6 @@ class Batch(Document):
 			title += self.name1
 
 		if self.start_date:
-			title += f"({self.start_date.strftime('%b %y')})"
+			title += f"({datetime.strptime(self.start_date, '%d-%m-%Y').strftime('%b %y')})"
 
 		self.title = title
