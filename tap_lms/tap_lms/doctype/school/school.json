@@ -1,5 +1,6 @@
 {
  "actions": [],
+ "allow_events_in_timeline": 1,
  "allow_import": 1,
  "allow_rename": 1,
  "autoname": "format:SC{#####}",
@@ -12,7 +13,7 @@
   "name1",
   "type",
   "city",
-  "is_inschool_"
+  "model"
  ],
  "fields": [
   {
@@ -26,27 +27,27 @@
    "fieldname": "type",
    "fieldtype": "Select",
    "label": "Type",
-   "options": "APS\nGOV\nNGO",
+   "options": "APS\nGOVT\nNGO\nPPP",
    "reqd": 1
   },
   {
    "fieldname": "city",
    "fieldtype": "Select",
    "label": "City",
-   "options": "Hyderabad\nAhmedabad\nMumbai\nPune\nDelhi",
+   "options": "Hyderabad\nAhmedabad\nMumbai\nDelhi\nBangalore\nPune\nNuh",
    "reqd": 1
   },
   {
-   "default": "0",
-   "fieldname": "is_inschool_",
-   "fieldtype": "Check",
-   "label": "Is inschool ?",
+   "fieldname": "model",
+   "fieldtype": "Select",
+   "label": "Model",
+   "options": "Inschool\nAfterschool\nHybrid",
    "reqd": 1
   }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2023-03-31 13:39:45.763200",
+ "modified": "2023-05-15 19:24:29.563847",
  "modified_by": "Administrator",
  "module": "Tap Lms",
  "name": "School",
@@ -71,5 +72,6 @@
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": [],
- "title_field": "name1"
+ "title_field": "name1",
+ "track_changes": 1
 }

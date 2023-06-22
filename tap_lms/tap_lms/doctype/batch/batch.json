@@ -1,5 +1,6 @@
 {
  "actions": [],
+ "allow_events_in_timeline": 1,
  "allow_import": 1,
  "allow_rename": 1,
  "autoname": "format:BT{#####}",
@@ -38,14 +39,13 @@
   {
    "fieldname": "title",
    "fieldtype": "Data",
-   "hidden": 1,
-   "is_virtual": 1,
-   "label": "Title"
+   "label": "Title",
+   "read_only": 1
   }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2023-04-11 17:29:53.652248",
+ "modified": "2023-04-26 13:05:16.410636",
  "modified_by": "Administrator",
  "module": "Tap Lms",
  "name": "Batch",
@@ -65,8 +65,10 @@
    "write": 1
   }
  ],
+ "quick_entry": 1,
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": [],
- "title_field": "name1"
+ "title_field": "title",
+ "track_changes": 1
 }

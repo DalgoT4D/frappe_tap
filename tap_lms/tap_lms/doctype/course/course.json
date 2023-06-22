@@ -10,7 +10,8 @@
  "engine": "InnoDB",
  "field_order": [
   "name1",
-  "type"
+  "type",
+  "title"
  ],
  "fields": [
   {
@@ -27,11 +28,18 @@
    "label": "Type",
    "options": "Primary\nSecondary",
    "reqd": 1
+  },
+  {
+   "fieldname": "title",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Title",
+   "read_only": 1
   }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2023-03-31 13:41:42.303450",
+ "modified": "2023-04-26 15:03:18.684063",
  "modified_by": "Administrator",
  "module": "Tap Lms",
  "name": "Course",
@@ -54,5 +62,5 @@
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": [],
- "title_field": "name1"
+ "title_field": "title"
 }

@@ -9,7 +9,8 @@
  "engine": "InnoDB",
  "field_order": [
   "name1",
-  "course"
+  "course",
+  "activities"
  ],
  "fields": [
   {
@@ -20,17 +21,21 @@
    "reqd": 1
   },
   {
+   "fieldname": "activities",
+   "fieldtype": "Table",
+   "label": "Activities",
+   "options": "Activities"
+  },
+  {
    "fieldname": "course",
    "fieldtype": "Link",
-   "in_list_view": 1,
    "label": "Course",
-   "options": "Course",
-   "reqd": 1
+   "options": "Course"
   }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2023-03-27 15:14:33.233659",
+ "modified": "2023-04-26 13:18:35.195511",
  "modified_by": "Administrator",
  "module": "Tap Lms",
  "name": "Unit",

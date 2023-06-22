@@ -9,7 +9,18 @@
  "engine": "InnoDB",
  "field_order": [
   "name1",
-  "unit"
+  "activity_link",
+  "youtube_link",
+  "short_url",
+  "description",
+  "note",
+  "content_skill",
+  "sel_skill",
+  "sdg",
+  "rigor",
+  "quiz_q1",
+  "quiz_q2",
+  "quiz_q3"
  ],
  "fields": [
   {
@@ -20,36 +31,84 @@
    "reqd": 1
   },
   {
-   "fieldname": "unit",
-   "fieldtype": "Link",
-   "in_list_view": 1,
-   "label": "Unit",
-   "options": "Unit",
+   "fieldname": "activity_link",
+   "fieldtype": "Data",
+   "label": "Activity Link",
    "reqd": 1
+  },
+  {
+   "fieldname": "youtube_link",
+   "fieldtype": "Data",
+   "label": "Youtube Link",
+   "reqd": 1
+  },
+  {
+   "fieldname": "description",
+   "fieldtype": "Text",
+   "label": "Description",
+   "reqd": 1
+  },
+  {
+   "fieldname": "rigor",
+   "fieldtype": "Select",
+   "label": "Rigor",
+   "options": "Low\nMedium\nHigh",
+   "reqd": 1
+  },
+  {
+   "fieldname": "quiz_q1",
+   "fieldtype": "Text",
+   "label": "Quiz Q1",
+   "reqd": 1
+  },
+  {
+   "fieldname": "quiz_q2",
+   "fieldtype": "Text",
+   "label": "Quiz Q2",
+   "reqd": 1
+  },
+  {
+   "fieldname": "quiz_q3",
+   "fieldtype": "Text",
+   "label": "Quiz Q3",
+   "reqd": 1
+  },
+  {
+   "fieldname": "short_url",
+   "fieldtype": "Data",
+   "label": "Short Url"
+  },
+  {
+   "fieldname": "note",
+   "fieldtype": "Text",
+   "label": "Note for Teacher"
+  },
+  {
+   "fieldname": "content_skill",
+   "fieldtype": "Data",
+   "label": "Content Skill"
+  },
+  {
+   "fieldname": "sel_skill",
+   "fieldtype": "Data",
+   "label": "SEL Skill"
+  },
+  {
+   "fieldname": "sdg",
+   "fieldtype": "Data",
+   "label": "Application/SDG"
   }
  ],
  "index_web_pages_for_search": 1,
+ "istable": 1,
  "links": [],
- "modified": "2023-03-27 15:18:12.758338",
+ "modified": "2023-04-26 15:05:02.395873",
  "modified_by": "Administrator",
  "module": "Tap Lms",
  "name": "Activities",
  "naming_rule": "Expression",
  "owner": "Administrator",
- "permissions": [
-  {
-   "create": 1,
-   "delete": 1,
-   "email": 1,
-   "export": 1,
-   "print": 1,
-   "read": 1,
-   "report": 1,
-   "role": "System Manager",
-   "share": 1,
-   "write": 1
-  }
- ],
+ "permissions": [],
  "quick_entry": 1,
  "sort_field": "modified",
  "sort_order": "DESC",

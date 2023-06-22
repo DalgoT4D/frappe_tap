@@ -1,18 +1,5 @@
 {
- "actions": [
-  {
-   "action": "app/enrollment",
-   "action_type": "Route",
-   "custom": 1,
-   "label": "Add Enrollment"
-  },
-  {
-   "action": "app/performance",
-   "action_type": "Route",
-   "custom": 1,
-   "label": "Add Performance"
-  }
- ],
+ "actions": [],
  "allow_events_in_timeline": 1,
  "allow_import": 1,
  "allow_rename": 1,
@@ -31,7 +18,9 @@
   "shared_users",
   "joined_on",
   "status",
-  "enrollment"
+  "enrollment",
+  "access_rate",
+  "submission_rate"
  ],
  "fields": [
   {
@@ -53,7 +42,7 @@
    "fieldname": "gender",
    "fieldtype": "Select",
    "label": "Gender",
-   "options": "Male\nFemale"
+   "options": "Male\nFemale\nNot Available"
   },
   {
    "fieldname": "grade",
@@ -63,16 +52,14 @@
   },
   {
    "fieldname": "section",
-   "fieldtype": "Select",
-   "label": "Section",
-   "options": "A\nB\nC\nD\nE\nF\nG\nH"
+   "fieldtype": "Data",
+   "label": "Section"
   },
   {
    "fieldname": "school_id",
    "fieldtype": "Link",
    "label": "School",
-   "options": "School",
-   "reqd": 1
+   "options": "School"
   },
   {
    "fieldname": "shared_users",
@@ -95,12 +82,23 @@
    "fieldtype": "Table",
    "label": "enrollments",
    "options": "Enrollment"
+  },
+  {
+   "fieldname": "access_rate",
+   "fieldtype": "Percent",
+   "label": "Access Rate",
+   "read_only": 1
+  },
+  {
+   "fieldname": "submission_rate",
+   "fieldtype": "Percent",
+   "label": "Submission Rate",
+   "read_only": 1
   }
  ],
- "hide_toolbar": 1,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2023-04-10 23:17:34.390976",
+ "modified": "2023-05-25 14:17:03.813068",
  "modified_by": "Administrator",
  "module": "Tap Lms",
  "name": "Student",
@@ -123,6 +121,5 @@
  "sort_order": "DESC",
  "states": [],
  "title_field": "name1",
- "track_changes": 1,
- "track_views": 1
+ "track_changes": 1
 }
