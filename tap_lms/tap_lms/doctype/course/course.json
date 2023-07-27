@@ -10,6 +10,7 @@
  "engine": "InnoDB",
  "field_order": [
   "name1",
+  "name2",
   "type",
   "title"
  ],
@@ -35,11 +36,18 @@
    "hidden": 1,
    "label": "Title",
    "read_only": 1
+  },
+  {
+   "fieldname": "name2",
+   "fieldtype": "Select",
+   "label": "Label",
+   "options": "Visual Arts\nPerforming Arts\nSTEM - Coding\nSTEM - Science\nSTEM - Electronics\nFinancial Literacy",
+   "reqd": 1
   }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2023-04-26 15:03:18.684063",
+ "modified": "2023-07-27 12:30:30.933969",
  "modified_by": "Administrator",
  "module": "Tap Lms",
  "name": "Course",
