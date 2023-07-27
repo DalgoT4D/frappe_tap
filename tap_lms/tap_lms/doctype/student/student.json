@@ -3,6 +3,7 @@
  "allow_events_in_timeline": 1,
  "allow_import": 1,
  "allow_rename": 1,
+ "autoname": "format:ST{########}",
  "creation": "2023-02-14 14:11:17.383565",
  "default_view": "List",
  "doctype": "DocType",
@@ -98,10 +99,11 @@
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2023-05-25 14:17:03.813068",
+ "modified": "2023-07-27 13:03:16.696513",
  "modified_by": "Administrator",
  "module": "Tap Lms",
  "name": "Student",
+ "naming_rule": "Expression",
  "owner": "Administrator",
  "permissions": [
   {
