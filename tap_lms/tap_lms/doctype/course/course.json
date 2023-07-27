@@ -20,7 +20,7 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Name",
-   "options": "Arts & Craft\nDance\nCoding\nScience Lab\nFinancial Literacy",
+   "options": "Arts\nDance\nCoding\nScience\nFinancial Literacy",
    "reqd": 1
   },
   {
@@ -47,7 +47,7 @@
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2023-07-27 12:39:16.510964",
+ "modified": "2023-07-27 13:23:34.399505",
  "modified_by": "Administrator",
  "module": "Tap Lms",
  "name": "Course",
