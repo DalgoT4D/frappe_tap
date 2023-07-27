@@ -13,6 +13,7 @@ class Batch(Document):
 			title += self.name1
 
 		if self.start_date:
-			title += f" ({datetime.strptime(self.start_date, '%Y-%m-%d').strftime('%b %y')})"
+			# title += f" ({datetime.strptime(self.start_date, '%Y-%m-%d').strftime('%b %y')})"
+			title += f" ({datetime.strptime(str(self.start_date), '%Y-%m-%d').strftime('%b %y')})"
 
 		self.title = title
