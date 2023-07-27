@@ -16,5 +16,5 @@ class Batch(Document):
 			if isinstance(self.start_date, str):
 				title += f" ({datetime.strptime(self.start_date, '%Y-%m-%d').strftime('%b %y')})"
 			elif isinstance(self.start_date, datetime):
-				title += f" ({s.strftime('%b %y')})"
+				title += f" ({self.start_date.strftime('%b %y')})"
 		self.title = title
