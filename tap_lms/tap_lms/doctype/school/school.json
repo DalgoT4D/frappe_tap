@@ -3,7 +3,7 @@
  "allow_events_in_timeline": 1,
  "allow_import": 1,
  "allow_rename": 1,
- "autoname": "format:SC{#####}",
+ "autoname": "format:SC{########}",
  "creation": "2023-02-14 12:18:09.201445",
  "default_view": "List",
  "doctype": "DocType",
@@ -13,7 +13,8 @@
   "name1",
   "type",
   "city",
-  "model"
+  "model",
+  "comment"
  ],
  "fields": [
   {
@@ -43,11 +44,16 @@
    "label": "Model",
    "options": "Inschool\nAfterschool\nHybrid",
    "reqd": 1
+  },
+  {
+   "fieldname": "comment",
+   "fieldtype": "Text",
+   "label": "Comments"
   }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2023-05-15 19:24:29.563847",
+ "modified": "2023-07-27 12:49:49.191205",
  "modified_by": "Administrator",
  "module": "Tap Lms",
  "name": "School",
