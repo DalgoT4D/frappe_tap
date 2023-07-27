@@ -36,7 +36,6 @@
    "fieldtype": "Data",
    "in_list_view": 1,
    "label": "Phone",
-   "reqd": 1,
    "unique": 1
   },
   {
@@ -99,7 +98,7 @@
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2023-07-27 13:07:27.114352",
+ "modified": "2023-07-27 13:18:11.876318",
  "modified_by": "Administrator",
  "module": "Tap Lms",
  "name": "Student",
