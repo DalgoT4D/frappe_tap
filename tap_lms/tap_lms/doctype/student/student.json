@@ -12,6 +12,7 @@
  "field_order": [
   "name1",
   "phone",
+  "alt_phone",
   "gender",
   "school_id",
   "grade",
@@ -35,14 +36,13 @@
    "fieldname": "phone",
    "fieldtype": "Data",
    "in_list_view": 1,
-   "label": "Phone",
-   "unique": 1
+   "label": "Phone"
   },
   {
    "fieldname": "gender",
    "fieldtype": "Select",
    "label": "Gender",
-   "options": "Male\nFemale\nNot Available"
+   "options": "Male\nFemale\nOthers\nNot Available"
   },
   {
    "fieldname": "grade",
@@ -94,11 +94,16 @@
    "fieldtype": "Percent",
    "label": "Submission Rate",
    "read_only": 1
+  },
+  {
+   "fieldname": "alt_phone",
+   "fieldtype": "Data",
+   "label": "Alternate Phone"
   }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2023-07-27 13:18:11.876318",
+ "modified": "2023-08-30 09:09:12.100066",
  "modified_by": "Administrator",
  "module": "Tap Lms",
  "name": "Student",
