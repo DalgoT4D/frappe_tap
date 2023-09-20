@@ -8,6 +8,6 @@ class Student(Document):
 	pass
 
 
-@frappe.whitelist(method='POST')
+@frappe.whitelist()
 def register_student():
 	return {'status_code':200,  'message': 'Student registered succesfully'}
