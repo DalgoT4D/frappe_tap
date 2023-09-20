@@ -11,6 +11,7 @@ class Student(Document):
 
 @frappe.whitelist()
 def register_student():
+	"""Method to create/register a new student"""
 	payload = json.loads(frappe.request.data)
 	doc = frappe.new_doc('Student')
 	doc.name1 = payload.get('name1')
@@ -24,4 +25,19 @@ def register_student():
 		"batch": payload.get("batch")
 	})
 	doc.insert()
-	return {'status_code':200,  'message': 'Student registered succesfully'}
+	return {'status_code': 200,  'message': 'Student registered succesfully'}
+
+
+@frappe.whitelist()
+def update_student_profile():
+	"""Method to update the profile id of a student"""
+	payload = json.loads(frappe.request.data)
+	query = {
+		"phone": payload.get('phone'),
+		"name1": payload.get('name1'),
+		"profile_id": None
+	}
+	doc = frappe.get_last_doc('Student', filters=query)
+	doc.profile_id = payload.get('profile_id')
+	doc.save()
+	return {'status_code': 200,  'message': 'Profile updated successfully'}
