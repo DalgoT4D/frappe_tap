@@ -35,9 +35,17 @@ def update_student_profile():
 	query = {
 		"phone": payload.get('phone'),
 		"name1": payload.get('name1'),
-		"profile_id": None
+		"profile_id": ""
 	}
-	doc = frappe.get_last_doc('Student', filters=query)
-	doc.profile_id = payload.get('profile_id')
-	doc.save()
+	student = None
+	
+	try:
+		doc = frappe.get_last_doc('Student', filters=query)
+		student = doc
+	except Exception:
+		pass
+
+	if student:
+		student.profile_id = payload.get('profile_id')
+		student.save()
 	return {'status_code': 200,  'message': 'Profile updated successfully'}
