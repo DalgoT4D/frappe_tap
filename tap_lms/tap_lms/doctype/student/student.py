@@ -17,5 +17,6 @@ def register_student():
 	doc.phone = payload.get('phone')
 	doc.section = payload.get('section')
 	doc.grade = payload.get('grade')
+	doc.enrollment = [{"course": payload.get('course'), "batch": payload.get("batch")}]
 	doc.insert()
 	return {'status_code':200,  'message': 'Student registered succesfully'}
