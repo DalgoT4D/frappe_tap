@@ -5,6 +5,9 @@ import frappe
 import json
 from frappe.model.document import Document
 
+frappe.utils.logger.set_log_level("DEBUG")
+logger = frappe.logger("api", allow_site=True, file_count=50)
+
 class Student(Document):
 	pass
 
@@ -31,7 +34,7 @@ def register_student():
 @frappe.whitelist()
 def update_student_profile():
 	"""Method to update the profile id of a student"""
-	frappe.logger("frappe.web").debug({"msg": "inside the update profile hook"})
+	logger.info("inside the update profile hook")
 	payload = json.loads(frappe.request.data)
 	query = {
 		"phone": payload.get('phone'),
@@ -39,17 +42,17 @@ def update_student_profile():
 		"profile_id": ""
 	}
 	student = None
-	frappe.logger("frappe.web").debug({"msg": "loaded the request data"})
+	logger.info("loaded the request data")
 	try:
 		doc = frappe.get_last_doc('Student', filters=query)
 		student = doc
-		frappe.logger("frappe.web").debug({"msg": "found the student with the filters"})
+		logger.info("found the student with the filters")
 	except Exception:
-		frappe.logger("frappe.web").debug({"msg": "did not find the student"})
+		logger.info("did not find the student")
 		pass
 
 	if student:
-		frappe.logger("frappe.web").debug({"msg": "saving the student"})
+		logger.info("saving the student")
 		student.profile_id = payload.get('profile_id')
 		student.save()
 	return {'status_code': 200,  'message': 'Profile updated successfully'}
