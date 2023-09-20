@@ -17,6 +17,8 @@ def register_student():
 	doc.phone = payload.get('phone')
 	doc.section = payload.get('section')
 	doc.grade = payload.get('grade')
+	doc.level = ''
+	doc.rigour = ''
 	doc.append("enrollment", {
 		"course": payload.get("course"),
 		"batch": payload.get("batch")
