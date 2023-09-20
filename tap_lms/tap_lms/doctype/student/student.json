@@ -22,7 +22,10 @@
   "status",
   "enrollment",
   "access_rate",
-  "submission_rate"
+  "submission_rate",
+  "profile_id",
+  "level",
+  "rigour"
  ],
  "fields": [
   {
@@ -99,11 +102,28 @@
    "fieldname": "alt_phone",
    "fieldtype": "Data",
    "label": "Alternate Phone"
+  },
+  {
+   "fieldname": "profile_id",
+   "fieldtype": "Data",
+   "label": "Profile ID"
+  },
+  {
+   "fieldname": "level",
+   "fieldtype": "Select",
+   "label": "Level",
+   "options": "L1\nL2\nL3"
+  },
+  {
+   "fieldname": "rigour",
+   "fieldtype": "Select",
+   "label": "Rigour",
+   "options": "Low rigour\nHigh rigour"
   }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2023-08-30 09:09:12.100066",
+ "modified": "2023-09-15 12:48:23.049641",
  "modified_by": "Administrator",
  "module": "Tap Lms",
  "name": "Student",
