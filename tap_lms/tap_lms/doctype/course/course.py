@@ -5,6 +5,4 @@
 from frappe.model.document import Document
 
 class Course(Document):
-	
-	def before_save(self):
-		self.title = f"{self.name1} ({self.type})"
+    pass
