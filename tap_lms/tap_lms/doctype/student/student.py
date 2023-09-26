@@ -32,10 +32,13 @@ def register_student():
 @frappe.whitelist()
 def update_student_profile():
 	"""Method to update the profile id of a student"""
+
+	# will have name, phone and profile_id
 	payload = json.loads(frappe.request.data)
+
 	query = {
 		"phone": payload.get('phone'),
-		"name1": payload.get('name1'),
+		# "name1": payload.get('name1'),
 		"profile_id": ""
 	}
 	student = None
@@ -46,6 +49,16 @@ def update_student_profile():
 		pass
 
 	if student:
+		# update the profile id
 		student.profile_id = payload.get('profile_id')
+		student.name1 = payload.get('name1')
 		student.save()
+	else:
+		# create a new student with the profile, name and phone number
+		doc = frappe.new_doc('Student')
+		doc.name1 = payload.get('name1')
+		doc.phone = payload.get('phone')
+		doc.profile_id = payload.get('profile_id')
+		doc.insert()
+
 	return {'status_code': 200,  'message': 'Profile updated successfully'}
