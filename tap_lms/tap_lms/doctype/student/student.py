@@ -3,6 +3,7 @@
 
 import frappe
 import json
+import re
 from frappe.model.document import Document
 
 
@@ -16,7 +17,7 @@ def register_student():
 	payload = json.loads(frappe.request.data)
 	doc = frappe.new_doc('Student')
 	doc.name1 = payload.get('name1')
-	doc.phone = payload.get('phone')
+	doc.phone = re.sub('^91', '', payload.get('phone'), count=0, flags=0)
 	doc.section = payload.get('section')
 	doc.grade = payload.get('grade')
 	doc.level = ''
@@ -36,9 +37,13 @@ def update_student_profile():
 	# will have name, phone and profile_id
 	payload = json.loads(frappe.request.data)
 
+	# phone number should be 10 digit
+	payload_phone = re.sub('^91', '', payload.get('phone'), count=0, flags=0)
+	payload_name = payload.get('name1')
+	payload_profile_id = payload.get('profile_id')
+
 	query = {
-		"phone": payload.get('phone'),
-		# "name1": payload.get('name1'),
+		"phone": payload_phone,
 		"profile_id": ""
 	}
 	student = None
@@ -50,15 +55,15 @@ def update_student_profile():
 
 	if student:
 		# update the profile id
-		student.profile_id = payload.get('profile_id')
-		student.name1 = payload.get('name1')
+		student.profile_id = payload_profile_id
+		student.name1 = payload_name
 		student.save()
 	else:
 		# create a new student with the profile, name and phone number
 		doc = frappe.new_doc('Student')
-		doc.name1 = payload.get('name1')
-		doc.phone = payload.get('phone')
-		doc.profile_id = payload.get('profile_id')
+		doc.name1 = payload_name
+		doc.phone = payload_phone
+		doc.profile_id = payload_profile_id
 		doc.insert()
 
 	return {'status_code': 200,  'message': 'Profile updated successfully'}
