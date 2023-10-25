@@ -27,9 +27,9 @@ def register_student():
 		"batch": payload.get("batch")
 	})
 
-	if payload.get('school_id') and payload.get('school_id') != '':
+	if payload.get('keyword') and payload.get('keyword') != '':
 		try:
-			school = frappe.get_doc('School', payload.get('school_id'))
+			school = frappe.get_last_doc('School', filters={"keyword": payload.get('keyword')})
 			doc.school_id = school.name
 		except Exception:
 			pass
