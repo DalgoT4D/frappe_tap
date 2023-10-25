@@ -26,6 +26,14 @@ def register_student():
 		"course": payload.get("course"),
 		"batch": payload.get("batch")
 	})
+
+	if payload.get('school_id') and payload.get('school_id') != '':
+		try:
+			school = frappe.get_doc('School', payload.get('school_id'))
+			doc.school_id = school.name
+		except Exception:
+			pass
+
 	doc.insert()
 	return {'status_code': 200,  'message': 'Student registered succesfully'}
 
