@@ -14,7 +14,8 @@
   "type",
   "city",
   "model",
-  "comment"
+  "comment",
+  "keyword"
  ],
  "fields": [
   {
@@ -28,14 +29,14 @@
    "fieldname": "type",
    "fieldtype": "Select",
    "label": "Type",
-   "options": "APS\nGOVT\nNGO\nPPP\nPMC\nPVT, GOVT. aided",
+   "options": "APS\nGOVT\nNGO\nPPP\nPMC\nPVT, GOVT. aided\nORG",
    "reqd": 1
   },
   {
    "fieldname": "city",
    "fieldtype": "Select",
    "label": "City",
-   "options": "Hyderabad\nAhmedabad\nMumbai\nDelhi\nBangalore\nPune\nNuh",
+   "options": "Hyderabad\nAhmedabad\nMumbai\nDelhi\nBangalore\nPune\nNuh\nIchalkaranji\nKargil\nKolkata\nBihar",
    "reqd": 1
   },
   {
@@ -49,11 +50,16 @@
    "fieldname": "comment",
    "fieldtype": "Text",
    "label": "Comments"
+  },
+  {
+   "fieldname": "keyword",
+   "fieldtype": "Data",
+   "label": "Keyword"
   }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2023-07-27 16:11:46.467112",
+ "modified": "2023-10-25 12:34:44.152570",
  "modified_by": "Administrator",
  "module": "Tap Lms",
  "name": "School",

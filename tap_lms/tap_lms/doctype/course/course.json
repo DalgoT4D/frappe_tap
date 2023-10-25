@@ -2,7 +2,7 @@
  "actions": [],
  "allow_import": 1,
  "allow_rename": 1,
- "autoname": "format:CR{########}",
+ "autoname": "format:",
  "creation": "2023-02-13 15:17:20.673902",
  "default_view": "List",
  "doctype": "DocType",
@@ -10,9 +10,7 @@
  "engine": "InnoDB",
  "field_order": [
   "name1",
-  "name2",
-  "type",
-  "title"
+  "name2"
  ],
  "fields": [
   {
@@ -24,20 +22,6 @@
    "reqd": 1
   },
   {
-   "fieldname": "type",
-   "fieldtype": "Select",
-   "label": "Type",
-   "options": "Primary\nSecondary",
-   "reqd": 1
-  },
-  {
-   "fieldname": "title",
-   "fieldtype": "Data",
-   "hidden": 1,
-   "label": "Title",
-   "read_only": 1
-  },
-  {
    "fieldname": "name2",
    "fieldtype": "Select",
    "label": "Label",
@@ -47,7 +31,7 @@
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2023-07-27 13:23:34.399505",
+ "modified": "2023-09-21 15:27:41.876186",
  "modified_by": "Administrator",
  "module": "Tap Lms",
  "name": "Course",
@@ -69,6 +53,5 @@
  ],
  "sort_field": "modified",
  "sort_order": "DESC",
- "states": [],
- "title_field": "title"
+ "states": []
 }
