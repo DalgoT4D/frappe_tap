@@ -54,12 +54,13 @@
   {
    "fieldname": "keyword",
    "fieldtype": "Data",
-   "label": "Keyword"
+   "label": "Keyword",
+   "unique": 1
   }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2023-10-25 12:34:44.152570",
+ "modified": "2023-10-25 14:43:51.452827",
  "modified_by": "Administrator",
  "module": "Tap Lms",
  "name": "School",
