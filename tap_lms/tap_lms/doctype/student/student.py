@@ -20,6 +20,7 @@ def register_student():
 	doc.phone = re.sub('^91', '', payload.get('phone'), count=0, flags=0)
 	doc.section = payload.get('section')
 	doc.grade = payload.get('grade')
+	doc.gender = payload.get('gender')
 	doc.level = ''
 	doc.rigour = ''
 	doc.append("enrollment", {
