@@ -54,7 +54,6 @@ def update_student_profile():
     """Method to update the profile id of a student"""
     try:
         # will have name, phone and profile_id
-        raise ValueError("Something went wrong")
         payload = json.loads(frappe.request.data)
 
         logger.info(
