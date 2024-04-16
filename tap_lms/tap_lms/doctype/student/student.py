@@ -6,8 +6,7 @@ import json
 import re
 from frappe.model.document import Document
 
-frappe.utils.logger.set_log_level("DEBUG")
-logger = frappe.logger("api", allow_site=True, file_count=50)
+logger = frappe.get_logger("custom_student_webhook")
 
 
 class Student(Document):
