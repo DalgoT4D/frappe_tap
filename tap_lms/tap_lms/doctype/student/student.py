@@ -6,7 +6,8 @@ import json
 import re
 from frappe.model.document import Document
 
-logger = frappe.get_logger("custom_student_webhook")
+logger = frappe.logger("custom_student_webhook", with_more_info=True)
+logger.setLevel("INFO")
 
 
 class Student(Document):
@@ -40,13 +41,17 @@ def register_student():
         except Exception:
             pass
     doc.insert()
+    logger.info("Student with phone %s registered successfully", doc.phone)
     return {"status_code": 200, "message": "Student registered succesfully"}
 
 
 @frappe.whitelist()
 def update_student_profile():
     """Method to update the profile id of a student"""
-
+    logger.info(
+        "Entered tap's profile update webhook for profile_id %s",
+        payload.get("profile_id"),
+    )
     # will have name, phone and profile_id
     payload = json.loads(frappe.request.data)
 
@@ -80,5 +85,6 @@ def update_student_profile():
         doc.rigour = ""
         doc.append("enrollment", {"course": payload_course, "batch": payload_batch})
         doc.insert()
+    logger.info("Update profile for student with phone %s ", payload_phone)
 
     return {"status_code": 200, "message": "Profile updated successfully"}
