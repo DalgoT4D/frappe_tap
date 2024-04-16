@@ -54,6 +54,7 @@ def update_student_profile():
     """Method to update the profile id of a student"""
     try:
         # will have name, phone and profile_id
+        raise ValueError("Something went wrong")
         payload = json.loads(frappe.request.data)
 
         logger.info(
@@ -91,7 +92,7 @@ def update_student_profile():
             doc.rigour = ""
             doc.append("enrollment", {"course": payload_course, "batch": payload_batch})
             doc.insert()
-        logger.info("Update profile for student with phone %s ", payload_phone)
+        logger.info("Updated profile for student with phone %s ", payload_phone)
 
         return {"status_code": 200, "message": "Profile updated successfully"}
     except Exception as err:
