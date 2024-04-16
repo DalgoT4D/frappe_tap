@@ -48,12 +48,13 @@ def register_student():
 @frappe.whitelist()
 def update_student_profile():
     """Method to update the profile id of a student"""
+    # will have name, phone and profile_id
+    payload = json.loads(frappe.request.data)
+
     logger.info(
         "Entered tap's profile update webhook for profile_id %s",
         payload.get("profile_id"),
     )
-    # will have name, phone and profile_id
-    payload = json.loads(frappe.request.data)
 
     # phone number should be 10 digit
     payload_phone = re.sub("^91", "", payload.get("phone"), count=0, flags=0)
