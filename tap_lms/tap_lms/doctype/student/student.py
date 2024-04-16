@@ -17,32 +17,31 @@ class Student(Document):
 @frappe.whitelist()
 def register_student():
     """Method to create/register a new student"""
-    logger.info("Entered tap's registration webhook with payload %s", frappe.request.data)
-	payload = json.loads(frappe.request.data)
-	
-	doc = frappe.new_doc("Student")
-	doc.name1 = payload.get("name1")
-	doc.phone = re.sub("^91", "", payload.get("phone"), count=0, flags=0)
-	doc.section = payload.get("section")
-	doc.grade = payload.get("grade")
-	doc.gender = payload.get("gender")
-	doc.level = ""
-	doc.rigour = ""
-	doc.append(
-		"enrollment", {"course": payload.get("course"), "batch": payload.get("batch")}
-	)
-
-	if payload.get("keyword") and payload.get("keyword") != "":
-		try:
-			school = frappe.get_last_doc(
-				"School", filters={"keyword": payload.get("keyword")}
-			)
-			doc.school_id = school.name
-		except Exception:
-			pass
-
-	doc.insert()
-	return {"status_code": 200, "message": "Student registered succesfully"}
+    logger.info(
+        "Entered tap's registration webhook with payload %s", frappe.request.data
+    )
+    payload = json.loads(frappe.request.data)
+    doc = frappe.new_doc("Student")
+    doc.name1 = payload.get("name1")
+    doc.phone = re.sub("^91", "", payload.get("phone"), count=0, flags=0)
+    doc.section = payload.get("section")
+    doc.grade = payload.get("grade")
+    doc.gender = payload.get("gender")
+    doc.level = ""
+    doc.rigour = ""
+    doc.append(
+        "enrollment", {"course": payload.get("course"), "batch": payload.get("batch")}
+    )
+    if payload.get("keyword") and payload.get("keyword") != "":
+        try:
+            school = frappe.get_last_doc(
+                "School", filters={"keyword": payload.get("keyword")}
+            )
+            doc.school_id = school.name
+        except Exception:
+            pass
+    doc.insert()
+    return {"status_code": 200, "message": "Student registered succesfully"}
 
 
 @frappe.whitelist()
