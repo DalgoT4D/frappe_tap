@@ -15,7 +15,16 @@
   "city",
   "model",
   "comment",
-  "keyword"
+  "keyword",
+  "board",
+  "department",
+  "govtid",
+  "pin",
+  "address",
+  "year",
+  "status",
+  "headmaster",
+  "poc"
  ],
  "fields": [
   {
@@ -36,7 +45,7 @@
    "fieldname": "city",
    "fieldtype": "Select",
    "label": "City",
-   "options": "Hyderabad\nAhmedabad\nMumbai\nDelhi\nBangalore\nPune\nNuh\nIchalkaranji\nKargil\nKolkata\nBihar\nAssam\nAuroville\nAnupshahr",
+   "options": "Hyderabad\nAhmedabad\nMumbai\nDelhi\nBangalore\nPune\nNuh\nIchalkaranji\nKargil\nKolkata\nBihar\nAssam\nAuroville\nAnupshahr\nRaipur",
    "reqd": 1
   },
   {
@@ -56,11 +65,62 @@
    "fieldtype": "Data",
    "label": "Keyword",
    "unique": 1
+  },
+  {
+   "fieldname": "board",
+   "fieldtype": "Data",
+   "label": "Board Affiliation"
+  },
+  {
+   "fieldname": "department",
+   "fieldtype": "Data",
+   "label": "Regional Department"
+  },
+  {
+   "fieldname": "govtid",
+   "fieldtype": "Data",
+   "label": "UDISE",
+   "unique": 1
+  },
+  {
+   "fieldname": "pin",
+   "fieldtype": "Data",
+   "label": "PIN Code"
+  },
+  {
+   "fieldname": "address",
+   "fieldtype": "Data",
+   "label": "Address"
+  },
+  {
+   "fieldname": "year",
+   "fieldtype": "Data",
+   "label": "Onboarding Year",
+   "reqd": 1
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "New\nAssigned\nIn-progress\nOn-boarded\nDiscontinued",
+   "reqd": 1
+  },
+  {
+   "fieldname": "headmaster",
+   "fieldtype": "Table",
+   "label": "Headmaster",
+   "options": "Headmaster"
+  },
+  {
+   "fieldname": "poc",
+   "fieldtype": "Table",
+   "label": "POC",
+   "options": "POC"
   }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2024-02-05 16:30:42.890124",
+ "modified": "2024-05-23 16:17:43.245935",
  "modified_by": "Administrator",
  "module": "Tap Lms",
  "name": "School",

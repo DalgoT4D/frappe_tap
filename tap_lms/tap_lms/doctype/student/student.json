@@ -25,7 +25,8 @@
   "submission_rate",
   "profile_id",
   "level",
-  "rigour"
+  "rigour",
+  "language"
  ],
  "fields": [
   {
@@ -119,11 +120,17 @@
    "fieldtype": "Select",
    "label": "Rigour",
    "options": "Low rigour\nHigh rigour"
+  },
+  {
+   "fieldname": "language",
+   "fieldtype": "Select",
+   "label": "Language",
+   "options": "English\nHindi\nMarathi"
   }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2023-09-15 12:48:23.049641",
+ "modified": "2024-04-29 14:36:55.231928",
  "modified_by": "Administrator",
  "module": "Tap Lms",
  "name": "Student",
