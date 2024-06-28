@@ -22,9 +22,7 @@
   "pin",
   "address",
   "year",
-  "status",
-  "headmaster",
-  "poc"
+  "status"
  ],
  "fields": [
   {
@@ -104,23 +102,11 @@
    "label": "Status",
    "options": "New\nAssigned\nIn-progress\nOn-boarded\nDiscontinued",
    "reqd": 1
-  },
-  {
-   "fieldname": "headmaster",
-   "fieldtype": "Table",
-   "label": "Headmaster",
-   "options": "Headmaster"
-  },
-  {
-   "fieldname": "poc",
-   "fieldtype": "Table",
-   "label": "POC",
-   "options": "POC"
   }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2024-05-23 16:17:43.245935",
+ "modified": "2024-06-28 11:13:42.450198",
  "modified_by": "Administrator",
  "module": "Tap Lms",
  "name": "School",
