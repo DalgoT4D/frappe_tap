@@ -98,3 +98,57 @@ def verify_keyword():
             "model": None
         })
 
+
+
+@frappe.whitelist(allow_guest=True)
+def create_teacher(api_key, keyword, first_name, phone_number, glific_id, last_name=None, email=None, language=None):
+    try:
+        # Verify the API key
+        if not authenticate_api_key(api_key):
+            frappe.throw("Invalid API key")
+
+        # Find the school based on the provided keyword
+        school = frappe.db.get_value("School", {"keyword": keyword}, "name")
+        if not school:
+            return {
+                "error": f"No school found with the keyword: {keyword}"
+            }
+
+        # Create a new teacher document
+        teacher = frappe.new_doc("Teacher")
+        teacher.first_name = first_name
+        teacher.school = school
+        teacher.phone_number = phone_number
+        teacher.glific_id = glific_id  # Set the glific_id field (mandatory)
+
+        # Set the optional fields if provided
+        if last_name:
+            teacher.last_name = last_name
+        if email:
+            teacher.email = email
+        if language:
+            teacher.language = language
+
+        # Insert the teacher document
+        teacher.insert(ignore_permissions=True)
+
+        # Commit the changes
+        frappe.db.commit()
+
+        return {
+            "message": "Teacher created successfully",
+            "teacher_id": teacher.name
+        }
+    except frappe.DuplicateEntryError:
+        return {
+            "error": "Teacher with the same phone number already exists"
+        }
+    except Exception as e:
+        return {
+            "error": f"An error occurred while creating teacher: {str(e)}"
+        }
+
+
+
+
+

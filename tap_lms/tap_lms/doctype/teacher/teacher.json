@@ -11,10 +11,11 @@
   "first_name",
   "last_name",
   "school",
-  "languages",
+  "language",
+  "email",
   "department",
   "glific_id",
-  "email"
+  "phone_number"
  ],
  "fields": [
   {
@@ -22,12 +23,6 @@
    "fieldtype": "Link",
    "label": "School",
    "options": "School"
-  },
-  {
-   "fieldname": "languages",
-   "fieldtype": "Select",
-   "label": "Languages",
-   "options": "Assamese\nBengali\nBodo\nDogri\nGujarati\nHindi\nKannada\nKashmiri\nKonkani\nMaithili\nMalayalam\nManipuri (Meitei)\nMarathi\nNepali\nOdia (Oriya)\nPunjabi\nSanskrit\nSantali\nSindhi\nTamil\nTelugu\nUrdu"
   },
   {
    "fieldname": "first_name",
@@ -55,11 +50,24 @@
    "fieldname": "email",
    "fieldtype": "Data",
    "label": "Email ID"
+  },
+  {
+   "fieldname": "phone_number",
+   "fieldtype": "Data",
+   "label": "Phone Number",
+   "unique": 1
+  },
+  {
+   "default": "English",
+   "fieldname": "language",
+   "fieldtype": "Select",
+   "label": "Language",
+   "options": "English\nAssamese\nBengali\nBodo\nDogri\nGujarati\nHindi\nKannada\nKashmiri\nKonkani\nMaithili\nMalayalam\nManipuri (Meitei)\nMarathi\nNepali\nOdia (Oriya)\nPunjabi\nSanskrit\nSantali\nSindhi\nTamil\nTelugu\nUrdu"
   }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2024-07-02 14:00:39.331380",
+ "modified": "2024-07-02 16:58:03.402907",
  "modified_by": "Administrator",
  "module": "Tap Lms",
  "name": "Teacher",
