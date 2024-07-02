@@ -48,15 +48,13 @@
    "fieldname": "type",
    "fieldtype": "Select",
    "label": "Type",
-   "options": "APS\nGOVT\nNGO\nPPP\nPMC\nPVT, GOVT. aided\nORG",
-   "reqd": 1
+   "options": "APS\nGOVT\nNGO\nPPP\nPMC\nPVT, GOVT. aided\nORG"
   },
   {
    "fieldname": "city",
    "fieldtype": "Select",
    "label": "City",
-   "options": "Hyderabad\nAhmedabad\nMumbai\nDelhi\nBangalore\nPune\nNuh\nIchalkaranji\nKargil\nKolkata\nBihar\nAssam\nAuroville\nAnupshahr\nRaipur",
-   "reqd": 1
+   "options": "Hyderabad\nAhmedabad\nMumbai\nDelhi\nBangalore\nPune\nNuh\nIchalkaranji\nKargil\nKolkata\nBihar\nAssam\nAuroville\nAnupshahr\nRaipur"
   },
   {
    "fieldname": "keyword",
@@ -93,15 +91,13 @@
   {
    "fieldname": "year",
    "fieldtype": "Data",
-   "label": "Onboarding Year",
-   "reqd": 1
+   "label": "Onboarding Year"
   },
   {
    "fieldname": "status",
    "fieldtype": "Select",
    "label": "Status",
-   "options": "New\nAssigned\nIn-progress\nOn-boarded\nDiscontinued",
-   "reqd": 1
+   "options": "New\nAssigned\nIn-progress\nOn-boarded\nDiscontinued"
   },
   {
    "fieldname": "state",
@@ -182,8 +178,7 @@
    "fieldname": "model",
    "fieldtype": "Select",
    "label": "Model",
-   "options": "Inschool\nAfterschool\nHybrid",
-   "reqd": 1
+   "options": "Inschool\nAfterschool\nHybrid"
   }
  ],
  "index_web_pages_for_search": 1,
@@ -193,7 +188,7 @@
    "link_fieldname": "school"
   }
  ],
- "modified": "2024-07-02 16:05:28.706040",
+ "modified": "2024-07-02 17:32:45.766990",
  "modified_by": "Administrator",
  "module": "Tap Lms",
  "name": "School",

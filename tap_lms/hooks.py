@@ -193,3 +193,10 @@ app_license = "MIT"
 
 fixtures = [{ "doctype": "Client Script", "filters": [ ["module", "in", ( "Tap Lms" )] ] }]
 
+
+doc_events = {
+    "School": {
+        "before_save": "tap_lms.school.doctype.school.school.before_save"
+    }
+}
+
