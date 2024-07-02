@@ -52,4 +52,49 @@ def get_school_name_keyword_list(api_key, start=0, limit=10):
 
 
 
+@frappe.whitelist(allow_guest=True)
+def verify_keyword():
+    # Parse the request data
+    data = frappe.request.get_json()
+
+    # Verify the API key
+    if not data or 'api_key' not in data or not authenticate_api_key(data['api_key']):
+        frappe.response.http_status_code = 401
+        frappe.response.update({
+            "status": "failure",
+            "school_name": None,
+            "model": None,
+            "error": "Invalid API key"
+        })
+        return
+
+    if 'keyword' not in data:
+        frappe.response.http_status_code = 400
+        frappe.response.update({
+            "status": "failure",
+            "school_name": None,
+            "model": None,
+            "error": "Keyword parameter is missing"
+        })
+        return
+
+    keyword = data['keyword']
+
+    # Check if the keyword exists in the School doctype and retrieve the smodel and name1 fields
+    school = frappe.db.get_value("School", {"keyword": keyword}, ["name1", "model"], as_dict=True)
+
+    if school:
+        frappe.response.http_status_code = 200
+        frappe.response.update({
+            "status": "success",
+            "school_name": school.name1,
+            "model": school.model
+        })
+    else:
+        frappe.response.http_status_code = 404
+        frappe.response.update({
+            "status": "failure",
+            "school_name": None,
+            "model": None
+        })
 
