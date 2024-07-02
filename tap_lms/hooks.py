@@ -7,6 +7,14 @@ app_description = "Lms system for tap"
 app_email = "tech4dev@gmail.com"
 app_license = "MIT"
 
+
+doc_events = {
+    "School": {
+        "before_save": "tap_lms.tap_lms.doctype.school.school.before_save"
+    }
+}
+
+
 # Includes in <head>
 # ------------------
 
@@ -192,11 +200,4 @@ app_license = "MIT"
 # ]
 
 fixtures = [{ "doctype": "Client Script", "filters": [ ["module", "in", ( "Tap Lms" )] ] }]
-
-
-doc_events = {
-    "School": {
-        "before_save": "tap_lms.school.doctype.school.school.before_save"
-    }
-}
 
