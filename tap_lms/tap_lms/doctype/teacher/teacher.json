@@ -1,27 +1,69 @@
 {
  "actions": [],
  "allow_rename": 1,
+ "autoname": "format:{first_name}-TC{###}",
  "creation": "2024-06-28 11:27:14.887561",
  "default_view": "List",
  "doctype": "DocType",
  "editable_grid": 1,
  "engine": "InnoDB",
  "field_order": [
-  "teachname"
+  "first_name",
+  "last_name",
+  "school",
+  "languages",
+  "department",
+  "glific_id",
+  "email"
  ],
  "fields": [
   {
-   "fieldname": "teachname",
+   "fieldname": "school",
+   "fieldtype": "Link",
+   "label": "School",
+   "options": "School"
+  },
+  {
+   "fieldname": "languages",
+   "fieldtype": "Select",
+   "label": "Languages",
+   "options": "Assamese\nBengali\nBodo\nDogri\nGujarati\nHindi\nKannada\nKashmiri\nKonkani\nMaithili\nMalayalam\nManipuri (Meitei)\nMarathi\nNepali\nOdia (Oriya)\nPunjabi\nSanskrit\nSantali\nSindhi\nTamil\nTelugu\nUrdu"
+  },
+  {
+   "fieldname": "first_name",
    "fieldtype": "Data",
-   "label": "name"
+   "in_list_view": 1,
+   "label": "First name",
+   "reqd": 1
+  },
+  {
+   "fieldname": "last_name",
+   "fieldtype": "Data",
+   "label": "Last name"
+  },
+  {
+   "fieldname": "department",
+   "fieldtype": "Data",
+   "label": "Department "
+  },
+  {
+   "fieldname": "glific_id",
+   "fieldtype": "Data",
+   "label": "Glific ID"
+  },
+  {
+   "fieldname": "email",
+   "fieldtype": "Data",
+   "label": "Email ID"
   }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2024-06-28 11:27:14.887561",
+ "modified": "2024-07-02 14:00:39.331380",
  "modified_by": "Administrator",
  "module": "Tap Lms",
  "name": "Teacher",
+ "naming_rule": "Expression",
  "owner": "Administrator",
  "permissions": [
   {

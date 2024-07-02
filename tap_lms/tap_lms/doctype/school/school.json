@@ -2,8 +2,7 @@
  "actions": [],
  "allow_events_in_timeline": 1,
  "allow_import": 1,
- "allow_rename": 1,
- "autoname": "format:SC{########}",
+ "autoname": "format:{name1}-SC{#####}",
  "creation": "2023-02-14 12:18:09.201445",
  "default_view": "List",
  "doctype": "DocType",
@@ -11,18 +10,31 @@
  "engine": "InnoDB",
  "field_order": [
   "name1",
-  "type",
-  "city",
   "model",
-  "comment",
-  "keyword",
+  "type",
   "board",
   "department",
   "govtid",
-  "pin",
-  "address",
+  "status",
   "year",
-  "status"
+  "address",
+  "city",
+  "state",
+  "country",
+  "pin",
+  "keyword",
+  "headmaster_name",
+  "headmaster_phone",
+  "is_tfi",
+  "is_akanksha",
+  "poc",
+  "school_follow_up_frequency",
+  "hm_follow_up_frequency",
+  "minimum_activity_access_target",
+  "minimum_submission_target",
+  "minimum_quiz_access_target",
+  "minimum_quiz_score_target",
+  "minimum_quiz_completion_target"
  ],
  "fields": [
   {
@@ -52,11 +64,6 @@
    "label": "Model",
    "options": "Inschool\nAfterschool\nHybrid",
    "reqd": 1
-  },
-  {
-   "fieldname": "comment",
-   "fieldtype": "Text",
-   "label": "Comments"
   },
   {
    "fieldname": "keyword",
@@ -102,11 +109,91 @@
    "label": "Status",
    "options": "New\nAssigned\nIn-progress\nOn-boarded\nDiscontinued",
    "reqd": 1
+  },
+  {
+   "fieldname": "state",
+   "fieldtype": "Data",
+   "label": "State"
+  },
+  {
+   "default": "India",
+   "fieldname": "country",
+   "fieldtype": "Select",
+   "label": "Country",
+   "options": "India"
+  },
+  {
+   "fieldname": "headmaster_name",
+   "fieldtype": "Data",
+   "label": "Headmaster Name"
+  },
+  {
+   "fieldname": "headmaster_phone",
+   "fieldtype": "Data",
+   "label": "Headmaster Phone"
+  },
+  {
+   "fieldname": "is_tfi",
+   "fieldtype": "Select",
+   "label": "Is TFI",
+   "options": "Yes\nNo"
+  },
+  {
+   "fieldname": "is_akanksha",
+   "fieldtype": "Select",
+   "label": "Is Akanksha",
+   "options": "Yes\nNo"
+  },
+  {
+   "fieldname": "poc",
+   "fieldtype": "Table",
+   "label": "POC",
+   "options": "School_POC"
+  },
+  {
+   "fieldname": "school_follow_up_frequency",
+   "fieldtype": "Data",
+   "label": "School Follow up frequency"
+  },
+  {
+   "fieldname": "hm_follow_up_frequency",
+   "fieldtype": "Data",
+   "label": "HM Follow up frequency"
+  },
+  {
+   "fieldname": "minimum_activity_access_target",
+   "fieldtype": "Data",
+   "label": "Minimum Activity Access Target"
+  },
+  {
+   "fieldname": "minimum_submission_target",
+   "fieldtype": "Data",
+   "label": "Minimum Submission Target"
+  },
+  {
+   "fieldname": "minimum_quiz_access_target",
+   "fieldtype": "Data",
+   "label": "Minimum Quiz Access Target"
+  },
+  {
+   "fieldname": "minimum_quiz_score_target",
+   "fieldtype": "Data",
+   "label": "Minimum Quiz Score Target"
+  },
+  {
+   "fieldname": "minimum_quiz_completion_target",
+   "fieldtype": "Data",
+   "label": "Minimum Quiz Completion Target"
   }
  ],
  "index_web_pages_for_search": 1,
- "links": [],
- "modified": "2024-06-28 11:13:42.450198",
+ "links": [
+  {
+   "link_doctype": "Teacher",
+   "link_fieldname": "school"
+  }
+ ],
+ "modified": "2024-07-02 14:02:42.488223",
  "modified_by": "Administrator",
  "module": "Tap Lms",
  "name": "School",
