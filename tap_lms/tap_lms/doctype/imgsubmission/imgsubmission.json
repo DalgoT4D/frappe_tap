@@ -12,14 +12,26 @@
   "student_id",
   "img_url",
   "status",
+  "result_status",
   "created_at",
   "grade",
+  "plagiarism_section",
+  "plagiarism_status",
+  "is_plagiarized",
+  "match_type",
+  "plagiarism_source",
+  "similarity_score",
+  "similar_sources",
+  "ai_detection_section",
+  "is_ai_generated",
+  "ai_detection_source",
+  "ai_confidence",
+  "feedback_section",
   "plagiarism_result",
   "generated_feedback",
   "feedback_summary",
   "overall_feedback",
-  "completed_at",
-  "similar_sources"
+  "completed_at"
  ],
  "fields": [
   {
@@ -33,10 +45,25 @@
    "label": "Student ID"
   },
   {
+   "fieldname": "img_url",
+   "fieldtype": "Data",
+   "label": "Image URL"
+  },
+  {
    "fieldname": "status",
    "fieldtype": "Select",
    "label": "Status",
    "options": "Pending\nProcessing\nCompleted\nFailed"
+  },
+  {
+   "fieldname": "result_status",
+   "fieldtype": "Select",
+   "label": "Result Status",
+   "options": "Pending\nSuccess - Original\nSuccess - Flagged\nFailed",
+   "default": "Pending",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "Overall feedback analysis result status"
   },
   {
    "default": "now",
@@ -45,14 +72,85 @@
    "label": "Created At"
   },
   {
-   "fieldname": "img_url",
-   "fieldtype": "Data",
-   "label": "Image URL"
-  },
-  {
    "fieldname": "grade",
    "fieldtype": "Float",
    "label": "Grade"
+  },
+  {
+   "fieldname": "plagiarism_section",
+   "fieldtype": "Section Break",
+   "label": "Plagiarism Detection Results"
+  },
+  {
+   "fieldname": "plagiarism_status",
+   "fieldtype": "Select",
+   "label": "Plagiarism Status",
+   "options": "Not Checked\nOriginal\nFlagged - Exact Match\nFlagged - Near Duplicate\nFlagged - Semantic Match\nFlagged - AI Generated\nFlagged - Peer Plagiarism\nFlagged - Self Plagiarism\nResubmission Allowed\nError",
+   "default": "Not Checked",
+   "in_list_view": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "is_plagiarized",
+   "fieldtype": "Check",
+   "label": "Is Plagiarized",
+   "default": 0,
+   "read_only": 1
+  },
+  {
+   "fieldname": "match_type",
+   "fieldtype": "Select",
+   "label": "Match Type",
+   "options": "\noriginal\nexact_duplicate\nnear_duplicate\nsemantic_match\nai_generated\nresubmission_allowed",
+   "read_only": 1
+  },
+  {
+   "fieldname": "plagiarism_source",
+   "fieldtype": "Select",
+   "label": "Plagiarism Source",
+   "options": "\nnone\npeer\npeer_collusion\nself_cross_assignment\nself_late_resubmission\nreference\nai_generated\nstock_image",
+   "read_only": 1
+  },
+  {
+   "fieldname": "similarity_score",
+   "fieldtype": "Percent",
+   "label": "Similarity Score",
+   "read_only": 1
+  },
+  {
+   "fieldname": "similar_sources",
+   "fieldtype": "Data",
+   "label": "Similar Sources"
+  },
+  {
+   "fieldname": "ai_detection_section",
+   "fieldtype": "Section Break",
+   "label": "AI Detection Results"
+  },
+  {
+   "fieldname": "is_ai_generated",
+   "fieldtype": "Check",
+   "label": "Is AI Generated",
+   "default": 0,
+   "read_only": 1
+  },
+  {
+   "fieldname": "ai_detection_source",
+   "fieldtype": "Data",
+   "label": "AI Detection Source",
+   "description": "e.g., DALL-E, Midjourney, Stable Diffusion",
+   "read_only": 1
+  },
+  {
+   "fieldname": "ai_confidence",
+   "fieldtype": "Percent",
+   "label": "AI Detection Confidence",
+   "read_only": 1
+  },
+  {
+   "fieldname": "feedback_section",
+   "fieldtype": "Section Break",
+   "label": "Feedback"
   },
   {
    "fieldname": "plagiarism_result",
@@ -78,11 +176,6 @@
    "fieldname": "completed_at",
    "fieldtype": "Datetime",
    "label": "Completed_at"
-  },
-  {
-   "fieldname": "similar_sources",
-   "fieldtype": "Data",
-   "label": "Similar Sources"
   }
  ],
  "index_web_pages_for_search": 1,

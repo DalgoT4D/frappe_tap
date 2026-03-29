@@ -19,7 +19,7 @@
   "max_file_size",
   "max_score",
   "reference_material_section",
-  "reference_image",
+  "reference_images",
   "rag_settings_section",
   "enable_auto_feedback",
   "feedback_prompt",
@@ -85,9 +85,10 @@
   },
   {
    "description": "Upload reference image for students to follow",
-   "fieldname": "reference_image",
-   "fieldtype": "Attach",
-   "label": "Reference Image"
+   "fieldname": "reference_images",
+   "fieldtype": "Table",
+   "label": "Reference Images",
+   "options": "Reference_Image_Item"
   },
   {
    "fieldname": "reference_material_section",
