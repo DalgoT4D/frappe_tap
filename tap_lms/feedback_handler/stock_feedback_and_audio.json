@@ -1,0 +1,182 @@
+{
+    "English": [
+        {
+            "message_type": "invalid_submission_ai",
+            "translated_feedback": "Hi Champ, I found you have sent AI created work. Please send your work. I'm excited to see what you made.",
+            "audio_feedback_url": "https://storage.googleapis.com/tap-lms-submissions/audio_feedback/invalid_submission_ai_english.mp3"
+        },
+        {
+            "message_type": "invalid_submission_peer_plagiarism",
+            "translated_feedback": "Hi Champ, I found you have sent another student's work. Please send your work. No cheating this time. Excited to see what you made.",
+            "audio_feedback_url": "https://storage.googleapis.com/tap-lms-submissions/audio_feedback/invalid_submission_peer_plagiarism_english.mp3"
+        },
+        {
+            "message_type": "invalid_submission_self_plagiarism",
+            "translated_feedback": "Hi Champ, I found you have sent the same work again. Please resend the final work. Excited to see what you made.",
+            "audio_feedback_url": "https://storage.googleapis.com/tap-lms-submissions/audio_feedback/invalid_submission_self_plagiarism_english.mp3"
+        },
+        {
+            "message_type": "invalid_submission_reference_plagiarism",
+            "translated_feedback": "Hi Champ, I found you have sent work that closely matches reference materials. Please submit your own original work. I'm excited to see your unique creation!",
+            "audio_feedback_url": "https://storage.googleapis.com/tap-lms-submissions/audio_feedback/invalid_submission_reference_plagiarism_english.mp3"
+        },
+        {
+            "message_type": "invalid_submission_wrong_work",
+            "translated_feedback": "Hi Champ, I see you have sent the wrong work. Please resend the correct work. I'm excited to see what you made!",
+            "audio_feedback_url": "https://storage.googleapis.com/tap-lms-submissions/audio_feedback/invalid_submission_wrong_work_english.mp3"
+        },
+        {
+            "message_type": "resend_technical_issue",
+            "translated_feedback": "Oh No. There is some problem from my side. Can you please resend your work.",
+            "audio_feedback_url": "https://storage.googleapis.com/tap-lms-submissions/audio_feedback/resend_technical_issue_english.mp3"
+        },
+        {
+            "message_type": "resend_unclear_photo",
+            "translated_feedback": "Hi Champ , I couldn’t review your work because the photo was either a bit unclear or not of today’s activity. No worries; please send it again!Pro tip: Take the photo in good light and show your full work. I’m excited to see what you made. You can do this!",
+            "audio_feedback_url": "https://storage.googleapis.com/tap-lms-submissions/audio_feedback/resend_unclear_photo_english.mp3"
+        }
+    ],
+    "Hindi": [
+        {
+            "message_type": "invalid_submission_ai",
+            "translated_feedback": "नमस्ते चैंप, लगता है आपने AI से बना हुआ काम भेजा है। कृपया अपना खुद का काम भेजें। मैं यह देखने के लिए उत्साहित हूँ कि आपने क्या बनाया है।",
+            "audio_feedback_url": "https://storage.googleapis.com/tap-lms-submissions/audio_feedback/invalid_submission_ai_hindi.mp3"
+        },
+        {
+            "message_type": "invalid_submission_peer_plagiarism",
+            "translated_feedback": "नमस्ते चैंप, लगता है आपने किसी और विद्यार्थी का काम भेज दिया है। कृपया अपना खुद का काम भेजें। इस बार ईमानदारी से करें। मैं यह देखने के लिए उत्साहित हूँ कि आपने क्या बनाया है।",
+            "audio_feedback_url": "https://storage.googleapis.com/tap-lms-submissions/audio_feedback/invalid_submission_peer_plagiarism_hindi.mp3"
+        },
+        {
+            "message_type": "invalid_submission_self_plagiarism",
+            "translated_feedback": "नमस्ते चैंप, लगता है आपने वही काम फिर से भेज दिया है। कृपया अपना अंतिम काम दोबारा भेजें। मैं यह देखने के लिए उत्साहित हूँ कि आपने क्या बनाया है।",
+            "audio_feedback_url": "https://storage.googleapis.com/tap-lms-submissions/audio_feedback/invalid_submission_self_plagiarism_hindi.mp3"
+        },
+        {
+    "message_type": "invalid_submission_reference_plagiarism",
+    "translated_feedback": "हाय चैंप, मैंने देखा कि तुमने जो काम भेजा है वह रेफरेंस से बहुत मिलता है। कृपया अपना खुद का काम भेजो। मैं तुम्हारा अलग और खास काम देखने के लिए उत्साहित हूँ!",
+    "audio_feedback_url": "https://storage.googleapis.com/tap-lms-submissions/audio_feedback/invalid_submission_reference_plagiarism_hindi.mp3"
+    },
+        {
+            "message_type": "invalid_submission_wrong_work",
+            "translated_feedback": "नमस्ते चैंप, लगता है आपने गलत काम भेज दिया है। कृपया सही काम दोबारा भेजें। मैं यह देखने के लिए उत्साहित हूँ कि आपने क्या बनाया है।",
+            "audio_feedback_url": "https://storage.googleapis.com/tap-lms-submissions/audio_feedback/invalid_submission_wrong_work_hindi.mp3"
+        },
+        {
+            "message_type": "resend_technical_issue",
+            "translated_feedback": "अरे नहीं, लगता है मेरी तरफ़ से कुछ समस्या हो गई है। क्या आप कृपया अपना काम फिर से भेज सकते हैं?",
+            "audio_feedback_url": "https://storage.googleapis.com/tap-lms-submissions/audio_feedback/resend_technical_issue_hindi.mp3"
+        },
+        {
+            "message_type": "resend_unclear_photo",
+            "translated_feedback": "नमस्ते चैंप, मैं आपका काम ठीक से देख नहीं पाया, क्योंकि फोटो साफ़ नहीं थी या आज की एक्टिविटी की नहीं थी। कोई बात नहीं, कृपया इसे फिर से भेज दें।छोटी सलाह: अच्छी रोशनी में फोटो लें और अपना पूरा काम दिखाएँ। मैं यह देखने के लिए उत्साहित हूँ कि आपने क्या बनाया है। आप यह कर सकते हैं।",
+            "audio_feedback_url": "https://storage.googleapis.com/tap-lms-submissions/audio_feedback/resend_unclear_photo_hindi.mp3"
+        }
+    ],
+    "Marathi": [
+        {
+            "message_type": "invalid_submission_ai",
+            "translated_feedback": "नमस्कार चॅम्प, मला असे समजले आहे की तुम्ही एआय(AI)-निर्मित काम पाठवले आहे. कृपया तुमचे काम पाठवा. तुम्ही काय तयार केले आहे हे पाहण्यासाठी मी उत्सुक आहे.",
+            "audio_feedback_url": "https://storage.googleapis.com/tap-lms-submissions/audio_feedback/invalid_submission_ai_marathi.mp3"
+        },
+        {
+            "message_type": "invalid_submission_peer_plagiarism",
+            "translated_feedback": "नमस्कार चॅम्प, मला समजले आहे की तुम्ही दुसऱ्या विद्यार्थ्याचे काम पाठवले आहे. कृपया तुमचे काम पाठवा. यावेळी कोणतीही फसवणूक नको. तुम्ही काय बनवले आहे हे पाहण्यासाठी मी उत्सुक आहे.",
+            "audio_feedback_url": "https://storage.googleapis.com/tap-lms-submissions/audio_feedback/invalid_submission_peer_plagiarism_marathi.mp3"
+        },
+        {
+            "message_type": "invalid_submission_self_plagiarism",
+            "translated_feedback": "नमस्कार चॅम्प, मला समजले आहे की तुम्ही पुन्हा तेच काम पाठवले आहे. कृपया अंतिम काम पुन्हा पाठव. तुम्ही काय बनवले आहे हे पाहण्यासाठी मी उत्सुक आहे.",
+            "audio_feedback_url": "https://storage.googleapis.com/tap-lms-submissions/audio_feedback/invalid_submission_self_plagiarism_marathi.mp3"
+        },
+        {
+"message_type": "invalid_submission_reference_plagiarism",
+"translated_feedback": "हाय चॅम्प, मी पाहिलं की तू पाठवलेलं काम रेफरन्ससारखं खूप दिसतं आहे. कृपया तुझं स्वतःचं काम पाठव. तुझं वेगळं आणि खास काम पाहायला मला खूप उत्सुकता आहे!",
+"audio_feedback_url": "https://storage.googleapis.com/tap-lms-submissions/audio_feedback/invalid_submission_reference_plagiarism_marathi.mp3"
+},
+        {
+            "message_type": "invalid_submission_wrong_work",
+            "translated_feedback": "नमस्कार चॅम्प, माझ्या लक्षात आले आहे की तुम्ही चुकीचे काम पाठवले आहे. कृपया योग्य काम पुन्हा पाठवा. तुम्ही काय बनवले आहे हे पाहण्यासाठी मी उत्सुक आहे!",
+            "audio_feedback_url": "https://storage.googleapis.com/tap-lms-submissions/audio_feedback/invalid_submission_wrong_work_marathi.mp3"
+        },
+        {
+            "message_type": "resend_technical_issue",
+            "translated_feedback": "अरे नाही. माझ्या बाजूने काहीतरी अडचण आहे. कृपया तुम्ही तुमचे काम पुन्हा पाठवू शकाल का?",
+            "audio_feedback_url": "https://storage.googleapis.com/tap-lms-submissions/audio_feedback/resend_technical_issue_marathi.mp3"
+        },
+        {
+            "message_type": "resend_unclear_photo",
+            "translated_feedback": "नमस्कार चॅम्प, मी तुमचे काम तपासू शकलो नाही कारण फोटो एकतर थोडा अस्पष्ट होता किंवा तो आजच्या अॅक्टिविटीचा नव्हता. काळजी करू नका; कृपया तुमचे काम पुन्हा पाठव!एक महत्त्वाची सूचना: चांगल्या प्रकाशात फोटो काढा आणि तुमचे संपूर्ण काम दाखव. तुम्ही काय बनवले आहे हे पाहण्यासाठी मी उत्सुक आहे. तुम्ही हे करू शकता!",
+            "audio_feedback_url": "https://storage.googleapis.com/tap-lms-submissions/audio_feedback/resend_unclear_photo_marathi.mp3"
+        }
+    ],
+    "Punjabi": [
+        {
+            "message_type": "invalid_submission_ai",
+            "translated_feedback": "ਹਾਇ ਚੈਂਪ, ਮੈਂ ਦੇਖਿਆ ਕਿ ਤੁਸੀਂ AI ਨਾਲ ਬਣਾਇਆ ਕੰਮ ਭੇਜਿਆ ਹੈ। ਕਿਰਪਾ ਕਰਕੇ ਆਪਣਾ ਮੂਲ ਕੰਮ ਭੇਜੋ। ਮੈਂ ਦੇਖਣ ਲਈ ਉਤਸੁਕ ਹਾਂ ਕਿ ਤੁਸੀਂ ਕੀ ਬਣਾਇਆ ਹੈ।",
+            "audio_feedback_url": "https://storage.googleapis.com/tap-lms-submissions/audio_feedback/invalid_submission_ai_punjabi.mp3"
+        },
+        {
+            "message_type": "invalid_submission_peer_plagiarism",
+            "translated_feedback": "ਹੈਲੋ ਚੈਂਪ, ਮੈਂ ਦੇਖਿਆ ਕਿ ਤੁਸੀਂ ਕਿਸੇ ਹੋਰ ਵਿਦਿਆਰਥੀ ਦਾ ਕੰਮ ਭੇਜਿਆ ਹੈ। ਕਿਰਪਾ ਕਰਕੇ ਆਪਣਾ ਕੰਮ ਭੇਜੋ। ਇਸ ਵਾਰੀ ਧੋਖਾਧੜੀ ਨਾ ਕਰੋ। ਦੇਖਣ ਲਈ ਉਤਸ਼ਾਹਿਤ ਹਾਂ ਕਿ ਤੁਸੀਂ ਕੀ ਬਣਾਇਆ ਹੈ।",
+            "audio_feedback_url": "https://storage.googleapis.com/tap-lms-submissions/audio_feedback/invalid_submission_peer_plagiarism_punjabi.mp3"
+        },
+        {
+            "message_type": "invalid_submission_self_plagiarism",
+            "translated_feedback": "ਹਾਇ ਚੈੰਪ, ਮੈਨੂੰ ਲੱਗਦਾ ਹੈ ਕਿ ਤੁਸੀਂ ਇੱਕੋ ਕੰਮ ਮੁੜ ਭੇਜਿਆ ਹੈ। ਕਿਰਪਾ ਕਰਕੇ ਅੰਤੀਮ ਕੰਮ ਫਿਰ ਭੇਜੋ। ਇਹ ਦੇਖਣ ਲਈ ਉਤਸ਼ਾਹਤ ਹਾਂ ਕਿ ਤੁਸੀਂ ਕੀ ਬਣਾਇਆ ਹੈ।",
+            "audio_feedback_url": "https://storage.googleapis.com/tap-lms-submissions/audio_feedback/invalid_submission_self_plagiarism_punjabi.mp3"
+        },
+        {
+"message_type": "invalid_submission_reference_plagiarism",
+"translated_feedback": "ਹਾਇ ਚੈਂਪ, ਮੈਂ ਵੇਖਿਆ ਕਿ ਤੂੰ ਭੇਜਿਆ ਹੋਇਆ ਕੰਮ ਰੈਫਰੈਂਸ ਵਰਗਾ ਲੱਗਦਾ ਹੈ। ਕਿਰਪਾ ਕਰਕੇ ਆਪਣਾ ਆਪਣਾ ਕੰਮ ਭੇਜ। ਮੈਂ ਤੇਰਾ ਵੱਖਰਾ ਤੇ ਖਾਸ ਕੰਮ ਦੇਖਣ ਲਈ ਬਹੁਤ ਉਤਸ਼ਾਹਿਤ ਹਾਂ!",
+"audio_feedback_url": "https://storage.googleapis.com/tap-lms-submissions/audio_feedback/invalid_submission_reference_plagiarism_punjabi.mp3"
+},
+        {
+            "message_type": "invalid_submission_wrong_work",
+            "translated_feedback": "ਹੈਲੋ ਚੈਂਪ, ਮੈਂ ਦੇਖਦਾ ਹਾਂ ਕਿ ਤੁਸੀਂ ਗਲਤ ਕੰਮ ਭੇਜਿਆ ਹੈ। ਕਿਰਪਾ ਕਰਕੇ ਸਹੀ ਕੰਮ ਮੁੜ ਭੇਜੋ। ਮੈਂ ਦੇਖਣ ਲਈ ਉਤਸਾਹਿਤ ਹਾਂ ਕਿ ਤੁਸੀਂ ਕੀ ਬਣਾਇਆ ਹੈ!",
+            "audio_feedback_url": "https://storage.googleapis.com/tap-lms-submissions/audio_feedback/invalid_submission_wrong_work_punjabi.mp3"
+        },
+        {
+            "message_type": "resend_technical_issue",
+            "translated_feedback": "ਓ ਨਾਹ। ਮੇਰੀ ਪਾਸੋਂ ਕੁਝ ਸਮੱਸਿਆ ਆਈ ਹੈ। ਕੀ ਤੁਸੀਂ ਕਿਰਪਾ ਕਰਕੇ ਆਪਣਾ ਕੰਮ ਮੁੜ ਭੇਜ ਸਕਦੇ ਹੋ?",
+            "audio_feedback_url": "https://storage.googleapis.com/tap-lms-submissions/audio_feedback/resend_technical_issue_punjabi.mp3"
+        },
+        {
+            "message_type": "resend_unclear_photo",
+            "translated_feedback": "ਹੈਲੋ ਚੈਂਪ, ਮੈਂ ਤੇਰਾ ਕੰਮ ਸਮੀਖਿਆ ਨਹੀਂ ਕਰ ਸਕਿਆ ਕਿਉਂਕਿ ਫੋਟੋ ਥੋੜ੍ਹੀ ਧੁੰਦਲੀ ਸੀ ਜਾਂ ਅੱਜ ਦੀ ਗਤੀਵਿਧੀ ਦੀ ਨਹੀਂ ਸੀ। ਕੋਈ ਗੱਲ ਨਹੀਂ; ਕਿਰਪਾ ਕਰਕੇ ਦੁਬਾਰਾ ਭੇਜ ਦਿਓ!ਪ੍ਰੋ ਟਿਪ: ਫੋਟੋ ਚੰਗੀ ਰੌਸ਼ਨੀ ਵਿੱਚ ਲਵੋ ਅਤੇ ਆਪਣਾ ਪੂਰਾ ਕੰਮ ਦਿਖਾਓ। ਮੈਂ ਵੇਖਣ ਲਈ ਉਤਸੁਕ ਹਾਂ ਕਿ ਤੂੰ ਕੀ ਬਣਾਇਆ ਹੈ। ਤੂੰ ਇਹ ਕਰ ਸਕਦਾ ਹੈ!",
+            "audio_feedback_url": "https://storage.googleapis.com/tap-lms-submissions/audio_feedback/resend_unclear_photo_punjabi.mp3"
+        }
+    ],
+    "Kannada": [
+        {
+            "message_type": "invalid_submission_ai",
+            "translated_feedback": "ಹಾಯ್ ಚಾಂಪ್, ನೀವು AI ರಚಿಸಿದ ಕೆಲಸವನ್ನು ಕಳುಹಿಸಿದ್ದೀರಿ ಎಂದು ನಾನು ಕಂಡುಕೊಂಡೆ. ದಯವಿಟ್ಟು ನಿಮ್ಮ ಕೆಲಸವನ್ನು ಕಳುಹಿಸಿ. ನೀವು ಏನು ಮಾಡಿದ್ದೀರಿ ಎಂದು ನೋಡಲು ನಾನು ಉತ್ಸುಕನಾಗಿದ್ದೇನೆ.",
+            "audio_feedback_url": "https://storage.googleapis.com/tap-lms-submissions/audio_feedback/invalid_submission_ai_kannada.mp3"
+        },
+        {
+            "message_type": "invalid_submission_peer_plagiarism",
+            "translated_feedback": "ಹಾಯ್ ಚಾಂಪ್, ನೀವು ಇನ್ನೊಬ್ಬ ವಿದ್ಯಾರ್ಥಿಯ ಕೆಲಸವನ್ನು ಕಳುಹಿಸಿದ್ದೀರಿ ಎಂದು ನಾನು ಕಂಡುಕೊಂಡೆ. ದಯವಿಟ್ಟು ನಿಮ್ಮ ಕೆಲಸವನ್ನು ಕಳುಹಿಸಿ. ಈ ಬಾರಿ ಯಾವುದೇ ಮೋಸವಿಲ್ಲ. ನೀವು ಏನು ಮಾಡಿದ್ದೀರಿ ಎಂದು ನೋಡಲು ಉತ್ಸುಕನಾಗಿದ್ದೇನೆ.",
+            "audio_feedback_url": "https://storage.googleapis.com/tap-lms-submissions/audio_feedback/invalid_submission_peer_plagiarism_kannada.mp3"
+        },
+        {
+            "message_type": "invalid_submission_self_plagiarism",
+            "translated_feedback": "ಹಾಯ್ ಚಾಂಪ್, ನೀವು ಮತ್ತೆ ಅದೇ ಕೆಲಸವನ್ನು ಕಳುಹಿಸಿದ್ದೀರಿ ಎಂದು ನಾನು ಕಂಡುಕೊಂಡೆ. ದಯವಿಟ್ಟು ಅಂತಿಮ ಕೆಲಸವನ್ನು ಮತ್ತೆ ಕಳುಹಿಸಿ. ನೀವು ಏನು ಮಾಡಿದ್ದೀರಿ ಎಂದು ನೋಡಲು ಉತ್ಸುಕನಾಗಿದ್ದೇನೆ.",
+            "audio_feedback_url": "https://storage.googleapis.com/tap-lms-submissions/audio_feedback/invalid_submission_self_plagiarism_kannada.mp3"
+        },
+        {
+"message_type": "invalid_submission_reference_plagiarism",
+"translated_feedback": "ಹಾಯ್ ಚಾಂಪ್, ನೀನು ಕಳುಹಿಸಿದ ಕೆಲಸ ರೆಫರೆನ್ಸ್ ತರ ಕಾಣುತ್ತಿದೆ. ದಯವಿಟ್ಟು ನಿನ್ನದೇ ಕೆಲಸವನ್ನು ಕಳುಹಿಸು. ನಿನ್ನ ವಿಭಿನ್ನ ಮತ್ತು ವಿಶೇಷ ಕೆಲಸ ನೋಡಲು ನನಗೆ ತುಂಬ ಸಂತೋಷವಾಗಿದೆ!",
+"audio_feedback_url": "https://storage.googleapis.com/tap-lms-submissions/audio_feedback/invalid_submission_reference_plagiarism_kannada.mp3"
+},
+        {
+            "message_type": "invalid_submission_wrong_work",
+            "translated_feedback": "ಹಾಯ್ ಚಾಂಪ್, ನೀವು ತಪ್ಪು ಕೆಲಸವನ್ನು ಕಳುಹಿಸಿದ್ದೀರಿ ಎಂದು ನಾನು ನೋಡುತ್ತಿದ್ದೇನೆ. ದಯವಿಟ್ಟು ಸರಿಯಾದ ಕೆಲಸವನ್ನು ಮತ್ತೆ ಕಳುಹಿಸಿ. ನೀವು ಏನು ಮಾಡಿದ್ದೀರಿ ಎಂದು ನೋಡಲು ನಾನು ಉತ್ಸುಕನಾಗಿದ್ದೇನೆ!",
+            "audio_feedback_url": "https://storage.googleapis.com/tap-lms-submissions/audio_feedback/invalid_submission_wrong_work_kannada.mp3"
+        },
+        {
+            "message_type": "resend_technical_issue",
+            "translated_feedback": "ಓಹ್ ಇಲ್ಲ. ನನ್ನ ಕಡೆಯಿಂದ ಏನೋ ಸಮಸ್ಯೆ ಇದೆ. ದಯವಿಟ್ಟು ನಿಮ್ಮ ಕೆಲಸವನ್ನು ಮತ್ತೆ ಕಳುಹಿಸಬಹುದೇ?",
+            "audio_feedback_url": "https://storage.googleapis.com/tap-lms-submissions/audio_feedback/resend_technical_issue_kannada.mp3"
+        }
+    ]
+}

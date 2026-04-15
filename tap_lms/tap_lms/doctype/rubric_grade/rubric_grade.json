@@ -1,0 +1,89 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "format:{grade_value}-{skill_name}-{course_vertical}-{course_level}",
+ "creation": "2026-01-12 00:00:00.000000",
+ "default_view": "List",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "rubric_name",
+  "grade_value",
+  "grade_name",
+  "grade_description",
+  "skill_name",
+  "course_vertical",
+  "course_level"
+ ],
+ "fields": [
+  {
+   "fieldname": "rubric_name",
+   "fieldtype": "Data",
+   "label": "Rubric Name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "grade_value",
+   "fieldtype": "Int",
+   "label": "Grade Value",
+   "reqd": 1
+  },
+  {
+   "fieldname": "grade_name",
+   "fieldtype": "Data",
+   "label": "Grade Name",
+   "reqd": 1
+  },
+  {
+   "fieldname": "grade_description",
+   "fieldtype": "Text",
+   "label": "Grade Description"
+  },
+  {
+   "fieldname": "skill_name",
+   "fieldtype": "Link",
+   "label": "Skill Name",
+   "options": "Skill"
+  },
+  {
+   "fieldname": "course_vertical",
+   "fieldtype": "Link",
+   "label": "Course Vertical",
+   "options": "Course Verticals"
+  },
+  {
+   "fieldname": "course_level",
+   "fieldtype": "Link",
+   "label": "Course Level",
+   "options": "Course Level"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-01-12 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "TAP LMS",
+ "name": "Rubric Grade",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}
+

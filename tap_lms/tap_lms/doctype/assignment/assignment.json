@@ -1,5 +1,6 @@
 {
  "actions": [],
+ "allow_import": 1,
  "allow_rename": 1,
  "autoname": "format:{assignment_name}-{difficulty_tier}",
  "creation": "2024-10-17 16:47:42.975464",
@@ -19,13 +20,15 @@
   "max_file_size",
   "max_score",
   "reference_material_section",
-  "reference_image",
+  "reference_images",
   "rag_settings_section",
   "enable_auto_feedback",
   "feedback_prompt",
   "assignment_translations",
   "estimated_duration",
-  "difficulty_tier"
+  "difficulty_tier",
+  "activity_type",
+  "rubric_grades"
  ],
  "fields": [
   {
@@ -85,9 +88,10 @@
   },
   {
    "description": "Upload reference image for students to follow",
-   "fieldname": "reference_image",
-   "fieldtype": "Attach",
-   "label": "Reference Image"
+   "fieldname": "reference_images",
+   "fieldtype": "Table",
+   "label": "Reference Images",
+   "options": "Reference_Image_Item"
   },
   {
    "fieldname": "reference_material_section",
@@ -128,6 +132,18 @@
    "fieldtype": "Select",
    "label": "Difficulty Tier",
    "options": "Remedial\nBasic\nIntermediate\nAdvanced"
+  },
+  {
+   "fieldname": "activity_type",
+   "fieldtype": "Select",
+   "label": "Activity Type",
+   "options": "Regular\nChallenge"
+  },
+  {
+   "fieldname": "rubric_grades",
+   "fieldtype": "Table",
+   "label": "Assessment Rubrics",
+   "options": "Rubric Grade"
   }
  ],
  "index_web_pages_for_search": 1,
