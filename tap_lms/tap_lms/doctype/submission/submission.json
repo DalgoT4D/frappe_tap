@@ -41,7 +41,11 @@
   "rubric_evaluations",
   "plagiarism_result",
   "completed_at",
-  "generated_feedback"
+  "generated_feedback",
+  "program_enrollment",
+  "week",
+  "escalation_step_at_submit",
+  "is_primary"
  ],
  "fields": [
   {
@@ -242,6 +246,28 @@
    "fieldname": "completed_at",
    "fieldtype": "Datetime",
    "label": "Completed At"
+  },
+  {
+   "fieldname": "program_enrollment",
+   "fieldtype": "Link",
+   "label": "Program Enrollment",
+   "options": "ProgramEnrollment"
+  },
+  {
+   "fieldname": "week",
+   "fieldtype": "Int",
+   "label": "Week"
+  },
+  {
+   "fieldname": "escalation_step_at_submit",
+   "fieldtype": "Int",
+   "label": "Escalation Step At Submit"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_primary",
+   "fieldtype": "Check",
+   "label": "Is Primary"
   }
  ],
  "index_web_pages_for_search": 1,
