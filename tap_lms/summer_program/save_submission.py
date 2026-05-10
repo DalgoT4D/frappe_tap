@@ -31,7 +31,7 @@ from tap_lms.summer_program.state_machine import (
 URL_SUBMISSION_TYPES = {"audio", "image", "video"}
 
 
-@frappe.whitelist(allow_guest=False)
+@frappe.whitelist(allow_guest=True)
 def save_submission(student_id, submission, week=None, assignment_id=None):
     """
     Atomic idempotent submission handler.
