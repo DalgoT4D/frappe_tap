@@ -34,11 +34,11 @@ URL_SUBMISSION_TYPES = {"audio", "image", "video"}
 # TEMP_SUBMISSION_QUEUE_DEBUG_START
 def _debug_log(message, **context):
     try:
-        frappe.logger("submission").info(
+        frappe.logger("submission").error(
             f"[TEMP_SUBMISSION_QUEUE_DEBUG] {message} | {json.dumps(context, default=str)}"
         )
     except Exception:
-        frappe.logger("submission").info(f"[TEMP_SUBMISSION_QUEUE_DEBUG] {message}")
+        frappe.logger("submission").error(f"[TEMP_SUBMISSION_QUEUE_DEBUG] {message}")
 # TEMP_SUBMISSION_QUEUE_DEBUG_END
 
 
