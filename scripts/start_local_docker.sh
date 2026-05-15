@@ -21,10 +21,11 @@ POSTGRES_USER="${POSTGRES_USER:-postgres}"
 POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-postgres}"
 BUSINESS_THEME_REPO="${BUSINESS_THEME_REPO:-https://github.com/Midocean-Technologies/business_theme_v14.git}"
 
-docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --build postgres redis-cache redis-queue dev
-docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T -u root dev chown -R frappe:frappe /home/frappe/frappe-bench
+podman-compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --build postgres redis-cache redis-queue rabbitmq dev
+podman-compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T -u root dev chown -R frappe:frappe /home/frappe/frappe-bench
+podman-compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T -u root dev chmod -R a+rX /workspace/frappe_tap
 
-docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T dev bash -lc '
+podman-compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T dev bash -lc '
 set -euo pipefail
 
 SITE_NAME="${SITE_NAME:-tap_lms.localhost}"
@@ -37,7 +38,7 @@ BUSINESS_THEME_REPO="${BUSINESS_THEME_REPO:-https://github.com/Midocean-Technolo
 if [[ ! -d /home/frappe/frappe-bench/apps/frappe ]]; then
   if [[ -n "$(find /home/frappe/frappe-bench -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
     echo "/home/frappe/frappe-bench is not empty but Frappe is missing."
-    echo "If this is a broken local setup, reset it with: docker compose --env-file .env -f docker/local/docker-compose.yml down -v"
+    echo "If this is a broken local setup, reset it with: podman-compose --env-file .env -f docker/local/docker-compose.yml down -v"
     exit 1
   fi
   cd /home/frappe
@@ -67,11 +68,7 @@ if [[ ! -L apps/tap_lms ]]; then
   exit 1
 fi
 
-if ! grep -qx "tap_lms" sites/apps.txt; then
-  echo "tap_lms" >> sites/apps.txt
-fi
-
-./env/bin/python -m pip install -q -e apps/tap_lms
+./env/bin/python -m pip install -q -e /workspace/frappe_tap
 bench build --app tap_lms
 
 if [[ ! -d apps/business_theme_v14 ]]; then
@@ -146,6 +143,6 @@ Admin user: Administrator
 Admin password: ${ADMIN_PASSWORD}
 
 Start the web server:
-  docker compose --env-file env.local -f docker/local/docker-compose.yml exec dev bash -lc "cd /home/frappe/frappe-bench && bench start"
+  podman-compose --env-file env.local -f docker/local/docker-compose.yml exec dev bash -lc "cd /home/frappe/frappe-bench && bench start"
 
 EOF
