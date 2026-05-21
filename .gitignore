@@ -10,3 +10,4 @@ Postman/
 .env.*
 !.env.example
 env.local
+*.bak

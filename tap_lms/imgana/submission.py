@@ -210,7 +210,6 @@ def upload_audio_to_gcs(local_audio_path: str, submission_id: str, original_file
         frappe.logger("submission").error(f"Failed to upload audio to GCS: {str(e)}")
         raise frappe.ValidationError(f"Failed to upload audio to GCS: {str(e)}")
 
-
 def upload_audio_url_to_gcs(audio_url: str, submission_id: str) -> str:
     """
     Download audio from an external URL and upload to GCS.
@@ -356,12 +355,16 @@ def upload_video_to_gcs(video_url: str, submission_id: str) -> str:
         frappe.logger("submission").error(f"Failed to upload video to GCS: {str(e)}")
         raise frappe.ValidationError(f"Failed to upload video to GCS: {str(e)}")
 
-
 def upload_to_gcs(submission_url, submission_name):
     """
     Detect media type (image or video) from the URL extension and upload to GCS.
     Returns the public URL.
     """
+
+    # return submission url if in local emulated env
+    if (os.environ.get("STUB_MODE")):
+        return submission_url
+
     # Supported image, video, and audio extensions
     image_exts = {'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg'}
     video_exts = {'mp4', 'mov', 'avi', 'mkv', 'webm', 'flv', 'wmv'}

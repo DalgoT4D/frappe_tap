@@ -1,0 +1,22 @@
+# tap_plg/docker/tap_plg_stub/Dockerfile
+#
+# Minimal image — replaces both tap_plg_worker AND tap_plg_api.
+# ~80 MB vs ~2 GB for the full image. Builds in ~30 seconds.
+# No CLIP, no FAISS, no PostgreSQL, no CUDA.
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir \
+    aio-pika==9.5.7 \
+    fastapi==0.111.0 \
+    uvicorn==0.30.1
+
+COPY app_stub.py .
+
+ENV PYTHONUNBUFFERED=1
+
+EXPOSE 8080
+
+CMD ["python", "app_stub.py"]
