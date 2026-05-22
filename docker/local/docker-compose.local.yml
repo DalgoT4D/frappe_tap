@@ -22,9 +22,9 @@ name: tap_lms_local
 #   tap_plg_stub, llm-stub, glific-stub
 
 services:
+  # ── Frappe dev container (tap_lms) ──────────────────────────
 
-  # ── Frappe dev container (tap_lms + rag_service) ──────────────────────────
-  dev:
+  dev-lms:
     user: "${UID:-1000}:${GID:-1000}"
     build:
       context: ../..
@@ -58,6 +58,7 @@ services:
     volumes:
       - bench-data:/home/frappe/frappe-bench
       - ../..:/workspace/frappe_tap:cached,z
+      - ../../../rag_service:/workspace/rag_service:cached,z
     working_dir: /home/frappe
 
   # ── PostgreSQL (Frappe) ────────────────────────────────────────────────────

@@ -1,3 +1,4 @@
 # frappe -- https://github.com/frappe/frappe is installed via 'bench init'
 pika
 google-cloud-storage
+elevenlabs

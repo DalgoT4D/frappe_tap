@@ -16,7 +16,6 @@ set -euo pipefail
 #      GLIFIC_API_URL, GLIFIC_API_KEY
 #      LLM_PROVIDER, LLM_MODEL_NAME, LLM_API_KEY, LLM_BASE_URL
 #
-# Everything else is identical to the original script.
 # ─────────────────────────────────────────────────────────────────────────────
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$PWD}")" && pwd)"
@@ -41,9 +40,6 @@ POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-postgres}"
 BUSINESS_THEME_REPO="${BUSINESS_THEME_REPO:-https://github.com/Midocean-Technologies/business_theme_v14.git}"
 
 # ── Step 1: Start infrastructure + stubs ──────────────────────────────────────
-# Starts all services except the Frappe dev container.
-# tap_plg_stub handles both the RabbitMQ consumer and /health endpoint
-# in a single lightweight container — no CLIP model, no PostgreSQL needed.
 echo "Starting infrastructure and stub services..."
 podman-compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --build \
   postgres \
@@ -55,7 +51,6 @@ podman-compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --build \
   glific-stub
 
 # Wait for stubs to be accepting connections before starting the dev container.
-# Uses python3 TCP socket check — no curl dependency.
 echo "Waiting for stub services to be ready..."
 
 _wait_for_port() {
@@ -76,16 +71,18 @@ _wait_for_port "glific-stub"  "${GLIFIC_STUB_PORT:-4000}"
 _wait_for_port "llm-stub"     "${LLM_STUB_PORT:-8001}"
 _wait_for_port "tap_plg_stub" "${TAP_PLG_API_PORT:-8080}"
 
-# ── Step 2: Start Frappe dev container ────────────────────────────────────────
-echo "Starting Frappe dev container..."
-podman-compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --build dev
-# Give frappe ownership of the bench volume (needed on first run)
-podman-compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T -u root dev chown -R frappe:frappe /home/frappe/frappe-bench
-podman-compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T -u root dev chown -R frappe:frappe /workspace/frappe_tap/tap_lms/__pycache__ 2>/dev/null || true
-podman-compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T -u root dev chmod -R a+rX /workspace/frappe_tap
+# ── Step 2: Start Frappe LMS & RAG dev containers ─────────────────────────────
+echo "Starting Frappe LMS container..."
+podman-compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --build dev-lms
 
-# ── Step 3: Frappe bench setup ────────────────────────────────────────────────
-podman-compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T dev bash -lc '
+# ── FIX: TARGET 'dev-lms' EXPLICITLY INSTEAD OF THE OLD 'dev' VALUE ────────────
+echo "Aligning environment storage volume tracking permissions..."
+podman-compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T -u root dev-lms chown -R frappe:frappe /home/frappe/frappe-bench
+podman-compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T -u root dev-lms chown -R frappe:frappe /workspace/frappe_tap/tap_lms/__pycache__ 2>/dev/null || true
+podman-compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T -u root dev-lms chmod -R a+rX /workspace/frappe_tap
+
+# ── Step 3: Frappe bench setup (Targeting dev-lms specifically) ────────────────
+podman-compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T dev-lms bash -lc '
 set -euo pipefail
 
 SITE_NAME="${SITE_NAME:-tap_lms.localhost}"
@@ -123,18 +120,20 @@ if [[ ! -e apps/tap_lms ]]; then
   ln -s /workspace/frappe_tap apps/tap_lms
 fi
 
-if [[ ! -L apps/tap_lms ]]; then
-  echo "apps/tap_lms exists but is not a symlink to /workspace/frappe_tap."
-  echo "Move or remove it before rerunning setup if you want live local code mounted."
-  exit 1
+if [[ ! -e apps/rag_service ]]; then
+  ln -s /workspace/rag_service apps/rag_service
 fi
 
-./env/bin/python -m pip install -q -e /workspace/frappe_tap
-bench build --app tap_lms
+./env/bin/python -m pip install -q --upgrade pip setuptools wheel flit_core
+./env/bin/python -m pip install -q -e /workspace/frappe_tap --no-build-isolation
+./env/bin/python -m pip install -q -e /workspace/rag_service --no-deps --no-build-isolation
 
 if [[ ! -d apps/business_theme_v14 ]]; then
   bench get-app "$BUSINESS_THEME_REPO"
 fi
+
+bench build --app tap_lms
+bench build --app business_theme_v14
 
 if [[ ! -d "sites/$SITE_NAME" ]]; then
   bench new-site "$SITE_NAME" \
@@ -144,7 +143,9 @@ if [[ ! -d "sites/$SITE_NAME" ]]; then
     --db-root-username "$POSTGRES_USER" \
     --db-root-password "$POSTGRES_PASSWORD" \
     --admin-password "$ADMIN_PASSWORD" \
-    --install-app tap_lms
+    --install-app tap_lms \
+    --install-app business_theme_v14 \
+    --install-app rag_service
 else
   bench --site "$SITE_NAME" migrate
 fi
@@ -210,10 +211,26 @@ set_single_value "LLM Settings" api_key    "${LLM_API_KEY:-local-stub-key}"
 set_single_value "LLM Settings" base_url   "${LLM_BASE_URL:-http://llm-stub:8001}"
 set_single_value "LLM Settings" is_active  "1"
 
-bench --site "$SITE_NAME" clear-cache
-'
+echo "Seeding encrypted RAG Settings api_secret..."
+bench --site "\$SITE_NAME" execute frappe.db.set_value --args "[\"RAG Settings\", \"RAG Settings\", \"api_secret\", \"local-secret-key\"]"
 
-# Note: tap_plg_stub was already started in Step 1 — no Step 4 needed.
+echo "Seeding RAG Settings API Endpoints..."
+bench --site "\$SITE_NAME" execute frappe.db.set_value --args "[\"RAG Settings\", \"RAG Settings\", \"base_url\", \"http://localhost:8000\"]"
+bench --site "\$SITE_NAME" execute frappe.db.set_value --args "[\"RAG Settings\", \"RAG Settings\", \"assignment_context_endpoint\", \"/api/method/tap_lms.api.get_assignment_context\"]"
+bench --site "\$SITE_NAME" execute frappe.db.set_value --args "[\"RAG Settings\", \"RAG Settings\", \"student_context_endpoint\", \"/api/method/tap_lms.api.get_student_context\"]"
+
+echo "Creating an isolated environment for RAG packages..."
+python3 -m venv /home/frappe/rag_venv
+/home/frappe/rag_venv/bin/pip install --no-cache-dir -r /workspace/rag_service/requirements.txt
+
+# Ensure we are physically sitting inside the bench root folder
+cd /home/frappe/frappe-bench
+./env/bin/python -c "import site, os; p = os.path.join(site.getsitepackages()[0], \"rag_isolated.pth\"); open(p, \"w\").write(\"/home/frappe/rag_venv/lib/python3.14/site-packages\n\")"
+
+bench --site "$SITE_NAME" clear-cache
+' # <--- This ends the massive Step 3 single-quoted container block cleanly!
+
+# Note: tap_plg_stub was started in Step 1 & 2 — no extra step needed.
 
 cat <<EOF
 
@@ -221,7 +238,7 @@ cat <<EOF
 Local TAP LMS testbed is ready.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  Frappe (tap_lms + rag_service)  →  http://${SITE_NAME}:${WEB_PORT:-8000}
+  Frappe LMS Service (tap_lms)    →  http://${SITE_NAME}:${WEB_PORT:-8000}
   tap_plg stub (consumer + API)   →  http://localhost:${TAP_PLG_API_PORT:-8080}
   RabbitMQ management UI          →  http://localhost:15672  (guest / guest)
   LLM stub                        →  http://localhost:${LLM_STUB_PORT:-8001}
@@ -234,14 +251,18 @@ Local TAP LMS testbed is ready.
 Next steps:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-1. Start the web server:
+1. Start the Frappe LMS web server:
    podman-compose --env-file env.local -f docker/local/docker-compose.local.yml \\
-     exec dev bash -lc "cd /home/frappe/frappe-bench && bench start"
+     exec dev-lms bash -lc "cd /home/frappe/frappe-bench && bench start"
 
-2. Create a test API key:
+2. Start your RAG Worker Consumer:
+   podman-compose --env-file env.local -f docker/local/docker-compose.local.yml \\
+     exec dev-lms bash -lc "cd /home/frappe/frappe-bench && ../env/bin/python -c \"import frappe; frappe.init('tap_lms.localhost'); frappe.connect(); import rag_service.scripts.console_consumer as cc; cc.run()\""
+
+3. Create a test API key:
    Frappe desk → API Key → New → key: local-test-key-001 → Save
 
-3. Send a test submission:
+4. Send a test submission:
    curl -X POST \\
      "http://${SITE_NAME}:${WEB_PORT:-8000}/api/method/tap_lms.imgana.submission.submit_artwork" \\
      -H "Content-Type: application/json" \\
@@ -253,17 +274,17 @@ Next steps:
        "img_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/4/47/PNG_transparency_demonstration_1.png/280px-PNG_transparency_demonstration_1.png"
      }'
 
-4. Verify the pipeline:
+5. Verify the pipeline:
    # tap_plg_stub processed the submission
    curl http://localhost:${TAP_PLG_API_PORT:-8080}/stub/stats | python3 -m json.tool
 
    # Glific stub received the WhatsApp trigger
    curl http://localhost:${GLIFIC_STUB_PORT:-4000}/stub/flow-calls | python3 -m json.tool
 
-5. Reset stub state between test runs:
+6. Reset stub state between test runs:
    curl http://localhost:${GLIFIC_STUB_PORT:-4000}/stub/reset
 
-6. Watch the full pipeline trace live:
+7. Watch the full pipeline trace live:
    podman-compose --env-file env.local -f docker/local/docker-compose.local.yml logs -f
 
 EOF
