@@ -132,9 +132,6 @@ if [[ ! -d apps/business_theme_v14 ]]; then
   bench get-app "$BUSINESS_THEME_REPO"
 fi
 
-bench build --app tap_lms
-bench build --app business_theme_v14
-
 if [[ ! -d "sites/$SITE_NAME" ]]; then
   bench new-site "$SITE_NAME" \
     --db-type postgres \
@@ -142,17 +139,28 @@ if [[ ! -d "sites/$SITE_NAME" ]]; then
     --db-port 5432 \
     --db-root-username "$POSTGRES_USER" \
     --db-root-password "$POSTGRES_PASSWORD" \
-    --admin-password "$ADMIN_PASSWORD" \
-    --install-app tap_lms \
-    --install-app business_theme_v14 \
-    --install-app rag_service
-else
-  bench --site "$SITE_NAME" migrate
+    --admin-password "$ADMIN_PASSWORD" 
 fi
 
-if ! bench --site "$SITE_NAME" list-apps | grep -qx "business_theme_v14"; then
-  bench --site "$SITE_NAME" install-app business_theme_v14
-fi
+# add the rag_service to the apps.txt file else bench new-site command will fail
+echo "frappe
+tap_lms
+business_theme_v14
+rag_service" > apps.txt
+
+echo "frappe
+tap_lms
+business_theme_v14
+rag_service" > sites/apps.txt
+
+# Run migrations and explicit builds now that manifest maps are established
+bench --site "$SITE_NAME" install-app tap_lms
+bench --site "$SITE_NAME" install-app business_theme_v14
+bench --site "$SITE_NAME" install-app rag_service
+bench --site "$SITE_NAME" migrate
+
+bench build --app tap_lms
+bench build --app business_theme_v14
 
 bench --site "$SITE_NAME" set-config developer_mode 1
 bench --site "$SITE_NAME" set-config host_name "http://${SITE_NAME}:${WEB_PORT:-8000}"
@@ -205,34 +213,68 @@ set_single_value "Glific Settings" api_key "${GLIFIC_API_KEY:-local-stub-key}"
 
 # ── LLM Settings → llm-stub ───────────────────────────────────────────────────
 echo "Seeding LLM Settings → llm-stub..."
-set_single_value "LLM Settings" provider   "${LLM_PROVIDER:-openai}"
+set_single_value "LLM Settings" provider   "${LLM_PROVIDER:-Gemini}"
 set_single_value "LLM Settings" model_name "${LLM_MODEL_NAME:-stub-gpt-4}"
 set_single_value "LLM Settings" api_key    "${LLM_API_KEY:-local-stub-key}"
 set_single_value "LLM Settings" base_url   "${LLM_BASE_URL:-http://llm-stub:8001}"
 set_single_value "LLM Settings" is_active  "1"
 
 echo "Seeding encrypted RAG Settings api_secret..."
-bench --site "\$SITE_NAME" execute frappe.db.set_value --args "[\"RAG Settings\", \"RAG Settings\", \"api_secret\", \"local-secret-key\"]"
+bench --site "$SITE_NAME" execute frappe.db.set_value --args "[\"RAG Settings\", \"RAG Settings\", \"api_secret\", \"local-secret-key\"]"
 
-echo "Seeding RAG Settings API Endpoints..."
-bench --site "\$SITE_NAME" execute frappe.db.set_value --args "[\"RAG Settings\", \"RAG Settings\", \"base_url\", \"http://localhost:8000\"]"
-bench --site "\$SITE_NAME" execute frappe.db.set_value --args "[\"RAG Settings\", \"RAG Settings\", \"assignment_context_endpoint\", \"/api/method/tap_lms.api.get_assignment_context\"]"
-bench --site "\$SITE_NAME" execute frappe.db.set_value --args "[\"RAG Settings\", \"RAG Settings\", \"student_context_endpoint\", \"/api/method/tap_lms.api.get_student_context\"]"
-
-echo "Creating an isolated environment for RAG packages..."
-python3 -m venv /home/frappe/rag_venv
-/home/frappe/rag_venv/bin/pip install --no-cache-dir -r /workspace/rag_service/requirements.txt
-
-# Ensure we are physically sitting inside the bench root folder
-cd /home/frappe/frappe-bench
-./env/bin/python -c "import site, os; p = os.path.join(site.getsitepackages()[0], \"rag_isolated.pth\"); open(p, \"w\").write(\"/home/frappe/rag_venv/lib/python3.14/site-packages\n\")"
+# ── RAG Settings → tap_lms site ───────────────────────────────────────────────
+echo "Seeding RAG Settings..."
+set_single_value "RAG Settings" base_url                    "http://${SITE_NAME}:${WEB_PORT:-8000}"
+set_single_value "RAG Settings" assignment_context_endpoint "api/method/tap_lms.imgana.submission.get_assignment_context"
+set_single_value "RAG Settings" student_context_endpoint    "api/method/tap_lms.imgana.submission.get_student_details"
+set_single_value "RAG Settings" enable_caching              "0"
 
 bench --site "$SITE_NAME" clear-cache
 ' # <--- This ends the massive Step 3 single-quoted container block cleanly!
 
-# Note: tap_plg_stub was started in Step 1 & 2 — no extra step needed.
+# ── Step 4: Create separate venv & bridge for rag_service due to dependency conflicts ────────────────
+echo "Setting up rag_service isolated venv..."
 
+# single-quoted delimiter around 'OUTEREOF' heredoc below means:
+# No variable expansion inside the heredoc (the $ signs are safe)
+# No quote conflicts with the surrounding bash single-quote block
+# The Python code itself can use any quotes freely
+
+podman-compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T dev-lms bash << 'OUTEREOF'
+set -euo pipefail
+
+# Create isolated venv for rag_service dependencies
+python3 -m venv /home/frappe/rag_venv
+/home/frappe/rag_venv/bin/pip install --no-cache-dir \
+  -r /workspace/rag_service/requirements.txt
+
+# Bridge the rag venv into Frappe's venv via a .pth file
+cd /home/frappe/frappe-bench
+./env/bin/python3 - << PYEOF
+import site, os, sys
+pth_dir = site.getsitepackages()[0]
+py_ver = "python{}.{}".format(sys.version_info.major, sys.version_info.minor)
+rag_site = "/home/frappe/rag_venv/lib/{}/site-packages".format(py_ver)
+pth_file = os.path.join(pth_dir, "rag_isolated.pth")
+open(pth_file, "w").write(rag_site + "\n")
+print("Created .pth bridge: {} -> {}".format(pth_file, rag_site))
+PYEOF
+
+# Verify the bridge works
+./env/bin/python3 -c "from rag_service.utils.rabbitmq_consumer import RabbitMQConsumer; print('rag_service import OK')"
+OUTEREOF
+
+echo "rag_service venv bridge complete."
+
+# ── Step 6: Create seed data ──────────────────────────────────────────────────────────
+echo "Running seed_local.py..."
+podman-compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T dev-lms bash -lc '
+  cd /home/frappe/frappe-bench/sites && \
+  ../env/bin/python3 -c "import frappe; frappe.init(\"tap_lms.localhost\"); frappe.connect(); import sys; sys.path.insert(0, \"/workspace/frappe_tap\"); import scripts.seed_local"
+'
 cat <<EOF
+
+# Note: tap_plg_stub was started in Step 1 & 2 — no extra step needed.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Local TAP LMS testbed is ready.
@@ -257,7 +299,7 @@ Next steps:
 
 2. Start your RAG Worker Consumer:
    podman-compose --env-file env.local -f docker/local/docker-compose.local.yml \\
-     exec dev-lms bash -lc "cd /home/frappe/frappe-bench && ../env/bin/python -c \"import frappe; frappe.init('tap_lms.localhost'); frappe.connect(); import rag_service.scripts.console_consumer as cc; cc.run()\""
+     exec dev-lms bash -lc "cd /home/frappe/frappe-bench/sites/ && ../env/bin/python -c \"import frappe; frappe.init('tap_lms.localhost'); frappe.connect(); import rag_service.scripts.console_consumer as cc; cc.run()\""
 
 3. Create a test API key:
    Frappe desk → API Key → New → key: local-test-key-001 → Save
@@ -267,10 +309,10 @@ Next steps:
      "http://${SITE_NAME}:${WEB_PORT:-8000}/api/method/tap_lms.imgana.submission.submit_artwork" \\
      -H "Content-Type: application/json" \\
      -d '{
-       "api_key": "local-test-key-001",
-       "assign_id": "TEST-ASSIGN-001",
-       "name1": "Test Student",
-       "glific_id": "919999999999",
+       "api_key": "local-dev-api-key-001",
+       "assign_id": "MockAssign-Basic",
+       "name1": "LocalDevStudent",
+       "glific_id": "LOCAL_GLIFIC_001",
        "img_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/4/47/PNG_transparency_demonstration_1.png/280px-PNG_transparency_demonstration_1.png"
      }'
 

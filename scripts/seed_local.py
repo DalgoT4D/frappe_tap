@@ -15,6 +15,7 @@ Prints the IDs you'll need for the test script.
 import frappe
 from frappe.utils import today, add_days
 
+frappe.init("tap_lms.localhost") 
 frappe.connect()
 frappe.set_user("Administrator")
 
@@ -128,17 +129,43 @@ for state, path, label in PE_STATES:
 
 # ── 5. API Key (for submit_artwork flow) ────────────────────
 API_KEY_VALUE = "local-dev-api-key-001"
+API_SECRET_VALUE = "local-secret-key"
 
-if not frappe.db.exists("API Key", {"key": API_KEY_VALUE}):
-    api_key = frappe.new_doc("API Key")
-    api_key.key     = API_KEY_VALUE
-    api_key.user    = "Administrator"
-    api_key.enabled = 1
-    api_key.insert(ignore_permissions=True)
+# 1. Update the User Profile directly with the public API key identifier
+user_doc = frappe.get_doc("User", "Administrator")
+if user_doc.api_key != API_KEY_VALUE:
+    user_doc.api_key = API_KEY_VALUE
+    user_doc.save(ignore_permissions=True)
     frappe.db.commit()
-    print(f"✓ API Key created: {API_KEY_VALUE}")
+    print(f"✓ Public API Key bound to User Profile: {API_KEY_VALUE}")
 else:
-    print(f"  API Key already exists: {API_KEY_VALUE}")
+    print(f"  Public API Key already set on User Profile: {API_KEY_VALUE}")
+
+# 2. Force-inject the crypted Secret password block into Frappe's security vault
+import frappe.utils.password as frappe_crypt
+current_secret = frappe_crypt.get_decrypted_password("User", "Administrator", "api_secret", raise_exception=False)
+
+if current_secret != API_SECRET_VALUE:
+    frappe_crypt.set_encrypted_password("User", "Administrator", API_SECRET_VALUE, "api_secret")
+    frappe.db.commit()
+    print(f"✓ API Secret encrypted and vaulted securely: {API_SECRET_VALUE}")
+else:
+    print(f"  API Secret already validated in vault.")
+    
+rag_settings = frappe.get_doc("RAG Settings", "RAG Settings")
+rag_settings.base_url = "http://tap_lms.localhost:8000"
+rag_settings.assignment_context_endpoint = "api/method/tap_lms.imgana.submission.get_assignment_context"
+rag_settings.student_context_endpoint = "api/method/tap_lms.imgana.submission.get_student_details"
+rag_settings.enable_caching = 0
+rag_settings.api_key = API_KEY_VALUE
+rag_settings.save(ignore_permissions=True)
+
+# Securely vault the secret key onto RAG Settings too
+frappe_crypt.set_encrypted_password("RAG Settings", "RAG Settings", API_SECRET_VALUE, "api_secret")
+
+frappe.db.commit()
+frappe.clear_cache()
+print("✓ RAG Settings configured")
 
 # ── Summary ─────────────────────────────────────────────────
 print("\n=== Seed complete. Use these values in test_submissions.py ===")
