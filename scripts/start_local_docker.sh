@@ -139,7 +139,7 @@ if [[ ! -d "sites/$SITE_NAME" ]]; then
     --db-port 5432 \
     --db-root-username "$POSTGRES_USER" \
     --db-root-password "$POSTGRES_PASSWORD" \
-    --admin-password "$ADMIN_PASSWORD" 
+    --admin-password "$ADMIN_PASSWORD"
 fi
 
 # add the rag_service to the apps.txt file else bench new-site command will fail
@@ -211,17 +211,6 @@ echo "Seeding Glific Settings → glific-stub..."
 set_single_value "Glific Settings" api_url "${GLIFIC_API_URL:-http://glific-stub:4000}"
 set_single_value "Glific Settings" api_key "${GLIFIC_API_KEY:-local-stub-key}"
 
-# ── LLM Settings → llm-stub ───────────────────────────────────────────────────
-echo "Seeding LLM Settings → llm-stub..."
-set_single_value "LLM Settings" provider   "${LLM_PROVIDER:-Gemini}"
-set_single_value "LLM Settings" model_name "${LLM_MODEL_NAME:-stub-gpt-4}"
-set_single_value "LLM Settings" api_key    "${LLM_API_KEY:-local-stub-key}"
-set_single_value "LLM Settings" base_url   "${LLM_BASE_URL:-http://llm-stub:8001}"
-set_single_value "LLM Settings" is_active  "1"
-
-echo "Seeding encrypted RAG Settings api_secret..."
-bench --site "$SITE_NAME" execute frappe.db.set_value --args "[\"RAG Settings\", \"RAG Settings\", \"api_secret\", \"local-secret-key\"]"
-
 # ── RAG Settings → tap_lms site ───────────────────────────────────────────────
 echo "Seeding RAG Settings..."
 set_single_value "RAG Settings" base_url                    "http://${SITE_NAME}:${WEB_PORT:-8000}"
@@ -265,6 +254,43 @@ PYEOF
 OUTEREOF
 
 echo "rag_service venv bridge complete."
+
+# ── Step 5: Seed LLM Settings & RAG Secrets ───────────────────────────────────
+echo "Seeding LLM Settings & RAG Secrets..."
+
+podman-compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T dev-lms bash << EOF
+set -euo pipefail
+cd /home/frappe/frappe-bench/sites
+../env/bin/python3 - << 'PYEOF'
+import frappe
+frappe.init(site="$SITE_NAME")
+frappe.connect()
+
+# 1. LLM Settings (Stub)
+if not frappe.db.exists("LLM Settings", {"provider": "Stub"}):
+    doc = frappe.new_doc("LLM Settings")
+    doc.provider = "Stub"
+    doc.model_name = "${LLM_MODEL_NAME:-stub-gpt-4}"
+    doc.base_url = "${LLM_BASE_URL:-http://llm-stub:8001}"
+    doc.api_key = "${LLM_API_KEY:-local-stub-key}"
+    doc.is_active = 1
+    doc.insert()
+    print("✓ Created Stub LLM Settings")
+else:
+    doc = frappe.get_doc("LLM Settings", {"provider": "Stub"})
+    doc.model_name = "${LLM_MODEL_NAME:-stub-gpt-4}"
+    doc.base_url = "${LLM_BASE_URL:-http://llm-stub:8001}"
+    doc.is_active = 1
+    doc.save()
+    print("✓ Updated Stub LLM Settings")
+
+# 2. RAG Settings Secret
+frappe.db.set_value("RAG Settings", "RAG Settings", "api_secret", "local-secret-key")
+print("✓ Seeded RAG Settings api_secret")
+
+frappe.db.commit()
+PYEOF
+EOF
 
 # ── Step 6: Create seed data ──────────────────────────────────────────────────────────
 echo "Running seed_local.py..."

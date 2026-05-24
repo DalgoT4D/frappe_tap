@@ -22,168 +22,172 @@ name: tap_lms_local
 #   tap_plg_stub, llm-stub, glific-stub
 
 services:
-  # ── Frappe dev container (tap_lms) ──────────────────────────
+    # ── Frappe dev container (tap_lms) ──────────────────────────
 
-  dev-lms:
-    user: "${UID:-1000}:${GID:-1000}"
-    build:
-      context: ../..
-      dockerfile: docker/local/Dockerfile
-    container_name: tap_lms_dev
-    command: sleep infinity
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis-cache:
-        condition: service_started
-      redis-queue:
-        condition: service_started
-      rabbitmq:
-        condition: service_started
-      glific-stub:
-        condition: service_started
-      tap_plg_stub:
-        condition: service_started
-      llm-stub:
-        condition: service_started
-    env_file:
-      - ../../env.local
-    environment:
-      SHELL: /bin/bash
-      GLIFIC_API_URL: http://glific-stub:4000
-      APP_ENV: dev
-    ports:
-      - "${WEB_PORT:-8000}:8000"
-      - "${SOCKETIO_PORT:-9000}:9000"
-    volumes:
-      - bench-data:/home/frappe/frappe-bench
-      - ../..:/workspace/frappe_tap:cached,z
-      - ../../../rag_service:/workspace/rag_service:cached,z
-    working_dir: /home/frappe
+    dev-lms:
+        user: "${UID:-1000}:${GID:-1000}"
+        build:
+            context: ../..
+            dockerfile: docker/local/Dockerfile
+        container_name: tap_lms_dev
+        command: sleep infinity
+        depends_on:
+            postgres:
+                condition: service_healthy
+            redis-cache:
+                condition: service_started
+            redis-queue:
+                condition: service_started
+            rabbitmq:
+                condition: service_started
+            glific-stub:
+                condition: service_started
+            tap_plg_stub:
+                condition: service_started
+            llm-stub:
+                condition: service_started
+        env_file:
+            - ../../env.local
+        environment:
+            SHELL: /bin/bash
+            GLIFIC_API_URL: http://glific-stub:4000
+            APP_ENV: dev
+            STUB_MODE: "1"
+        ports:
+            - "${WEB_PORT:-8000}:8000"
+            - "${SOCKETIO_PORT:-9000}:9000"
+        volumes:
+            - bench-data:/home/frappe/frappe-bench
+            - ../..:/workspace/frappe_tap:cached,z
+            - ../../../rag_service:/workspace/rag_service:cached,z
+        working_dir: /home/frappe
 
-  # ── PostgreSQL (Frappe) ────────────────────────────────────────────────────
-  postgres:
-    image: postgres:15
-    container_name: tap_lms_postgres
-    environment:
-      POSTGRES_USER: "${POSTGRES_USER:-postgres}"
-      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-postgres}"
-      POSTGRES_DB: "${POSTGRES_DB:-postgres}"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-    ports:
-      - "${POSTGRES_PORT:-5432}:5432"
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
+    # ── PostgreSQL (Frappe) ────────────────────────────────────────────────────
+    postgres:
+        image: postgres:15
+        container_name: tap_lms_postgres
+        environment:
+            POSTGRES_USER: "${POSTGRES_USER:-postgres}"
+            POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-postgres}"
+            POSTGRES_DB: "${POSTGRES_DB:-postgres}"
+        healthcheck:
+            test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+            interval: 5s
+            timeout: 5s
+            retries: 20
+        ports:
+            - "${POSTGRES_PORT:-5432}:5432"
+        volumes:
+            - postgres-data:/var/lib/postgresql/data
 
-  # ── Redis cache ────────────────────────────────────────────────────────────
-  redis-cache:
-    image: redis:7-alpine
-    container_name: tap_lms_redis_cache
-    ports:
-      - "${REDIS_CACHE_PORT:-6379}:6379"
+    # ── Redis cache ────────────────────────────────────────────────────────────
+    redis-cache:
+        image: redis:7-alpine
+        container_name: tap_lms_redis_cache
+        ports:
+            - "${REDIS_CACHE_PORT:-6379}:6379"
 
-  # ── Redis queue ────────────────────────────────────────────────────────────
-  redis-queue:
-    image: redis:7-alpine
-    container_name: tap_lms_redis_queue
-    ports:
-      - "${REDIS_QUEUE_PORT:-6380}:6379"
+    # ── Redis queue ────────────────────────────────────────────────────────────
+    redis-queue:
+        image: redis:7-alpine
+        container_name: tap_lms_redis_queue
+        ports:
+            - "${REDIS_QUEUE_PORT:-6380}:6379"
 
-  # ── RabbitMQ ───────────────────────────────────────────────────────────────
-  rabbitmq:
-    image: docker.io/library/rabbitmq:4-management
-    container_name: tap_lms_rabbitmq
-    ports:
-      - "5672:5672"
-      - "15672:15672"
-    environment:
-      RABBITMQ_DEFAULT_USER: guest
-      RABBITMQ_DEFAULT_PASS: guest
+    # ── RabbitMQ ───────────────────────────────────────────────────────────────
+    rabbitmq:
+        image: docker.io/library/rabbitmq:4-management
+        container_name: tap_lms_rabbitmq
+        ports:
+            - "5672:5672"
+            - "15672:15672"
+        environment:
+            RABBITMQ_DEFAULT_USER: guest
+            RABBITMQ_DEFAULT_PASS: guest
 
-  # ── tap_plg stub ───────────────────────────────────────────────────────────
-  # Single container replacing tap_plg_worker + tap_plg_api + tap_plg_postgres.
-  # Runs two things in one process:
-  #   1. RabbitMQ consumer — consumes from SUBMISSION_QUEUE, publishes to
-  #      FEEDBACK_QUEUE with an "original" result (no real ML processing)
-  #   2. FastAPI server    — serves /health on port 8080
-  #
-  # No CLIP model, no FAISS, no PostgreSQL needed.
-  # Builds in ~30 seconds. Image is ~80 MB.
-  #
-  # Health check: curl http://localhost:8080/health
-  # Stats:        curl http://localhost:8080/stub/stats
-  tap_plg_stub:
-    build:
-      context: ./tap_plg_stub
-      dockerfile: Dockerfile.stub
-    container_name: tap_lms_plg_stub
-    environment:
-      RABBITMQ_HOST: rabbitmq
-      RABBITMQ_PORT: 5672
-      RABBITMQ_USER: guest
-      RABBITMQ_PASS: guest
-      RABBITMQ_VHOST: /
-      SUBMISSION_QUEUE: "${RABBITMQ_SUBMISSION_QUEUE:-submission_queue}"
-      FEEDBACK_QUEUE: "${RABBITMQ_PLAGIARISM_RESULTS_QUEUE:-plagiarism_queue}"
-      TAP_PLG_API_PORT: 8080
-      STUB_PROCESSING_DELAY_MS: "${STUB_PROCESSING_DELAY_MS:-500}"
-      APP_ENV: dev
-      LOG_LEVEL: INFO
-    ports:
-      - "${TAP_PLG_API_PORT:-8080}:8080"
-    depends_on:
-      rabbitmq:
-        condition: service_started
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    restart: on-failure
+    # ── tap_plg stub ───────────────────────────────────────────────────────────
+    # Single container replacing tap_plg_worker + tap_plg_api + tap_plg_postgres.
+    # Runs two things in one process:
+    #   1. RabbitMQ consumer — consumes from SUBMISSION_QUEUE, publishes to
+    #      FEEDBACK_QUEUE with an "original" result (no real ML processing)
+    #   2. FastAPI server    — serves /health on port 8080
+    #
+    # No CLIP model, no FAISS, no PostgreSQL needed.
+    # Builds in ~30 seconds. Image is ~80 MB.
+    #
+    # Health check: curl http://localhost:8080/health
+    # Stats:        curl http://localhost:8080/stub/stats
+    tap_plg_stub:
+        build:
+            context: ./tap_plg_stub
+            dockerfile: Dockerfile.stub
+        container_name: tap_lms_plg_stub
+        environment:
+            RABBITMQ_HOST: rabbitmq
+            RABBITMQ_PORT: 5672
+            RABBITMQ_USER: guest
+            RABBITMQ_PASS: guest
+            RABBITMQ_VHOST: /
+            SUBMISSION_QUEUE: "${RABBITMQ_SUBMISSION_QUEUE:-submission_queue}"
+            FEEDBACK_QUEUE: "${RABBITMQ_PLAGIARISM_RESULTS_QUEUE:-plagiarism_queue}"
+            TAP_PLG_API_PORT: 8080
+            STUB_PROCESSING_DELAY_MS: "${STUB_PROCESSING_DELAY_MS:-500}"
+            APP_ENV: dev
+            LOG_LEVEL: INFO
+        ports:
+            - "${TAP_PLG_API_PORT:-8080}:8080"
+        depends_on:
+            rabbitmq:
+                condition: service_started
+        healthcheck:
+            test:
+                ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+            interval: 10s
+            timeout: 5s
+            retries: 5
+        restart: on-failure
 
-  # ── LLM stub ──────────────────────────────────────────────────────────────
-  # Replaces OpenAI / TogetherAI / Vertex AI.
-  # Returns realistic randomised feedback JSON in OpenAI-compatible format.
-  # Deterministic per submission_id. Simulates 0.5–2s latency.
-  # Point rag_service LLM Settings → base_url at http://llm-stub:8001
-  llm-stub:
-    build:
-      context: ./llm_stub
-      dockerfile: Dockerfile
-    container_name: tap_lms_llm_stub
-    ports:
-      - "${LLM_STUB_PORT:-8001}:8001"
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8001/health || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
+    # ── LLM stub ──────────────────────────────────────────────────────────────
+    # Replaces OpenAI / TogetherAI / Vertex AI.
+    # Returns realistic randomised feedback JSON in OpenAI-compatible format.
+    # Deterministic per submission_id. Simulates 0.5–2s latency.
+    # Point rag_service LLM Settings → base_url at http://llm-stub:8001
+    llm-stub:
+        build:
+            context: ./llm_stub
+            dockerfile: Dockerfile
+        container_name: tap_lms_llm_stub
+        ports:
+            - "${LLM_STUB_PORT:-8001}:8001"
+        healthcheck:
+            test:
+                ["CMD-SHELL", "curl -f http://localhost:8001/health || exit 1"]
+            interval: 10s
+            timeout: 5s
+            retries: 3
 
-  # ── Glific stub ────────────────────────────────────────────────────────────
-  # Replaces the Glific GraphQL API. No real WhatsApp messages sent.
-  # Stubs all 8 operations used by tap_lms/glific_integration.py.
-  #
-  # Developer audit endpoints:
-  #   GET http://localhost:4000/stub/flow-calls  — all startContactFlow calls
-  #   GET http://localhost:4000/stub/contacts    — all contacts created
-  #   GET http://localhost:4000/stub/reset       — clear state between tests
-  glific-stub:
-    build:
-      context: ./glific_stub
-      dockerfile: Dockerfile
-    container_name: tap_lms_glific_stub
-    ports:
-      - "${GLIFIC_STUB_PORT:-4000}:4000"
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:4000/health || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
+    # ── Glific stub ────────────────────────────────────────────────────────────
+    # Replaces the Glific GraphQL API. No real WhatsApp messages sent.
+    # Stubs all 8 operations used by tap_lms/glific_integration.py.
+    #
+    # Developer audit endpoints:
+    #   GET http://localhost:4000/stub/flow-calls  — all startContactFlow calls
+    #   GET http://localhost:4000/stub/contacts    — all contacts created
+    #   GET http://localhost:4000/stub/reset       — clear state between tests
+    glific-stub:
+        build:
+            context: ./glific_stub
+            dockerfile: Dockerfile
+        container_name: tap_lms_glific_stub
+        ports:
+            - "${GLIFIC_STUB_PORT:-4000}:4000"
+        healthcheck:
+            test:
+                ["CMD-SHELL", "curl -f http://localhost:4000/health || exit 1"]
+            interval: 10s
+            timeout: 5s
+            retries: 3
 
 volumes:
-  bench-data:
-  postgres-data:
+    bench-data:
+    postgres-data:
