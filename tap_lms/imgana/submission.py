@@ -1,12 +1,13 @@
-import frappe
+import base64
 import json
+import os
+from urllib.parse import urlparse
+
+import frappe
 import pika
 import requests
-from urllib.parse import urlparse
-from google.cloud import storage
-import os
 from frappe.utils.file_manager import get_file_path
-import base64
+from google.cloud import storage
 
 
 def get_rabbitmq_settings():
@@ -16,12 +17,12 @@ def get_rabbitmq_settings():
     """
     settings = frappe.get_single("RabbitMQ Settings")
     return {
-        'host': settings.host,
-        'port': int(settings.port),
-        'virtual_host': settings.virtual_host,
-        'username': settings.username,
-        'password': settings.get_password('password'),
-        'queue': settings.submission_queue
+        "host": settings.host,
+        "port": int(settings.port),
+        "virtual_host": settings.virtual_host,
+        "username": settings.username,
+        "password": settings.get_password("password"),
+        "queue": settings.submission_queue,
     }
 
 
@@ -31,16 +32,16 @@ def get_gcs_client():
     Returns tuple of (client, bucket_name) or None if disabled.
     """
     settings = frappe.get_single("GCS Settings")
-    
+
     if not settings.enabled:
         return None
-    
+
     # Parse credentials JSON
     credentials_dict = json.loads(settings.credentials_json)
-    
+
     # Create client from credentials
     client = storage.Client.from_service_account_info(credentials_dict)
-    
+
     return client, settings.bucket_name
 
 
@@ -50,42 +51,44 @@ def get_content_type_from_response(response, filename):
     Returns tuple of (content_type, file_extension)
     """
     # First try to get from response headers
-    content_type = response.headers.get('content-type', '').split(';')[0].strip().lower()
-    
+    content_type = (
+        response.headers.get("content-type", "").split(";")[0].strip().lower()
+    )
+
     # Map of content types to extensions
     content_type_map = {
-        'image/jpeg': '.jpg',
-        'image/jpg': '.jpg',
-        'image/png': '.png',
-        'image/gif': '.gif',
-        'image/webp': '.webp',
-        'image/bmp': '.bmp',
-        'image/svg+xml': '.svg'
+        "image/jpeg": ".jpg",
+        "image/jpg": ".jpg",
+        "image/png": ".png",
+        "image/gif": ".gif",
+        "image/webp": ".webp",
+        "image/bmp": ".bmp",
+        "image/svg+xml": ".svg",
     }
-    
+
     # Reverse map for extension to content type
     ext_to_content_type = {
-        '.jpg': 'image/jpeg',
-        '.jpeg': 'image/jpeg',
-        '.png': 'image/png',
-        '.gif': 'image/gif',
-        '.webp': 'image/webp',
-        '.bmp': 'image/bmp',
-        '.svg': 'image/svg+xml'
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+        ".bmp": "image/bmp",
+        ".svg": "image/svg+xml",
     }
-    
+
     # If we have a valid content type from headers
     if content_type in content_type_map:
         return content_type, content_type_map[content_type]
-    
+
     # Try to get from filename extension
     if filename:
         ext = os.path.splitext(filename)[1].lower()
         if ext in ext_to_content_type:
             return ext_to_content_type[ext], ext
-    
+
     # Default to jpeg
-    return 'image/jpeg', '.jpg'
+    return "image/jpeg", ".jpg"
 
 
 def upload_image_to_gcs(img_url, submission_name):
@@ -96,119 +99,122 @@ def upload_image_to_gcs(img_url, submission_name):
     try:
         # Get GCS client
         result = get_gcs_client()
-        
+
         if result is None:
             frappe.throw("GCS Storage is not enabled. Enable it in GCS Settings.")
-        
+
         client, bucket_name = result
-        
+
         # Download the image
         response = requests.get(img_url, timeout=30)
         response.raise_for_status()
-        
+
         # Get filename from URL
         parsed_url = urlparse(img_url)
         original_filename = os.path.basename(parsed_url.path)
-        
+
         # Determine content type and extension
         content_type, ext = get_content_type_from_response(response, original_filename)
-        
+
         # Create filename if empty or no extension
-        if not original_filename or '.' not in original_filename:
+        if not original_filename or "." not in original_filename:
             original_filename = f"image{ext}"
-        
+
         # Create unique filename with folder structure
         gcs_filename = f"submissions/{submission_name}_{original_filename}"
-        
+
         # Upload to GCS
         bucket = client.bucket(bucket_name)
         blob = bucket.blob(gcs_filename)
-        
+
         # Upload with explicit content_type - THIS IS THE FIX
-        blob.upload_from_string(
-            response.content,
-            content_type=content_type
-        )
-        
+        blob.upload_from_string(response.content, content_type=content_type)
+
         # Generate public URL
         public_url = f"https://storage.googleapis.com/{bucket_name}/{gcs_filename}"
-        
+
         frappe.logger("submission").info(
             f"Image uploaded to GCS: {img_url} -> {public_url} (content_type: {content_type})"
         )
-        
+
         return public_url
-        
+
     except requests.exceptions.RequestException as e:
-        frappe.logger("submission").error(f"Failed to download image from {img_url}: {str(e)}")
+        frappe.logger("submission").error(
+            f"Failed to download image from {img_url}: {str(e)}"
+        )
         raise frappe.ValidationError(f"Failed to download image: {str(e)}")
     except Exception as e:
         frappe.logger("submission").error(f"Failed to upload to GCS: {str(e)}")
         raise frappe.ValidationError(f"Failed to upload to GCS: {str(e)}")
 
-def upload_audio_to_gcs(local_audio_path: str, submission_id: str, original_filename: str) -> str:
+
+def upload_audio_to_gcs(
+    local_audio_path: str, submission_id: str, original_filename: str
+) -> str:
     """
     Upload audio file from local path to GCS.
     Returns the public URL.
-    
+
     Args:
         local_audio_path: Path to the local audio file
         submission_id: Submission ID for naming
         original_filename: Original filename for the audio file
-    
+
     Returns:
         Public URL of the uploaded audio file
     """
     try:
         # Get GCS client
         result = get_gcs_client()
-        
+
         if result is None:
             frappe.throw("GCS Storage is not enabled. Enable it in GCS Settings.")
-        
+
         client, bucket_name = result
-        
+
         # Ensure the local file exists
         if not os.path.exists(local_audio_path):
             raise FileNotFoundError(f"Audio file not found at {local_audio_path}")
-        
+
         # Get file extension and determine content type
         ext = os.path.splitext(original_filename)[1].lower()
         content_type_map = {
-            '.mp3': 'audio/mpeg',
-            '.wav': 'audio/wav',
-            '.ogg': 'audio/ogg',
-            '.m4a': 'audio/mp4',
-            '.aac': 'audio/aac',
+            ".mp3": "audio/mpeg",
+            ".wav": "audio/wav",
+            ".ogg": "audio/ogg",
+            ".m4a": "audio/mp4",
+            ".aac": "audio/aac",
         }
-        content_type = content_type_map.get(ext, 'audio/mpeg')
-        
+        content_type = content_type_map.get(ext, "audio/mpeg")
+
         # Create GCS path: feedback/{submission_id}_{original_filename}
         gcs_filename = f"audio_feedback/{submission_id}_{original_filename}"
-        
+
         # Upload to GCS
         bucket = client.bucket(bucket_name)
         blob = bucket.blob(gcs_filename)
-        
+
         # Upload file with explicit content type
-        with open(local_audio_path, 'rb') as f:
+        with open(local_audio_path, "rb") as f:
             blob.upload_from_file(f, content_type=content_type)
-        
+
         # Generate public URL
         public_url = f"https://storage.googleapis.com/{bucket_name}/{gcs_filename}"
-        
+
         frappe.logger("submission").info(
             f"Audio uploaded to GCS: {local_audio_path} -> {public_url} (content_type: {content_type})"
         )
-        
+
         return public_url
-        
+
     except FileNotFoundError as e:
         frappe.logger("submission").error(f"Audio file not found: {str(e)}")
         raise frappe.ValidationError(f"Audio file not found: {str(e)}")
     except Exception as e:
         frappe.logger("submission").error(f"Failed to upload audio to GCS: {str(e)}")
         raise frappe.ValidationError(f"Failed to upload audio to GCS: {str(e)}")
+
 
 def upload_audio_url_to_gcs(audio_url: str, submission_id: str) -> str:
     """
@@ -228,7 +234,9 @@ def upload_audio_url_to_gcs(audio_url: str, submission_id: str) -> str:
 
         parsed_url = urlparse(audio_url)
         original_filename = os.path.basename(parsed_url.path)
-        content_type = response.headers.get("content-type", "").split(";")[0].strip().lower()
+        content_type = (
+            response.headers.get("content-type", "").split(";")[0].strip().lower()
+        )
 
         content_type_map = {
             "audio/mpeg": ".mp3",
@@ -272,11 +280,14 @@ def upload_audio_url_to_gcs(audio_url: str, submission_id: str) -> str:
         return public_url
 
     except requests.exceptions.RequestException as e:
-        frappe.logger("submission").error(f"Failed to download audio from {audio_url}: {str(e)}")
+        frappe.logger("submission").error(
+            f"Failed to download audio from {audio_url}: {str(e)}"
+        )
         raise frappe.ValidationError(f"Failed to download audio: {str(e)}")
     except Exception as e:
         frappe.logger("submission").error(f"Failed to upload audio to GCS: {str(e)}")
         raise frappe.ValidationError(f"Failed to upload audio to GCS: {str(e)}")
+
 
 def upload_video_to_gcs(video_url: str, submission_id: str) -> str:
     """
@@ -300,30 +311,32 @@ def upload_video_to_gcs(video_url: str, submission_id: str) -> str:
 
         # Determine content type and extension
         content_type_map = {
-            'video/mp4': '.mp4',
-            'video/quicktime': '.mov',
-            'video/x-msvideo': '.avi',
-            'video/x-matroska': '.mkv',
-            'video/webm': '.webm',
-            'video/x-flv': '.flv',
-            'video/x-ms-wmv': '.wmv',
+            "video/mp4": ".mp4",
+            "video/quicktime": ".mov",
+            "video/x-msvideo": ".avi",
+            "video/x-matroska": ".mkv",
+            "video/webm": ".webm",
+            "video/x-flv": ".flv",
+            "video/x-ms-wmv": ".wmv",
         }
         ext_to_content_type = {v: k for k, v in content_type_map.items()}
 
         # Try to get content type from response headers
-        content_type = response.headers.get('content-type', '').split(';')[0].strip().lower()
+        content_type = (
+            response.headers.get("content-type", "").split(";")[0].strip().lower()
+        )
         ext = content_type_map.get(content_type)
 
         # If not found, try from filename
         if not ext and original_filename:
             ext = os.path.splitext(original_filename)[1].lower()
-            content_type = ext_to_content_type.get(ext, 'video/mp4')
+            content_type = ext_to_content_type.get(ext, "video/mp4")
         if not ext:
-            ext = '.mp4'
-            content_type = 'video/mp4'
+            ext = ".mp4"
+            content_type = "video/mp4"
 
         # Create filename if empty or no extension
-        if not original_filename or '.' not in original_filename:
+        if not original_filename or "." not in original_filename:
             original_filename = f"video{ext}"
 
         # Create unique filename with folder structure
@@ -334,10 +347,7 @@ def upload_video_to_gcs(video_url: str, submission_id: str) -> str:
         blob = bucket.blob(gcs_filename)
 
         # Upload with explicit content_type
-        blob.upload_from_string(
-            response.content,
-            content_type=content_type
-        )
+        blob.upload_from_string(response.content, content_type=content_type)
 
         # Generate public URL
         public_url = f"https://storage.googleapis.com/{bucket_name}/{gcs_filename}"
@@ -349,11 +359,14 @@ def upload_video_to_gcs(video_url: str, submission_id: str) -> str:
         return public_url
 
     except requests.exceptions.RequestException as e:
-        frappe.logger("submission").error(f"Failed to download video from {video_url}: {str(e)}")
+        frappe.logger("submission").error(
+            f"Failed to download video from {video_url}: {str(e)}"
+        )
         raise frappe.ValidationError(f"Failed to download video: {str(e)}")
     except Exception as e:
         frappe.logger("submission").error(f"Failed to upload video to GCS: {str(e)}")
         raise frappe.ValidationError(f"Failed to upload video to GCS: {str(e)}")
+
 
 def upload_to_gcs(submission_url, submission_name):
     """
@@ -362,13 +375,13 @@ def upload_to_gcs(submission_url, submission_name):
     """
 
     # return submission url if in local emulated env
-    if (os.environ.get("STUB_MODE")):
+    if os.environ.get("STUB_MODE"):
         return submission_url
 
     # Supported image, video, and audio extensions
-    image_exts = {'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg'}
-    video_exts = {'mp4', 'mov', 'avi', 'mkv', 'webm', 'flv', 'wmv'}
-    audio_exts = {'mp3', 'wav', 'ogg', 'opus', 'm4a', 'aac', 'flac'}
+    image_exts = {"jpg", "jpeg", "png", "gif", "webp", "bmp", "svg"}
+    video_exts = {"mp4", "mov", "avi", "mkv", "webm", "flv", "wmv"}
+    audio_exts = {"mp3", "wav", "ogg", "opus", "m4a", "aac", "flac"}
 
     url_without_query = submission_url.split("?", 1)[0].lower()
     if "." in url_without_query:
@@ -379,7 +392,6 @@ def upload_to_gcs(submission_url, submission_name):
             return upload_video_to_gcs(submission_url, submission_name)
         if ext in audio_exts:
             return upload_audio_url_to_gcs(submission_url, submission_name)
-
 
     # If no extension is detected, default to image upload
     return upload_image_to_gcs(submission_url, submission_name)
@@ -392,13 +404,15 @@ def submit_artwork_internal(api_key, assign_id, name1, glific_id, img_url):
     Downloads image, uploads to GCS, creates submission, and enqueues to RabbitMQ.
     """
     # Authenticate the API request using the provided api_key
-    api_key_doc = frappe.db.get_value("API Key", {"key": api_key, "enabled": 1}, ["user"], as_dict=True)
+    api_key_doc = frappe.db.get_value(
+        "API Key", {"key": api_key, "enabled": 1}, ["user"], as_dict=True
+    )
     if not api_key_doc:
         frappe.throw("Invalid API key")
 
     # Switch to the user associated with the API key
     frappe.set_user(api_key_doc.user)
-    
+
     student_id = "ST00000206"
 
     try:
@@ -410,14 +424,14 @@ def submit_artwork_internal(api_key, assign_id, name1, glific_id, img_url):
         submission.submission_url = img_url  # Store original URL initially
         submission.status = "Pending"
         submission.insert()
-        
+
         # Upload to GCS and get public URL
         public_url = upload_to_gcs(img_url, submission.name)
-        
+
         # Update the submission with the GCS URL
         submission.submission_url = public_url
         submission.save()
-        
+
         frappe.db.commit()
 
         # Log for debugging
@@ -435,7 +449,7 @@ def submit_artwork_internal(api_key, assign_id, name1, glific_id, img_url):
             "message": "Submission received",
             "submission_id": submission.name,
             "student_id": student_id,
-            "image_url": public_url
+            "image_url": public_url,
         }
 
     except Exception as e:
@@ -455,22 +469,19 @@ def submit_artwork(api_key, assign_id, name1, glific_id, img_url):
     Downloads image, uploads to GCS, creates submission, and enqueues to RabbitMQ.
     """
     # Authenticate the API request using the provided api_key
-    api_key_doc = frappe.db.get_value("API Key", {"key": api_key, "enabled": 1}, ["user"], as_dict=True)
+    api_key_doc = frappe.db.get_value(
+        "API Key", {"key": api_key, "enabled": 1}, ["user"], as_dict=True
+    )
     if not api_key_doc:
         frappe.throw("Invalid API key")
 
     # Switch to the user associated with the API key
     frappe.set_user(api_key_doc.user)
-    
+
     # Get student document
     student = frappe.get_doc(
-                    "Student",
-                    {
-                        "name1": name1,
-                        "glific_id": glific_id
-                    },
-                    limit=1
-                )
+        "Student", {"name1": name1, "glific_id": glific_id}, limit=1
+    )
     if not student:
         frappe.throw("Student not found with provided name and glific_id")
     student_id = student.name
@@ -484,14 +495,14 @@ def submit_artwork(api_key, assign_id, name1, glific_id, img_url):
         submission.submission_url = img_url  # Store original URL initially
         submission.status = "Pending"
         submission.insert()
-        
+
         # Upload to GCS and get public URL
         public_url = upload_to_gcs(img_url, submission.name)
-        
+
         # Update the submission with the GCS URL
         submission.submission_url = public_url
         submission.save()
-        
+
         frappe.db.commit()
 
         # Log for debugging
@@ -509,7 +520,7 @@ def submit_artwork(api_key, assign_id, name1, glific_id, img_url):
             "message": "Submission received",
             "submission_id": submission.name,
             "student_id": student_id,
-            "image_url": public_url
+            "image_url": public_url,
         }
 
     except Exception as e:
@@ -529,7 +540,7 @@ def enqueue_submission(submission_id):
     """
     try:
         submission = frappe.get_doc("Submission", submission_id)
-        
+
         # Payload with GCS public URL
         payload = {
             "submission_id": submission.name,
@@ -538,7 +549,7 @@ def enqueue_submission(submission_id):
             "submission_type": submission.submission_type,
             "submission_text": submission.submission_text,
             "submission_url": submission.submission_url,
-            "created_at": str(submission.created_at)
+            "created_at": str(submission.created_at),
         }
 
         # Get RabbitMQ settings from DocType
@@ -546,14 +557,13 @@ def enqueue_submission(submission_id):
 
         # Establish a connection to RabbitMQ
         credentials = pika.PlainCredentials(
-            rabbitmq_config['username'], 
-            rabbitmq_config['password']
+            rabbitmq_config["username"], rabbitmq_config["password"]
         )
         parameters = pika.ConnectionParameters(
-            rabbitmq_config['host'],
-            rabbitmq_config['port'],
-            rabbitmq_config['virtual_host'],
-            credentials
+            rabbitmq_config["host"],
+            rabbitmq_config["port"],
+            rabbitmq_config["virtual_host"],
+            credentials,
         )
         connection = pika.BlockingConnection(parameters)
         channel = connection.channel()
@@ -561,27 +571,28 @@ def enqueue_submission(submission_id):
         # Declare the queue
         try:
             # First try passive declaration to check if queue exists
-            channel.queue_declare(queue=rabbitmq_config['queue'],durable=True,passive=True)
+            channel.queue_declare(
+                queue=rabbitmq_config["queue"], durable=True, passive=True
+            )
         except Exception:
             # If it doesn't exist, declare it
-            channel.queue_declare(queue=rabbitmq_config['queue'], durable=True)
-
+            channel.queue_declare(queue=rabbitmq_config["queue"], durable=True)
 
         # Publish the message to the queue
         channel.basic_publish(
-            exchange='',
-            routing_key=rabbitmq_config['queue'],
-            body=json.dumps(payload)
+            exchange="", routing_key=rabbitmq_config["queue"], body=json.dumps(payload)
         )
 
         # Close the connection
         connection.close()
-        
+
         frappe.logger("submission").info(
             f"Enqueued submission {submission_id} with GCS URL: {submission.submission_url}"
         )
     except Exception as e:
-        frappe.logger("submission").error(f"Failed to enqueue submission {submission_id}: {str(e)}")
+        frappe.logger("submission").error(
+            f"Failed to enqueue submission {submission_id}: {str(e)}"
+        )
         raise frappe.ValidationError(f"Failed to enqueue submission: {str(e)}")
 
 
@@ -591,7 +602,9 @@ def img_feedback(api_key, submission_id):
     API endpoint to get feedback for a submission.
     """
     # Authenticate the API request using the provided api_key
-    api_key_doc = frappe.db.get_value("API Key", {"key": api_key, "enabled": 1}, ["user"], as_dict=True)
+    api_key_doc = frappe.db.get_value(
+        "API Key", {"key": api_key, "enabled": 1}, ["user"], as_dict=True
+    )
     if not api_key_doc:
         frappe.throw("Invalid API key")
 
@@ -601,27 +614,27 @@ def img_feedback(api_key, submission_id):
     try:
         # Get the submission document
         submission = frappe.get_doc("Submission", submission_id)
-        
+
         # Prepare the response based on status
         if submission.status == "Completed":
             response = {
                 "status": submission.status,
                 "overall_feedback": submission.overall_feedback,
-                "overall_feedback_translated" : submission.overall_feedback_translated,
+                "overall_feedback_translated": submission.overall_feedback_translated,
                 "audio_feedback_url": submission.audio_feedback_url,
             }
         else:
-            response = {
-                "status": submission.status
-            }
-        
+            response = {"status": submission.status}
+
         return response
 
     except frappe.DoesNotExistError:
         return {"error": "Submission not found"}
-    
+
     except Exception as e:
-        frappe.log_error(f"Error checking submission status: {str(e)}", "Submission Status Error")
+        frappe.log_error(
+            f"Error checking submission status: {str(e)}", "Submission Status Error"
+        )
         return {"error": "An error occurred while checking submission status"}
 
     finally:
@@ -640,65 +653,64 @@ def get_assignment_context(assignment_id, student_id=None):
             file_doc = frappe.get_doc("File", {"file_url": file_url})
 
             file_path = file_doc.get_full_path()
-            with open(file_path, 'rb') as f:
-                content = base64.b64encode(f.read()).decode('utf-8')
-            images.append({
-                'name': file_doc.file_name,
-                'content_type': 'image/jpeg',
-                'content': content  # base64 encoded
-            })
+            with open(file_path, "rb") as f:
+                content = base64.b64encode(f.read()).decode("utf-8")
+            images.append(
+                {
+                    "name": file_doc.file_name,
+                    "content_type": "image/jpeg",
+                    "content": content,  # base64 encoded
+                }
+            )
 
         rubrics = {}
-        rubric_grades = assignment.get('rubric_grades', [])
+        rubric_grades = assignment.get("rubric_grades", [])
 
         # Process each rubric grade entry
         for grade in rubric_grades:
-            skill_name = grade.get('skill_name')
+            skill_name = grade.get("skill_name")
             if skill_name not in rubrics:
                 rubrics[skill_name] = []
             # Create the grade entry with only grade_value and grade_description
             grade_entry = {
-                'grade_value': grade.get('grade_value'),
-                'grade_description': grade.get('grade_description')
+                "grade_value": grade.get("grade_value"),
+                "grade_description": grade.get("grade_description"),
             }
             rubrics[skill_name].append(grade_entry)
-
 
         context = {
             "assignment": {
                 "name": assignment.assignment_name,
                 "description": assignment.description,
-                "type": assignment.assignment_type, 
+                "type": assignment.assignment_type,
+                "activity_type": assignment.activity_type,
+                "course_vertical": assignment.subject,
                 "subject": assignment.subject,
                 "submission_guidelines": assignment.submission_guidelines,
                 "reference_images": images,
                 "max_score": assignment.max_score,
-                "rubrics": rubrics
+                "rubrics": rubrics,
             },
             "learning_objectives": [
                 {
                     "objective": obj.learning_objective,
                     "description": frappe.db.get_value(
-                        "Learning Objective",
-                        obj.learning_objective,
-                        "description"
-                    )
+                        "Learning Objective", obj.learning_objective, "description"
+                    ),
                 }
                 for obj in assignment.learning_objectives
-            ]
+            ],
         }
-        
-        
+
         # Add custom feedback prompt if enabled
         if assignment.enable_auto_feedback and assignment.feedback_prompt:
             context["feedback_prompt"] = assignment.feedback_prompt
-            
+
         return context
-        
+
     except Exception as e:
         frappe.log_error(
-            f"Error getting assignment context: {str(e)}",
-            "RAG Context Error"
+            f"Error getting assignment context: {str(e)}", "RAG Context Error"
         )
         return None
 
@@ -708,29 +720,23 @@ def get_student_details(student_id):
     """Get student grade level and language details"""
     try:
         student = frappe.get_doc("Student", student_id)
-                    
+
         print(student)
-        
+
         if not student:
-            frappe.log_error(
-                f"Student {student_id} not found",
-                "Student Details Error"
-            )
+            frappe.log_error(f"Student {student_id} not found", "Student Details Error")
             return None
 
-            
-        
         return {
             "student_id": student.name,
             "grade": student.grade,
             "level": student.level,
-            "language": student.language
+            "language": student.language,
         }
-        
+
     except Exception as e:
         frappe.log_error(
-            f"Error getting student details: {str(e)}",
-            "Student Details Error"
+            f"Error getting student details: {str(e)}", "Student Details Error"
         )
         print(e)
         return None
