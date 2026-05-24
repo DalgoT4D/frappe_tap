@@ -327,20 +327,21 @@ Next steps:
    podman-compose --env-file env.local -f docker/local/docker-compose.local.yml \\
      exec dev-lms bash -lc "cd /home/frappe/frappe-bench/sites/ && ../env/bin/python -c \"import frappe; frappe.init('tap_lms.localhost'); frappe.connect(); import rag_service.scripts.console_consumer as cc; cc.run()\""
 
-3. Create a test API key:
+2a. Start the feedback consumer:
+    podman-compose --env-file env.local -f ./frappe_tap/docker/local/docker-compose.local.yml \\
+    exec dev-lms bash -lc "cd /home/frappe/frappe-bench/sites/ && ../env/bin/python ../apps/tap_lms/scripts/console_consumer.py"
+
+3. Check if test API key is successfully created and associated with Administrator in Frappe bench. If not, create a test API key:
    Frappe desk → API Key → New → key: local-test-key-001 → Save
 
-4. Send a test submission:
-   curl -X POST \\
-     "http://${SITE_NAME}:${WEB_PORT:-8000}/api/method/tap_lms.imgana.submission.submit_artwork" \\
-     -H "Content-Type: application/json" \\
-     -d '{
-       "api_key": "local-dev-api-key-001",
-       "assign_id": "MockAssign-Basic",
-       "name1": "LocalDevStudent",
-       "glific_id": "LOCAL_GLIFIC_001",
-       "img_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/4/47/PNG_transparency_demonstration_1.png/280px-PNG_transparency_demonstration_1.png"
-     }'
+4. Send a test submission (ensure auth token matches one declared in seed script or one created above manually):
+    curl -v -X POST "http://tap_lms.localhost:8000/api/method/tap_lms.imgana.submission.submit_artwork" -H "Content-Type: application/json" -H "Authorization: token local-dev-api-key-001:local-secret-key" -d '{
+        "api_key":   "local-dev-api-key-001",
+        "assign_id": "MockAssign-Basic",
+        "name1":     "LocalDevStudent",
+        "glific_id": "LOCAL_GLIFIC_001",
+        "img_url":   "https://picsum.photos/200/300"
+    }'
 
 5. Verify the pipeline:
    # tap_plg_stub processed the submission
