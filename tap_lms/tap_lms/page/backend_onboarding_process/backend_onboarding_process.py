@@ -1,10 +1,11 @@
 import frappe
 from frappe import _
 import json
+import requests as _requests  # shared alias used by CR-004 retry helpers
 from frappe.utils import nowdate, nowtime, now
 from tap_lms.glific_integration import create_or_get_glific_group_for_batch, add_student_to_glific_for_onboarding, get_contact_by_phone
 from tap_lms.api import get_course_level
-import time 
+import time
 
 
 def normalize_phone_number(phone):
@@ -289,49 +290,58 @@ def process_batch(batch_id, use_background_job=False):
 
 
 def process_batch_job(set_id):
-    """Background job function to process the batch"""
+    """Background job function to process the batch.
+
+    CR-004 T-04-04: two-phase split.
+
+    Phase 1 — DB only, zero Glific HTTP calls.
+      Resolves course level and creates/updates Student + Enrollment +
+      LearningState/EngagementState/StudentStageProgress.  Sets
+      glific_sync_status='pending' on success.  Success/Fail accounting
+      is based purely on DB outcome.
+
+    Phase 2 — Glific sync, enqueued, retryable.
+      After the Phase-1 loop commits, enqueues sync_student_to_glific
+      for every Backend Students row with glific_sync_status IN
+      ('pending','failed').  Retries and DLQ are handled inside
+      sync_student_to_glific (Slice 0 / T-04-03c).
+    """
     try:
         frappe.db.commit() # Commit any pending changes before starting job
-        
+
         batch = frappe.get_doc("Backend Student Onboarding", set_id)
-        
+
         # Get students to process (only pending or failed)
-        students = frappe.get_all("Backend Students", 
+        students = frappe.get_all("Backend Students",
                                  filters={"parent": set_id, "processing_status": ["in", ["Pending", "Failed"]]},
                                  fields=["name","batch_skeyword"])
-        
+
         success_count = 0
         failure_count = 0
         results = {
             "success": [],
             "failed": []
         }
-        
-        # Get or create Glific group for this batch
-        try:
-            glific_group = create_or_get_glific_group_for_batch(set_id)
-        except Exception as e:
-            #frappe.log_error(f"Error creating Glific group: {str(e)}", "Backend Student Onboarding")
-            glific_group = None
-        
-        # Get initial stage
+
+        # Phase 1: NO Glific group creation here — Glific work is Phase 2.
+        # get_initial_stage is still needed for StudentStageProgress.
         initial_stage = get_initial_stage()
-        
+
         # Process students in batches for better performance
         total_students = len(students)
         batch_size = 50  # Process 50 students at a time
-        commit_interval = 200  # Commit every 10 students
-        
+        commit_interval = 200  # Commit every 200 students
+
         for batch_start in range(0, total_students, batch_size):
             batch_end = min(batch_start + batch_size, total_students)
             batch_students = students[batch_start:batch_end]
-            
+
             # Pre-fetch batch onboarding data for this batch
             batch_keywords = list(set([
-                s.get('batch_skeyword') for s in batch_students 
+                s.get('batch_skeyword') for s in batch_students
                 if hasattr(s, 'batch_skeyword') and s.batch_skeyword
             ]))
-            
+
             batch_onboarding_cache = {}
             if batch_keywords:
                 batch_onboardings = frappe.get_all(
@@ -340,94 +350,84 @@ def process_batch_job(set_id):
                     fields=["batch_skeyword", "name", "kit_less"]
                 )
                 batch_onboarding_cache = {b.batch_skeyword: b for b in batch_onboardings}
-            
+
             for index, student_entry in enumerate(batch_students):
                 try:
-
                     actual_index = batch_start + index
                     update_job_progress(actual_index, total_students)
-                    # Update job progress
-                    
+
                     student = frappe.get_doc("Backend Students", student_entry.name)
-                    
-                    # 1. Handle Glific contact creation/retrieval
-                    try:
-                        course_level_for_glific = None
-                        if hasattr(student, 'batch_skeyword') and student.batch_skeyword and student.course_vertical and student.grade:
-                            # Use cached batch onboarding data
-                            batch_onboarding = batch_onboarding_cache.get(student.batch_skeyword)
-                            
-                            if batch_onboarding:
-                                kitless = batch_onboarding.kit_less
-                                course_level_for_glific = get_course_level_with_validation_backend(
-                                    student.course_vertical,
-                                    student.grade,
-                                    student.phone,
-                                    student.student_name,
-                                    kitless
-                                )
-                        
-                        glific_contact = process_glific_contact(student, glific_group, course_level_for_glific)
-                    except Exception as e:
-                        # #frappe.log_error(f"Error processing Glific contact for {student.student_name}: {str(e)}", 
-                        #                "Backend Student Onboarding")
-                        # glific_contact = None
-                        vlaue = []
-                    
-                    # 2. Create/update student record
-                    student_doc = process_student_record(student, glific_contact, set_id, initial_stage, course_level_for_glific)
-                    
-                    # 3. Update Backend Students record
+
+                    # ── Phase 1: resolve course level (DB only) ──────────────
+                    # AC-1: NO Glific calls here.  process_glific_contact is
+                    # intentionally absent from the Phase-1 path.
+                    course_level_for_glific = None
+                    if (hasattr(student, 'batch_skeyword') and student.batch_skeyword
+                            and student.course_vertical and student.grade):
+                        batch_onboarding = batch_onboarding_cache.get(student.batch_skeyword)
+                        if batch_onboarding:
+                            kitless = batch_onboarding.kit_less
+                            course_level_for_glific = get_course_level_with_validation_backend(
+                                student.course_vertical,
+                                student.grade,
+                                student.phone,
+                                student.student_name,
+                                kitless,
+                            )
+
+                    # ── Phase 1: create/update Student + Enrollment + states ──
+                    # glific_contact=None — process_student_record already guards
+                    # `if glific_contact and 'id' in glific_contact` so it simply
+                    # won't set glific_id yet (that happens in Phase 2).
+                    student_doc = process_student_record(
+                        student, None, set_id, initial_stage, course_level_for_glific
+                    )
+
+                    # ── Phase 1: mark DB success; Glific is pending ──────────
+                    # glific_sync_status is set to 'pending' before save so that
+                    # Phase 2 can pick up this row.
+                    student.glific_sync_status = "pending"
                     update_backend_student_status(student, "Success", student_doc)
-                    
+
                     success_count += 1
-                    success_data = {
+                    results["success"].append({
                         "backend_id": student.name,
                         "student_id": student_doc.name,
                         "student_name": student_doc.name1,
-                        "phone": student.phone
-                    }
-                    if glific_contact and 'id' in glific_contact:
-                        success_data["glific_id"] = glific_contact['id']
-                    
-                    results["success"].append(success_data)
-                    
-                    # Commit every 10 students instead of every student
+                        "phone": student.phone,
+                    })
+
+                    # Commit every commit_interval students
                     if (actual_index + 1) % commit_interval == 0:
                         frappe.db.commit()
                         time.sleep(0.1)
-                        #frappe.log_error(f"Committed batch at student {actual_index + 1}/{total_students}", "Backend Batch Progress")
-                    
+
                 except Exception as e:
                     frappe.db.rollback()
-                    
+
                     failure_count += 1
                     try:
                         student = frappe.get_doc("Backend Students", student_entry.name)
                         update_backend_student_status(student, "Failed", error=str(e))
-                        
+
                         results["failed"].append({
                             "backend_id": student.name,
                             "student_name": student.student_name,
                             "error": str(e)
                         })
-                        
+
                         frappe.db.commit()
                     except Exception as inner_e:
-                        #frappe.log_error(f"Error updating failed status for student {student_entry.name}: {str(inner_e)}", 
-                                    #    "Backend Student Onboarding")
-                        
                         results["failed"].append({
                             "backend_id": student_entry.name,
                             "student_name": "Unknown",
                             "error": f"Original error: {str(e)}. Status update error: {str(inner_e)}"
                         })
-            
-            # Commit at end of each batch
+
+            # Commit at end of each slice
             frappe.db.commit()
-            #frappe.log_error(f"Completed batch {batch_start//batch_size + 1}/{(total_students + batch_size - 1)//batch_size}", "Backend Batch Complete")
-        
-        # Final commit and update batch status
+
+        # ── Phase 1 complete: update set status based on DB outcome ──────────
         try:
             batch = frappe.get_doc("Backend Student Onboarding", set_id)
             if failure_count == 0:
@@ -435,24 +435,53 @@ def process_batch_job(set_id):
             elif success_count == 0:
                 batch.status = "Failed"
             else:
-                batch.status = "Processing" # Since "Partially Processed" might not be an allowed status value
-            
-            # Update processed_student_count field if it exists
-            processed_count = frappe.db.count("Backend Students", 
-                                             filters={"parent": set_id, "processing_status": "Success"})
+                batch.status = "Processing"  # Partially processed
+
+            processed_count = frappe.db.count("Backend Students",
+                                              filters={"parent": set_id, "processing_status": "Success"})
             if hasattr(batch, 'processed_student_count'):
                 batch.processed_student_count = processed_count
-            
+
             batch.save()
-            frappe.db.commit() # Final commit
+            frappe.db.commit()
         except Exception as e:
-            #frappe.log_error(f"Error updating batch status: {str(e)}", "Backend Student Onboarding")
-            value = []
-        
+            frappe.log_error(title="process_batch_job: batch status update failed", message=str(e))
+
+        # ── Phase 2: enqueue Glific sync for pending/failed rows ─────────────
+        # AC-1 enforcement: all Glific HTTP calls happen inside
+        # sync_student_to_glific (a separate RQ job), never here.
+        # enqueue_after_commit=True ensures Phase-1 commits are visible to the
+        # worker before it reads the Backend Students row.
+        # No `retry=` kwarg — retries are self-managed via _attempt inside
+        # sync_student_to_glific to avoid double-retry.
+        pending_rows = frappe.get_all(
+            "Backend Students",
+            filters={
+                "parent": set_id,
+                "glific_sync_status": ["in", ["pending", "failed"]],
+            },
+            fields=["name"],
+        )
+        for row in pending_rows:
+            frappe.enqueue(
+                "tap_lms.tap_lms.page.backend_onboarding_process"
+                ".backend_onboarding_process.sync_student_to_glific",
+                backend_student_name=row.name,
+                queue="long",
+                enqueue_after_commit=True,
+            )
+
+        frappe.logger().info(
+            f"process_batch_job [{set_id}]: Phase 1 done — "
+            f"{success_count} success, {failure_count} failed; "
+            f"Phase 2: {len(pending_rows)} Glific-sync jobs enqueued."
+        )
+
         return {
             "success_count": success_count,
             "failure_count": failure_count,
-            "results": results
+            "results": results,
+            "glific_sync_enqueued": len(pending_rows),
         }
     except Exception as e:
         frappe.db.rollback()
@@ -466,13 +495,13 @@ def process_batch_job(set_id):
                 meta = frappe.get_meta("Backend Student Onboarding")
                 field = meta.get_field("processing_notes")
                 max_length = field.length if field and hasattr(field, 'length') else 140
-                
+
                 batch.processing_notes = str(e)[:max_length]
             batch.save()
             frappe.db.commit()
         except:
             pass # If this fails too, just continue
-        
+
         #frappe.log_error(f"Error in batch processing job: {str(e)}", "Backend Student Onboarding")
         raise
 
@@ -496,51 +525,84 @@ def update_job_progress(current, total):
 
 
 
-def process_glific_contact(student, glific_group, course_level=None):
+def _ref(cache, doctype, name, fieldname):
+    """Per-job reference cache helper (T-04-05 / AC-7).
+
+    Lazily populates a per-job dict so repeated lookups for the same
+    (doctype, name, fieldname) within one job hit the DB only once.
+
+    Args:
+        cache:     dict passed through from the job (created once per
+                   process_batch_job run; never a module-level global).
+        doctype:   Frappe DocType name, e.g. "School".
+        name:      Document name (the 'name' field / primary key).
+        fieldname: Single field to fetch, e.g. "name1".
+
+    Returns:
+        The cached (or freshly fetched) field value, which may be None.
+    """
+    # Key: (doctype, fieldname) → inner dict {name: value}
+    # This lets us cache multiple fields for the same doctype without
+    # collisions across different fieldname requests.
+    inner = cache.setdefault((doctype, fieldname), {})
+    if name not in inner:
+        inner[name] = frappe.get_value(doctype, name, fieldname)
+    return inner[name]
+
+
+def process_glific_contact(student, glific_group, course_level=None, ref_cache=None):
     """
     Process Glific contact creation or retrieval
     FIXED: Shorter log messages to avoid 140-char limit
-    
+
     Args:
         student: Backend Students document
         glific_group: Glific group information
         course_level: Optional course level name for Glific
-    
+        ref_cache: Optional per-job dict for caching reference-doctype
+                   lookups (School, TAP Language, Course Verticals,
+                   Course Level).  If None a local dict is created so
+                   existing direct callers still work.  Do NOT pass a
+                   process-global — cache must be scoped to one job.
+
     Returns:
         Glific contact information if successful, None otherwise
     """
-    # Format phone number 
+    if ref_cache is None:
+        ref_cache = {}
+
+    # Format phone number
     phone = format_phone_number(student.phone)
     if not phone:
         raise ValueError(f"Invalid phone number format: {student.phone}")
-    
-    # Get school name for Glific
+
+    # Get school name for Glific — cached per-job (T-04-05)
     school_name = ""
     if student.school:
-        school_name = frappe.get_value("School", student.school, "name1") or ""
-    
+        school_name = _ref(ref_cache, "School", student.school, "name1") or ""
+
     # Get batch name for Glific
     batch_name = ""
     if student.batch:
         batch_id = frappe.get_value("Batch", student.batch, "name") or ""
-    
-    # Get language ID for Glific from TAP Language
+
+    # Get language ID for Glific from TAP Language — cached per-job (T-04-05)
     language_id = None
     if student.language:
         try:
-            language_id = frappe.get_value("TAP Language", student.language, "glific_language_id")
+            language_id = _ref(ref_cache, "TAP Language", student.language, "glific_language_id")
             if not language_id:
                 value = []
                 #frappe.logger().warning(f"No glific_language_id found for language {student.language}, will use default")
         except Exception as e:
             value = []
             #frappe.logger().warning(f"Error getting glific_language_id: {str(e)}")
-    
-    # Get course level name for Glific
+
+    # Get course level name for Glific — cached per-job (T-04-05)
     course_level_name = ""
     if course_level:
         try:
-            course_level_name = frappe.get_value("Course Level", course_level, "name1") or ""
+            course_level_name = _ref(ref_cache, "Course Level", course_level, "name1") or ""
             # SHORTENED LOG
             print(f"Course level: {course_level} -> '{course_level_name}'")
         except Exception as e:
@@ -548,11 +610,11 @@ def process_glific_contact(student, glific_group, course_level=None):
             course_level_name = ""
     else:
         print(f"No course level provided for {student.student_name}")
-    
-    # Get course vertical name for Glific
+
+    # Get course vertical name for Glific — cached per-job (T-04-05)
     course_vertical_name = ""
     if student.course_vertical:
-        course_vertical_name = frappe.get_value("Course Verticals", student.course_vertical, "name2") or ""
+        course_vertical_name = _ref(ref_cache, "Course Verticals", student.course_vertical, "name2") or ""
     
     # Check if contact already exists in Glific
     existing_contact = get_contact_by_phone(phone)
@@ -1114,34 +1176,28 @@ def get_course_level_with_mapping_backend(course_vertical, grade, phone_number, 
 
 def get_course_level_with_validation_backend(course_vertical, grade, phone_number, student_name, kitless):
     """
-    Enhanced version of get_course_level_with_mapping_backend with data validation (NO REPAIRS)
-    
+    Wrapper that delegates to get_course_level_with_mapping_backend.
+
+    CR-004 T-04-07 (AC-5): the dead validate_enrollment_data() call has been
+    removed.  Its only consumer was a commented-out log; the return value was
+    never used.  The course-level resolution chain is unchanged:
+      get_course_level_with_mapping_backend → determine_student_type_backend
+      → Grade Course Level Mapping → flexible mapping → Stage-Grades fallback.
+
     Args:
         course_vertical: Course vertical name/ID
         grade: Student grade
         phone_number: Student phone number
         student_name: Student name
         kitless: School's kit capability
-        
+
     Returns:
         Course level name or None if not found
     """
     try:
-        # First validate existing enrollment data (detection only, no repairs)
-        validation_results = validate_enrollment_data(student_name, phone_number)
-        
-        if validation_results.get("broken_enrollments", 0) > 0:
-            #frappe.log_error(
-            #     f"Backend: Detected {validation_results['broken_enrollments']} broken enrollments for {student_name}, continuing without repair",
-            #     "Backend Data Validation"
-            # )
-            value = []
-        
-        # Now proceed with the original logic
         return get_course_level_with_mapping_backend(course_vertical, grade, phone_number, student_name, kitless)
-        
     except Exception as e:
-        #frappe.log_error(f"Backend: Error in course level selection with validation: {str(e)}", "Backend Course Level Validation Error")
+        #frappe.log_error(f"Backend: Error in course level selection: {str(e)}", "Backend Course Level Validation Error")
         # Fallback to basic course level selection
         try:
             return get_course_level(course_vertical, grade, kitless)
@@ -1525,6 +1581,170 @@ def process_student_record(student, glific_contact, batch_id, initial_stage, cou
     except Exception as main_error:
         #frappe.log_error(f"Critical error in process_student_record for {student.student_name}: {str(main_error)}", "Backend Student Processing Critical Error")
         raise main_error
+
+# ════════════════════════════════════════════════════════════════════════════
+# CR-004 Slice 0 — T-04-03c: retryable Phase-2 Glific sync entrypoint
+# ════════════════════════════════════════════════════════════════════════════
+# This function is the unit of retry: on a transient Glific error it
+# re-enqueues itself (up to 3 times) and on exhaustion or non-transient
+# error it dead-letters to Error Log (DLQ) per L-015 / P-007.
+#
+# It is IDEMPOTENT: the `get_contact_by_phone` lookup inside
+# `process_glific_contact` short-circuits to an update if the contact
+# already exists — re-runs never double-create a Glific contact.
+#
+# Wiring into process_batch_job Phase 2 is T-04-04 (Slice 2).
+# ════════════════════════════════════════════════════════════════════════════
+
+def _dlq_glific(backend_student_name, error):
+    """Dead-letter a failed Glific sync to Error Log (L-030 rollback-before-log).
+
+    Sets glific_sync_status='failed' on the Backend Students row and writes a
+    structured JSON payload so operators can replay the sync manually.
+    Does NOT mark the student's processing_status as Failed — Phase-1 DB
+    records (Student + Enrollment) are left intact.
+    """
+    try:
+        frappe.db.rollback()  # L-030: clear any poisoned transaction first
+        bs = frappe.get_doc("Backend Students", backend_student_name)
+        bs.glific_sync_status = "failed"
+        bs.save(ignore_permissions=True)
+        payload = {
+            "backend_student": backend_student_name,
+            "student_id": bs.student_id if bs.student_id else None,
+            "phone": bs.phone,
+            "set": bs.parent,
+            "error": str(error),
+        }
+        frappe.log_error(
+            title=f"DLQ: Glific sync {backend_student_name}",
+            message=json.dumps(payload),
+        )
+        frappe.db.commit()
+    except Exception as inner_e:
+        # Double-fault: DLQ write itself failed. Log and re-raise so the
+        # worker surfaces the failure rather than swallowing it (L-056).
+        frappe.log_error(
+            title=f"DLQ double-fault: Glific sync {backend_student_name}",
+            message=f"Original: {error}; DLQ error: {inner_e}",
+        )
+        raise
+
+
+def _is_transient_glific_error(exc):
+    """Return True if the exception is a transient network/rate-limit error."""
+    if isinstance(exc, (_requests.Timeout, _requests.ConnectionError)):
+        return True
+    # HTTP 429 / 5xx surfaces as requests.HTTPError after raise_for_status()
+    if isinstance(exc, _requests.HTTPError):
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        if status is not None and (status == 429 or status >= 500):
+            return True
+    return False
+
+
+def sync_student_to_glific(backend_student_name, _attempt=0):
+    """Phase-2 Glific sync entrypoint — retryable, idempotent, dead-lettering.
+
+    Fetches the Backend Students row, runs the existing process_glific_contact
+    logic (contact lookup/create/optin/add-to-group OR update for existing
+    student), writes glific_id back onto both Student and Backend Students,
+    and sets glific_sync_status='synced'.
+
+    On transient error (Timeout / ConnectionError / HTTP 429 or 5xx):
+      - if _attempt < 3, re-enqueues with _attempt+1 and returns.
+    On exhaustion or non-transient error: DLQ via _dlq_glific.
+
+    Wired into process_batch_job Phase 2 by T-04-04 (Slice 2).
+    """
+    try:
+        bs = frappe.get_doc("Backend Students", backend_student_name)
+
+        # Idempotency guard: skip if already synced (e.g., duplicate enqueue).
+        if bs.glific_sync_status == "synced":
+            frappe.logger().info(
+                f"sync_student_to_glific: {backend_student_name} already synced, skipping."
+            )
+            return
+
+        # Resolve course level for Glific (same logic as process_batch_job Phase 1).
+        course_level_for_glific = None
+        if (hasattr(bs, "batch_skeyword") and bs.batch_skeyword
+                and bs.course_vertical and bs.grade):
+            batch_onboarding = frappe.get_all(
+                "Batch onboarding",
+                filters={"batch_skeyword": bs.batch_skeyword},
+                fields=["kit_less"],
+                limit=1,
+            )
+            if batch_onboarding:
+                course_level_for_glific = get_course_level_with_validation_backend(
+                    bs.course_vertical,
+                    bs.grade,
+                    bs.phone,
+                    bs.student_name,
+                    batch_onboarding[0].kit_less,
+                )
+
+        # Get the Glific group for this set (may be None — handled gracefully).
+        try:
+            glific_group = create_or_get_glific_group_for_batch(bs.parent)
+        except Exception as _grp_exc:
+            frappe.logger().warning(
+                f"sync_student_to_glific: could not resolve Glific group for "
+                f"set {bs.parent!r} (student {backend_student_name}): {_grp_exc}"
+            )
+            glific_group = None
+
+        # Perform the Glific sync (lookup / create / optin / add-to-group).
+        # Create a local ref_cache per-invocation — not shared across students
+        # (each sync_student_to_glific is a separate job), not process-global.
+        local_ref_cache = {}
+        glific_contact = process_glific_contact(
+            bs, glific_group, course_level_for_glific, local_ref_cache
+        )
+
+        # Write glific_id back to Student and Backend Students.
+        glific_id = None
+        if glific_contact and "id" in glific_contact:
+            glific_id = glific_contact["id"]
+
+        if glific_id and bs.student_id:
+            frappe.db.set_value("Student", bs.student_id, "glific_id", glific_id,
+                                update_modified=False)
+
+        bs.reload()
+        bs.glific_sync_status = "synced"
+        if glific_id:
+            bs.glific_id = glific_id
+        bs.save(ignore_permissions=True)
+
+        frappe.logger().info(
+            f"sync_student_to_glific: {backend_student_name} synced "
+            f"(glific_id={glific_id}, attempt={_attempt})"
+        )
+        frappe.db.commit()
+
+    except Exception as exc:
+        if _is_transient_glific_error(exc) and _attempt < 3:
+            frappe.logger().warning(
+                f"sync_student_to_glific: transient error for "
+                f"{backend_student_name} (attempt {_attempt}): {exc}; re-enqueueing."
+            )
+            frappe.enqueue(
+                sync_student_to_glific,
+                backend_student_name=backend_student_name,
+                _attempt=_attempt + 1,
+                queue="long",
+                enqueue_after_commit=True,
+            )
+            return
+        # Non-transient error OR retry budget exhausted — DLQ.
+        _dlq_glific(backend_student_name, exc)
+        raise  # L-056: RQ job must surface as failed, not finished
+
+
+# ════════════════════════════════════════════════════════════════════════════
 
 def update_backend_student_status(student, status, student_doc=None, error=None):
     """

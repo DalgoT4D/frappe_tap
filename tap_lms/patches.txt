@@ -8,3 +8,4 @@ tap_lms.patches.v0_2.add_pgcollection_unique_index
 tap_lms.patches.v0_2.add_pe_glific_id_unique_index
 tap_lms.patches.cr_002_v2.gamification_fields
 tap_lms.patches.cr_003.per_week_grace_and_channels
+tap_lms.patches.cr_004_onboarding_throughput.add_onboarding_indexes

@@ -4,6 +4,14 @@ import json
 from datetime import datetime, timedelta, timezone
 from dateutil.parser import isoparse
 
+# ── CR-004 Slice 0: shared session + explicit timeout on every Glific call ──
+# A module-level Session reuses the TLS connection across calls (keep-alive).
+# GLIFIC_TIMEOUT is a hard ceiling on connect+read combined; without it a
+# hung Glific endpoint blocks the entire RQ worker thread indefinitely,
+# causing supervisor STOPPING / orphaned-worker incidents (2026-05-31).
+_GLIFIC_SESSION = requests.Session()
+GLIFIC_TIMEOUT = 10  # seconds, connect+read combined
+
 def get_glific_settings():
     return frappe.get_single("Glific Settings")
 
@@ -32,10 +40,11 @@ def get_glific_auth_headers():
             "Content-Type": "application/json",
             "Accept": "application/json"
         }
-        response = requests.post(url, json=payload, headers=headers)
+        response = _GLIFIC_SESSION.post(url, json=payload, headers=headers,
+                                        timeout=GLIFIC_TIMEOUT)
         if response.status_code == 200:
             data = response.json()["data"]
-            
+
             # Parse the token_expiry_time string to a timezone-aware datetime object
             token_expiry_time = isoparse(data["token_expiry_time"])
             
@@ -107,9 +116,11 @@ def create_contact(name, phone, school_name, model_name, language_id, batch_id):
     frappe.logger().info(f"Glific API Payload: {payload}")
 
     try:
-        response = requests.post(url, json=payload, headers=headers)
+        response = _GLIFIC_SESSION.post(url, json=payload, headers=headers,
+                                        timeout=GLIFIC_TIMEOUT)
         frappe.logger().info(f"Glific API response status: {response.status_code}")
         frappe.logger().info(f"Glific API response content: {response.text}")
+        response.raise_for_status()  # B-3(a): surface 429/5xx so retry/DLQ fires
 
         if response.status_code == 200:
             data = response.json()
@@ -126,6 +137,9 @@ def create_contact(name, phone, school_name, model_name, language_id, batch_id):
         else:
             frappe.logger().error(f"Failed to create Glific contact. Status code: {response.status_code}")
             return None
+    except requests.exceptions.RequestException as e:
+        frappe.logger().error(f"Network error creating Glific contact: {str(e)}", exc_info=True)
+        raise  # FIX 2: transient network errors must propagate
     except Exception as e:
         frappe.logger().error(f"Exception occurred while creating Glific contact: {str(e)}", exc_info=True)
         return None
@@ -180,7 +194,8 @@ def update_contact_fields(contact_id, fields_to_update, language_id=None):
     }
 
     try:
-        fetch_response = requests.post(url, json=fetch_payload, headers=headers, timeout=15)
+        fetch_response = _GLIFIC_SESSION.post(url, json=fetch_payload, headers=headers,
+                                              timeout=GLIFIC_TIMEOUT)
         fetch_response.raise_for_status()
         fetch_data = fetch_response.json()
 
@@ -248,7 +263,8 @@ def update_contact_fields(contact_id, fields_to_update, language_id=None):
             },
         }
 
-        update_response = requests.post(url, json=update_payload, headers=headers, timeout=15)
+        update_response = _GLIFIC_SESSION.post(url, json=update_payload, headers=headers,
+                                               timeout=GLIFIC_TIMEOUT)
         update_response.raise_for_status()
         update_data = update_response.json()
 
@@ -269,7 +285,7 @@ def update_contact_fields(contact_id, fields_to_update, language_id=None):
 
     except requests.exceptions.RequestException as e:
         frappe.logger().error(f"Glific API request error for contact {contact_id}: {str(e)}")
-        return False
+        raise  # FIX 2: transient network errors must propagate
     except Exception as e:
         frappe.logger().error(f"Glific update_contact_fields error for {contact_id}: {str(e)}")
         return False
@@ -358,7 +374,8 @@ def register_contact_field(shortcode, display_name, value_type="TEXT",
     }
 
     try:
-        response = requests.post(url, json=payload, headers=headers, timeout=15)
+        response = _GLIFIC_SESSION.post(url, json=payload, headers=headers,
+                                        timeout=GLIFIC_TIMEOUT)
         response.raise_for_status()
         data = response.json()
 
@@ -439,14 +456,15 @@ def get_contact_by_phone(phone):
     }
 
     try:
-        response = requests.post(url, json=payload, headers=headers)
+        response = _GLIFIC_SESSION.post(url, json=payload, headers=headers,
+                                        timeout=GLIFIC_TIMEOUT)
         response.raise_for_status()
         data = response.json()
-        
+
         if "errors" in data:
             frappe.logger().error(f"Glific API Error in getting contact by phone: {data['errors']}")
             return None
-        
+
         contact = data.get("data", {}).get("contactByPhone", {}).get("contact")
         if contact:
             return contact
@@ -455,7 +473,7 @@ def get_contact_by_phone(phone):
             return None
     except requests.exceptions.RequestException as e:
         frappe.logger().error(f"Error calling Glific API to get contact by phone: {str(e)}")
-        return None
+        raise  # FIX 2: transient network errors must propagate so the retry/DLQ path fires
 
 def optin_contact(phone, name):
     settings = get_glific_settings()
@@ -487,14 +505,15 @@ def optin_contact(phone, name):
     }
 
     try:
-        response = requests.post(url, json=payload, headers=headers)
+        response = _GLIFIC_SESSION.post(url, json=payload, headers=headers,
+                                        timeout=GLIFIC_TIMEOUT)
         response.raise_for_status()
         data = response.json()
-        
+
         if "errors" in data:
             frappe.logger().error(f"Glific API Error in opting in contact: {data['errors']}")
             return False
-        
+
         contact = data.get("data", {}).get("optinContact", {}).get("contact")
         if contact:
             frappe.logger().info(f"Contact opted in successfully: {contact}")
@@ -504,7 +523,7 @@ def optin_contact(phone, name):
             return False
     except requests.exceptions.RequestException as e:
         frappe.logger().error(f"Error calling Glific API to opt in contact: {str(e)}")
-        return False
+        raise  # FIX 2: transient network errors must propagate
 
 def create_contact_old(name, phone):
     settings = get_glific_settings()
@@ -526,7 +545,8 @@ def create_contact_old(name, phone):
     frappe.logger().info(f"Glific API Payload: {payload}")
 
     try:
-        response = requests.post(url, json=payload, headers=headers)
+        response = _GLIFIC_SESSION.post(url, json=payload, headers=headers,
+                                        timeout=GLIFIC_TIMEOUT)
         frappe.logger().info(f"Glific API response status: {response.status_code}")
         frappe.logger().info(f"Glific API response content: {response.text}")
 
@@ -573,15 +593,16 @@ def start_contact_flow(flow_id, contact_id, default_results):
     }
 
     try:
-        response = requests.post(url, json=payload, headers=headers)
+        response = _GLIFIC_SESSION.post(url, json=payload, headers=headers,
+                                        timeout=GLIFIC_TIMEOUT)
         response.raise_for_status()
         data = response.json()
-        
+
         if "errors" in data:
             frappe.logger().error(f"{data}")
             frappe.logger().error(f"Glific API Error in starting flow: {data['errors']}")
             return False
-        
+
         success = data.get("data", {}).get("startContactFlow", {}).get("success")
         if success:
             return True
@@ -651,7 +672,8 @@ def check_glific_group_exists(group_label):
     }
 
     try:
-        response = requests.post(url, json=payload, headers=headers)
+        response = _GLIFIC_SESSION.post(url, json=payload, headers=headers,
+                                        timeout=GLIFIC_TIMEOUT)
         response.raise_for_status()
         data = response.json()
 
@@ -698,7 +720,8 @@ def create_glific_group(label, description=""):
     }
 
     try:
-        response = requests.post(url, json=payload, headers=headers)
+        response = _GLIFIC_SESSION.post(url, json=payload, headers=headers,
+                                        timeout=GLIFIC_TIMEOUT)
         response.raise_for_status()
         data = response.json()
 
@@ -809,7 +832,8 @@ def remove_contact_from_group(contact_id, group_id):
     }
 
     try:
-        response = requests.post(url, json=payload, headers=headers)
+        response = _GLIFIC_SESSION.post(url, json=payload, headers=headers,
+                                        timeout=GLIFIC_TIMEOUT)
         response.raise_for_status()
         data = response.json()
 
@@ -893,7 +917,8 @@ def add_contact_to_group(contact_id, group_id):
     }
 
     try:
-        response = requests.post(url, json=payload, headers=headers)
+        response = _GLIFIC_SESSION.post(url, json=payload, headers=headers,
+                                        timeout=GLIFIC_TIMEOUT)
         response.raise_for_status()
         data = response.json()
 
@@ -910,6 +935,9 @@ def add_contact_to_group(contact_id, group_id):
             return True
 
         return False
+    except requests.exceptions.RequestException as e:
+        frappe.logger().error(f"Network error adding contact to group: {str(e)}")
+        raise  # FIX 2: transient network errors must propagate
     except Exception as e:
         frappe.logger().error(f"Error adding contact to group: {str(e)}")
         return False
@@ -1089,11 +1117,13 @@ def add_student_to_glific_for_onboarding(student_name, phone, school_name, batch
 
         # Execute request
         try:
-            response = requests.post(
+            response = _GLIFIC_SESSION.post(
                 f"{settings.api_url}/api",
                 json=contact_data,
-                headers=get_glific_auth_headers()
+                headers=get_glific_auth_headers(),
+                timeout=GLIFIC_TIMEOUT,
             )
+            response.raise_for_status()  # B-3(b): surface 429/5xx so retry/DLQ fires
 
             if response.status_code != 200:
                 frappe.logger().error(f"Failed to create contact. Status: {response.status_code}, Response: {response.text}")
@@ -1129,6 +1159,9 @@ def add_student_to_glific_for_onboarding(student_name, phone, school_name, batch
 
             return contact
 
+        except requests.exceptions.RequestException as e:
+            frappe.logger().error(f"Network error in add_student_to_glific_for_onboarding: {str(e)}", exc_info=True)
+            raise  # FIX 2: transient network errors must propagate
         except Exception as e:
             frappe.logger().error(f"Exception in add_student_to_glific_for_onboarding: {str(e)}", exc_info=True)
             return None
