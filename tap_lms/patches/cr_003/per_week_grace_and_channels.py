@@ -67,14 +67,17 @@ def execute():
     # anything else -> 'help_note_a' (safe default; voice_note and parent_call
     # are new escalation types that no historical row would have used).
     #
-    # L-059 guard: `message_type` was DROPPED from EscalationStep JSON as part
-    # of CR-003's schema reshape. On migration deploys (servers where the
-    # pre-CR-003 schema was live) the column still exists in the DB because
-    # Frappe doesn't auto-drop columns. On fresh installs the column was
-    # never created. The has_column guard makes this patch idempotent across
-    # both deployment shapes — on fresh installs it cleanly skips Step 1.
+    # L-059/L-061 guard: `message_type` was DROPPED from EscalationStep JSON
+    # as part of CR-003's schema reshape. On migration deploys (servers where
+    # the pre-CR-003 schema was live) the column still exists in the DB because
+    # Frappe doesn't auto-drop columns. On fresh installs the table itself may
+    # not exist (tabEscalationStep is never created). frappe.db.has_column raises
+    # TableMissingError when the table doesn't exist (L-061), so we MUST guard
+    # with table_exists first. The two-part guard makes this patch idempotent
+    # across both deployment shapes — on fresh installs it cleanly skips Step 1.
     escalation_backfill_count = 0
-    if frappe.db.has_column("tabEscalationStep", "message_type"):
+    if (frappe.db.table_exists("EscalationStep")
+            and frappe.db.has_column("EscalationStep", "message_type")):
         backfilled = frappe.db.sql(
             """
             UPDATE "tabEscalationStep"
@@ -93,7 +96,7 @@ def execute():
     # The doctype JSON deletion is done out-of-band (T-03-03); this patch
     # ensures no orphaned rows remain when Frappe drops the table.
     voice_agent_rows_deleted = 0
-    if frappe.db.table_exists("tabVoiceAgentMapping"):
+    if frappe.db.table_exists("VoiceAgentMapping"):
         result = frappe.db.sql(
             'DELETE FROM "tabVoiceAgentMapping" RETURNING name'
         )
