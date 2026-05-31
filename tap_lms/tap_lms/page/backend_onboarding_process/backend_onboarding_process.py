@@ -1272,11 +1272,17 @@ def process_student_record(student, glific_contact, batch_id, initial_stage, cou
                 existing_student.language = student.language
                 updated_fields.append(f"language: {existing_student.language}→{student.language}")
             
-            # Update gender if missing or changed
-            if student.gender and (not existing_student.gender or student.gender != existing_student.gender):
-                old_gender = existing_student.gender or "Not Set"
+            # Update gender ONLY when the existing student has none (fill-only).
+            # Bug fix 2026-05-31: the prior logic OVERWROTE an existing gender
+            # whenever the incoming import row differed. Import gender data is
+            # unreliable (blank/other genders arrive as "Male"), so this flipped
+            # real Female students to Male on re-import. We now only populate a
+            # blank gender and never change an already-set one. Gender is treated
+            # as immutable-once-set here, unlike grade/school/language above which
+            # are intentionally mutable across terms.
+            if student.gender and not existing_student.gender:
                 existing_student.gender = student.gender
-                updated_fields.append(f"gender: {old_gender}→{student.gender}")
+                updated_fields.append(f"gender: (blank)→{student.gender}")
 
             if student.archetype:
                 existing_student.archetype = student.archetype
