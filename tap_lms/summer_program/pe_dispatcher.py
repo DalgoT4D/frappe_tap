@@ -216,7 +216,6 @@ def process_program_actions():
 # cron entry that still references the pre-rename name through one release
 # cycle. Delete once `bench show-scheduler-events` confirms no remaining
 # call site uses the old name.
-dispatch_pending_actions = process_program_actions
 
 
 def _dispatch_single(pe_row):
@@ -348,7 +347,16 @@ def handle_escalation(pe_row):
         return
 
     # ── Fire escalation step (CR-003 branch on escalation_type) ─────
-    step_config = steps[next_step - 1]
+    step_config = None
+    for step in steps:
+        try:
+            if int(step.get("escalation_order")) == next_step:
+                step_config = step
+                break
+        except (TypeError, ValueError):
+            step_config = steps[next_step - 1]
+
+
     next_hours = step_config.get("hours_after_previous", 24)
     escalation_type = step_config.get("escalation_type") or "help_note_a"
 
@@ -449,7 +457,7 @@ def handle_feedback_timeout(pe_row):
 
     if has_feedback:
         # Feedback arrived but state wasn't updated — trigger T12 as fallback
-        t12_feedback_ready(pe, "feedback_timeout_fallback")
+        t12_feedback_ready(pe, "scheduler")
     else:
         # Retry: schedule another check in 1 hour (max 3 retries)
         # Task #19 (2026-05-28, L-011): replaced `pe.save(ignore_permissions=True)`

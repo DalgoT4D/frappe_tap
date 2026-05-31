@@ -523,11 +523,9 @@ def t2_start_escalation(pe, step_number=1, escalation_type="",
     semantic). If None, defaults to 24h so legacy callers (tests / one-off
     admin invocations) still produce a sensible schedule.
     """
-    if next_hours is None:
-        next_hours = 24
     return transition(pe, STATE_NORMAL_ESCALATION, trigger_source, {
         "current_escalation_step": step_number,
-        "current_escalation_type": escalation_type or "",
+        "current_escalation_type": escalation_type,
         "journey_label": LABEL_CONTENT_DELIVERED,
         "next_action_at": add_to_date(now_datetime(), hours=float(next_hours)),
         "next_action_type": ACTION_ESCALATION,
@@ -572,8 +570,8 @@ def t3_escalation_submission(pe, points=0, trigger_source="flow_callback"):
         "in_grace_window": 0,
         "grace_window_end_at": None,
         "grace_window_start": None,
-        "next_action_at": add_to_date(now_datetime(), hours=FEEDBACK_TIMEOUT_HOURS),
-        "next_action_type": ACTION_FEEDBACK_TIMEOUT,
+        "next_action_at": None,
+        "next_action_type": "",
     })
 
 
@@ -717,8 +715,8 @@ def t7_core_submission(pe, points=0, trigger_source="flow_callback"):
         "in_grace_window": 0,
         "grace_window_end_at": None,
         "grace_window_start": None,
-        "next_action_at": add_to_date(now_datetime(), hours=FEEDBACK_TIMEOUT_HOURS),
-        "next_action_type": ACTION_FEEDBACK_TIMEOUT,
+        "next_action_at": None,
+        "next_action_type": "",
     })
 
 
@@ -735,8 +733,6 @@ def t8_start_remedial_escalation(pe, step_number=1, escalation_type="",
     so the dispatcher fires the NEXT remedial escalation step. Mirror of
     the T2 fix — pre-CR-009 the Remedial chain was also stuck at step 1.
     """
-    if next_hours is None:
-        next_hours = 24
     return transition(pe, STATE_REMEDIAL_ESCALATION, trigger_source, {
         "current_escalation_step": step_number,
         "current_escalation_type": escalation_type or "",
@@ -780,8 +776,8 @@ def t9_remedial_submission(pe, points=0, trigger_source="flow_callback"):
         "in_grace_window": 0,
         "grace_window_end_at": None,
         "grace_window_start": None,
-        "next_action_at": add_to_date(now_datetime(), hours=FEEDBACK_TIMEOUT_HOURS),
-        "next_action_type": ACTION_FEEDBACK_TIMEOUT,
+        "next_action_at": None,
+        "next_action_type": "",
     })
 
 
@@ -1021,8 +1017,8 @@ def t17_grace_submission(pe, points=0, trigger_source="flow_callback"):
         "weekly_submission_done": 1,
         "current_streak": (pe.current_streak or 0) + 1,
         "special_gems": (pe.special_gems or 0) + 1,
-        "next_action_at": add_to_date(now_datetime(), hours=FEEDBACK_TIMEOUT_HOURS),
-        "next_action_type": ACTION_FEEDBACK_TIMEOUT,
+        "next_action_at": None,
+        "next_action_type": "",
     })
 
 
