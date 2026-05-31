@@ -644,7 +644,7 @@ def t6_escalation_to_remedial(pe, week_rule=None, trigger_source="scheduler"):
 
 # ── T6b: Failed AI feedback → remedial (CR-004) ──
 def t6b_failed_feedback_to_remedial(pe, week_rule=None, trigger_source="microservice"):
-    """T6b: submitted_awaiting_feedback → remedial_content_delivery.
+    """T6b: submitted_awaiting_feedback → week_completed.
 
     CR-004. Fires when an AI-graded submission comes back with
     Submission.result_status == 'failed'. Routes the student into the
@@ -660,17 +660,17 @@ def t6b_failed_feedback_to_remedial(pe, week_rule=None, trigger_source="microser
       caller; T6 defaults to "scheduler").
     """
     updates = {
-        "journey_label": LABEL_REMEDIAL_STARTED,
+        "journey_label": LABEL_FEEDBACK_DELIVERED,
         "current_path": PATH_REMEDIAL,
         "next_action_at": now_datetime(),
-        "next_action_type": ACTION_CONTENT_DELIVERY,
+        "next_action_type": ACTION_WEEK_ADVANCEMENT,
     }
     if week_rule:
         updates["current_expected_submission_type"] = week_rule.get("expected_submission_type", "")
 
     log_event(pe, "path_changed", PATH_CORE, PATH_REMEDIAL, trigger_source)
 
-    return transition(pe, STATE_REMEDIAL_CONTENT, trigger_source, updates)
+    return transition(pe, STATE_WEEK_COMPLETED, trigger_source, updates)
 
 
 # ── T7: First submission (Core, from content delivery) ────

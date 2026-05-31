@@ -78,7 +78,7 @@ def on_feedback_ready(submission_name, student_id=None):
     # CR-007 review is resolved — t6b and t12 both live in state_machine,
     # neither has any back-reference to this module, so eager is safe.
     from tap_lms.summer_program.state_machine import (
-        t12_feedback_ready,
+        t12_feedback_ready,t13_feedback_delivered,
         t6b_failed_feedback_to_remedial,
     )
     from tap_lms.summer_program.constants import STATE_SUBMITTED_AWAITING
@@ -157,7 +157,7 @@ def on_feedback_ready(submission_name, student_id=None):
         # Default branch — pass / unset / lax-mode-failed → feedback_ready as before.
         # Note: CR-004 aligns this call's trigger_source from "feedback_consumer" to "microservice"
         # for analytics consistency with the new t6b branch.
-        t12_feedback_ready(pe, trigger_source="microservice")
+        t13_feedback_delivered(pe, trigger_source="microservice")
         _sync_contact_fields(pe)
         return {"status": "transitioned", "pe": pe_name, "branch": "feedback_ready",
                 "points_awarded": points}

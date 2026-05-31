@@ -3,7 +3,7 @@ import frappe
 from frappe.utils import cint
 
 from tap_lms.summer_program.state_machine import get_active_pe
-from tap_lms.summer_program.utils import resolve_student
+from tap_lms.summer_program.utils import resolve_student, glific_response
 
 
 EXPECTED_SUBMISSION_LABELS = {
@@ -17,6 +17,7 @@ EXPECTED_SUBMISSION_LABELS = {
 
 
 @frappe.whitelist(allow_guest=False)
+@glific_response
 def get_submission_message(student_id, flow_type, **_glific_kwargs):
     """
     Get the appropriate submission message for a student, based on their current
