@@ -3,7 +3,11 @@ import frappe
 from frappe.utils import cint
 
 from tap_lms.summer_program.state_machine import get_active_pe
-from tap_lms.summer_program.utils import resolve_student, glific_response
+from tap_lms.summer_program.utils import (
+    glific_response,
+    normalize_unicode_surrogates,
+    resolve_student,
+)
 
 
 EXPECTED_SUBMISSION_LABELS = {
@@ -168,8 +172,9 @@ def get_submission_message(student_id, flow_type, **_glific_kwargs):
 
 def _get_learning_unit_for_enrollment(pe, current_week):
     tier = pe.current_tier
+    course_level = normalize_unicode_surrogates(pe.course_level)
     params = {
-        "course_level": pe.course_level,
+        "course_level": course_level,
         "current_week": current_week,
     }
     tier_filter = ""
@@ -216,6 +221,7 @@ def _get_learning_unit_for_enrollment(pe, current_week):
 
 
 def _get_first_video_class(learning_unit):
+    learning_unit = normalize_unicode_surrogates(learning_unit)
     row = frappe.db.get_value(
         "UnitContentItem",
         {
@@ -241,10 +247,11 @@ def _get_first_assignment_for_video(video_class):
         order_by="idx asc",
         limit_page_length=1,
     )
-    return rows[0].assessment if rows else None
+    return normalize_unicode_surrogates(rows[0].assessment) if rows else None
 
 
 def _get_matching_submission_rule(assignment, submission_labels, language):
+    assignment = normalize_unicode_surrogates(assignment)
     rows = frappe.get_all(
         "Assignment Submission Rule",
         filters={

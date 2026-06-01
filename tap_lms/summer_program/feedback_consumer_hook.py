@@ -57,6 +57,8 @@ unconditionally — the flag only controls how its result is interpreted.
 """
 import frappe
 
+from tap_lms.summer_program.utils import normalize_unicode_surrogates
+
 
 def on_feedback_ready(submission_name, student_id=None):
     """
@@ -234,6 +236,7 @@ def _compute_submission_points(pe, submission_name, result_status):
 
     # Lax mode OR strict-mode-valid → award points_per_item
     assign_id = frappe.db.get_value("Submission", submission_name, "assign_id")
+    assign_id = normalize_unicode_surrogates(assign_id)
     if not assign_id:
         frappe.logger().warning(
             f"on_feedback_ready: submission {submission_name} has no assign_id; "

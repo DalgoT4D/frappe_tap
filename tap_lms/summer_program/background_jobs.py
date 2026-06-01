@@ -22,6 +22,8 @@
 import frappe
 from frappe.utils import now_datetime, cint, flt
 
+from tap_lms.summer_program.utils import normalize_unicode_surrogates
+
 
 def create_content_completion_log(
     student_id: str,
@@ -50,6 +52,11 @@ def create_content_completion_log(
     enqueued. For those rows, pass points_awarded + metadata so the
     StudentContentLog.after_insert hook can skip and avoid double-awarding.
     """
+    course_level = normalize_unicode_surrogates(course_level)
+    learning_unit = normalize_unicode_surrogates(learning_unit)
+    if content_type in ("Assignment", "Quiz"):
+        content_id = normalize_unicode_surrogates(content_id)
+
     content_name = get_content_name(content_type, content_id)
     attempt_number = frappe.db.count("StudentContentLog", {
         "student": student_id,
@@ -282,6 +289,8 @@ def job_finalize_quiz(
 
 def get_content_name(content_type: str, content_id: str) -> str:
     """Get display name for content item."""
+    if content_type in ("Assignment", "Quiz"):
+        content_id = normalize_unicode_surrogates(content_id)
     field_map = {
         "VideoClass": "video_name",
         "Quiz": "quiz_name",

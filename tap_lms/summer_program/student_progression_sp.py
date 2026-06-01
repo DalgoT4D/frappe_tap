@@ -22,7 +22,11 @@ from frappe.utils import (
 
 from tap_lms.summer_program.custom_messages import EXPECTED_SUBMISSION_LABELS
 from tap_lms.summer_program.state_machine import get_active_pe
-from tap_lms.summer_program.utils import glific_response, resolve_student
+from tap_lms.summer_program.utils import (
+    glific_response,
+    normalize_unicode_surrogates,
+    resolve_student,
+)
 
 
 def _time_diff_in_seconds(dt1, dt2):
@@ -102,6 +106,7 @@ def get_weekly_content(student_id, course_level=None, **_glific_kwargs):
         dict with week info, content items, path (Core/Remedial),
         expected submission type, and LearningUnit details.
     """
+    course_level = normalize_unicode_surrogates(course_level)
     student_id = _resolve_student_id(student_id)
     if not student_id:
         return {"success": False, "status": "not_found",
@@ -321,6 +326,7 @@ def get_next_content(student_id, course_level=None, **_glific_kwargs):
         return resp
 
     try:
+        course_level = normalize_unicode_surrogates(course_level)
         student_id = _resolve_student_id(student_id)
         if not student_id:
             return {"success": False, "status": "not_found",
@@ -667,6 +673,9 @@ def get_content_details(content_type, content_id, language=None,
             return {"success": False, "status": "invalid_content_type",
                     "error_detail": f"Invalid content_type: {content_type}"}
 
+        if content_type in ("Assignment", "Quiz"):
+            content_id = normalize_unicode_surrogates(content_id)
+
         if not frappe.db.exists(content_type, content_id):
             return {"success": False, "status": "not_found",
                     "error_detail": f"{content_type} not found: {content_id}"}
@@ -823,6 +832,10 @@ def complete_content(student_id, course_level, content_type, content_id,
         if not all([student_id, course_level, content_type, content_id]):
             return {"success": False, "status": "invalid_input",
                     "error_detail": "All parameters required"}
+
+        course_level = normalize_unicode_surrogates(course_level)
+        if content_type in ("Assignment", "Quiz"):
+            content_id = normalize_unicode_surrogates(content_id)
 
         if content_type == "Quiz":
             return {"success": False, "status": "wrong_endpoint",
@@ -1001,6 +1014,7 @@ def _advance_to_next_content(progress_data, course_level):
       - progress fields flattened to progress_completed / progress_total /
         progress_percentage
     """
+    course_level = normalize_unicode_surrogates(course_level)
     current_index = cint(progress_data["current_content_index"])
     new_index = current_index + 1
     content_items = _get_content_items(progress_data["stage"])
@@ -1106,6 +1120,9 @@ def start_quiz(student_id, course_level, quiz_id, language=None,
             return {"success": False, "status": "invalid_input",
                     "error_detail": "student_id, course_level, and quiz_id required"}
 
+        course_level = normalize_unicode_surrogates(course_level)
+        quiz_id = normalize_unicode_surrogates(quiz_id)
+
         student_id = _resolve_student_id(student_id)
         if not student_id:
             return {"success": False, "status": "not_found",
@@ -1208,7 +1225,8 @@ def start_quiz(student_id, course_level, quiz_id, language=None,
 
 def _resume_quiz(attempt, progress_data, language=None):
     """Resume an in-progress quiz attempt."""
-    quiz_doc = frappe.get_doc("Quiz", attempt.quiz)
+    quiz_id = normalize_unicode_surrogates(attempt.quiz)
+    quiz_doc = frappe.get_doc("Quiz", quiz_id)
     questions = _get_quiz_questions(quiz_doc)
 
     answered_indices = {cint(a.question_index) for a in attempt.answers}
@@ -1319,7 +1337,8 @@ def submit_answer(student_id, quiz_attempt_id, question_index, answer,
             return {"success": False, "status": "invalid_question_index",
                     "error_detail": f"Invalid question_index. Must be 1-{attempt.total_questions}"}
 
-        quiz_doc = frappe.get_doc("Quiz", attempt.quiz)
+        quiz_id = normalize_unicode_surrogates(attempt.quiz)
+        quiz_doc = frappe.get_doc("Quiz", quiz_id)
         questions = _get_quiz_questions(quiz_doc)
         q_row = questions[question_index - 1]
 
@@ -1452,7 +1471,8 @@ def _complete_quiz_sp(attempt, quiz_doc, questions, language=None):
         as_dict=True,
     )
 
-    course_level = progress_data["course_context"]
+    course_level = normalize_unicode_surrogates(progress_data["course_context"])
+    quiz_id = normalize_unicode_surrogates(attempt.quiz)
 
     # Clear quiz state
     frappe.db.set_value("StudentStageProgress", progress_data["name"], {
@@ -1473,7 +1493,7 @@ def _complete_quiz_sp(attempt, quiz_doc, questions, language=None):
         course_level=course_level,
         progress_name=progress_data["name"],
         content_type="Quiz",
-        content_id=attempt.quiz,
+        content_id=quiz_id,
         action="completed" if passed else "failed",
         score=score, max_score=100, passed=passed,
         time_spent_seconds=total_time,
@@ -1787,6 +1807,7 @@ def _get_learning_unit(course_level, week, tier):
     """
     Get the LearningUnit for a specific week and tier from Course Level.
     """
+    course_level = normalize_unicode_surrogates(course_level)
     result = frappe.db.sql("""
         SELECT lul.learning_unit
         FROM `tabLearningUnitList` lul
@@ -1804,6 +1825,7 @@ def _get_learning_unit(course_level, week, tier):
 
 def _get_content_items(learning_unit):
     """Get content items for a learning unit."""
+    learning_unit = normalize_unicode_surrogates(learning_unit)
     items = frappe.get_all(
         "UnitContentItem",
         filters={"parent": learning_unit, "parenttype": "LearningUnit"},
@@ -1827,6 +1849,8 @@ def _get_content_items(learning_unit):
 
 def _get_content_display_name(content_type, content_id):
     """Get display name for content."""
+    if content_type in ("Assignment", "Quiz"):
+        content_id = normalize_unicode_surrogates(content_id)
     field_map = {
         "VideoClass": "video_name",
         "Quiz": "quiz_name",
@@ -1869,8 +1893,17 @@ def _get_video_assessments(content_type, content_id):
     )
     if not rows:
         return None
-    return [{"assessment_type": r.assessment_type, "assessment_id": r.assessment}
-            for r in rows if r.assessment]
+    return [
+        {
+            "assessment_type": r.assessment_type,
+            "assessment_id": (
+                normalize_unicode_surrogates(r.assessment)
+                if r.assessment_type == "Assignment"
+                else r.assessment
+            ),
+        }
+        for r in rows if r.assessment
+    ]
 
 
 def _get_video_unguided_submission_message(student_id, assessments, language=None):
@@ -1923,6 +1956,7 @@ def _get_video_unguided_submission_message(student_id, assessments, language=Non
         if assessment.get("assessment_type") == "Assignment":
             assignment_id = assessment.get("assessment_id")
             break
+    assignment_id = normalize_unicode_surrogates(assignment_id)
 
     if not assignment_id:
         _log_unguided_submission(
@@ -2000,6 +2034,8 @@ def _strip_html_text(value):
 
 def _get_next_learning_unit(course_level, week_no, tier, after_lu):
     """Get next LU after current one in same week/tier."""
+    course_level = normalize_unicode_surrogates(course_level)
+    after_lu = normalize_unicode_surrogates(after_lu)
     current_idx = frappe.db.get_value(
         "LearningUnitList",
         {"parent": course_level, "parenttype": "Course Level", "learning_unit": after_lu},
@@ -2025,6 +2061,7 @@ def _get_next_learning_unit(course_level, week_no, tier, after_lu):
 
 def _check_week_exists(course_level, week_no):
     """Check if a week exists in course level."""
+    course_level = normalize_unicode_surrogates(course_level)
     return frappe.db.exists("LearningUnitList", {
         "parent": course_level, "parenttype": "Course Level", "week_no": week_no
     })
@@ -2034,6 +2071,7 @@ def _get_learning_unit_info(learning_unit):
     """Get LU display info."""
     if not learning_unit:
         return None
+    learning_unit = normalize_unicode_surrogates(learning_unit)
     try:
         lu = frappe.get_doc("LearningUnit", learning_unit)
         return {"id": learning_unit, "name": getattr(lu, 'unit_name', learning_unit)}
@@ -2055,6 +2093,7 @@ def _get_question_details(question_id, language=None):
     try:
         from frappe.utils import strip_html_tags
 
+        question_id = normalize_unicode_surrogates(question_id)
         q = frappe.get_doc("QuizQuestion", question_id)
         question_text = q.question or getattr(q, 'question_name', '') or ""
 
@@ -2174,7 +2213,7 @@ def _get_course_level_for_student(student, batch):
     the batch via _get_active_bpr_for_student, so if the PE row was used
     to find the batch, the PE row is also the right source for course_level.
     """
-    return frappe.db.get_value(
+    course_level = frappe.db.get_value(
         "ProgramEnrollment",
         {
             "student": student.name,
@@ -2182,7 +2221,8 @@ def _get_course_level_for_student(student, batch):
             "program_status": ["in", [PROGRAM_ACTIVE, PROGRAM_PAUSED]],
         },
         "course_level",
-    ) or None
+    )
+    return normalize_unicode_surrogates(course_level) or None
 
 
 def _get_language_for_student(student_id, course_level=None):
@@ -2194,6 +2234,7 @@ def _get_language_for_student(student_id, course_level=None):
     or incomplete enrollment rows. API-provided language is intentionally not
     considered.
     """
+    course_level = normalize_unicode_surrogates(course_level)
     filters = {
         "student": student_id,
         "program_status": ["in", [PROGRAM_ACTIVE, PROGRAM_PAUSED]],
@@ -2323,6 +2364,8 @@ def _get_or_create_sp_progress(student_id, course_level, week, tier, learning_un
     """
     Get or create a StudentStageProgress record for Summer Program.
     """
+    course_level = normalize_unicode_surrogates(course_level)
+    learning_unit = normalize_unicode_surrogates(learning_unit)
     progress = frappe.db.get_value(
         "StudentStageProgress",
         {

@@ -45,7 +45,10 @@ from tap_lms.summer_program.constants import (
     BPR_COLLECTIONS_READY,
 )
 from tap_lms.summer_program.event_log import log_event
-from tap_lms.summer_program.utils import get_student_display_name
+from tap_lms.summer_program.utils import (
+    get_student_display_name,
+    normalize_unicode_surrogates,
+)
 
 
 # ════════════════════════════════════════════════════════════
@@ -465,6 +468,8 @@ def create_program_enrollment(student_id, batch_id, archetype=None,
 
     if not archetype:
         return {"success": False, "error": "Student has no archetype assigned"}
+
+    course_level = normalize_unicode_surrogates(course_level)
 
     # Resolve course level if not provided
     if not course_level:
@@ -919,7 +924,7 @@ def _resolve_course_level(student, batch):
         return None
     for enrollment in student.enrollment:
         if enrollment.batch == batch.name and enrollment.course:
-            return enrollment.course
+            return normalize_unicode_surrogates(enrollment.course)
     return None
 
 

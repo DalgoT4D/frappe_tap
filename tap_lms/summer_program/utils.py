@@ -9,6 +9,17 @@ from datetime import timedelta
 from frappe.utils import now_datetime, get_datetime
 
 
+def normalize_unicode_surrogates(value):
+    """Convert escaped UTF-16 surrogate pairs into valid Unicode."""
+    if not isinstance(value, str):
+        return value
+
+    if not any(0xD800 <= ord(char) <= 0xDFFF for char in value):
+        return value
+
+    return value.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+
+
 def resolve_student(identifier):
     """Resolve a student identifier (Student name, glific_id, or phone) to Student document name.
 

@@ -42,6 +42,7 @@ from tap_lms.summer_program.state_machine import (
     apply_submission_transition,
 )
 from tap_lms.summer_program.event_log import log_event
+from tap_lms.summer_program.utils import normalize_unicode_surrogates
 URL_SUBMISSION_TYPES = {"audio", "image", "video"}
 SAVE_SUBMISSION_DB_RETRY_ATTEMPTS = 3
 SAVE_SUBMISSION_DB_RETRY_DELAY_SECONDS = 0.15
@@ -205,6 +206,7 @@ def _save_submission_once(student_id, assignment_id=None, submission=None, week=
             "SP API Deprecation",
         )
         assignment_id = content_id
+    assignment_id = normalize_unicode_surrogates(assignment_id)
 
     if not assignment_id:
         frappe.local.response.update({
@@ -573,6 +575,7 @@ def _try_claim_primary(pe, week):
 
 def _create_submission(pe, student_id, week, payload, assignment_id, is_primary):
     """Create assessment-style Submission with summer-program context."""
+    assignment_id = normalize_unicode_surrogates(assignment_id)
     doc = frappe.new_doc("Submission")
     doc.assign_id = assignment_id
     doc.student_id = student_id
@@ -675,6 +678,7 @@ def _log_student_content_submission(
 ):
     """Write the legacy completion log used by StudentProgression helpers."""
     try:
+        assignment_id = normalize_unicode_surrogates(assignment_id)
         filters = {
             "student": student_id,
             "stage_no": week,

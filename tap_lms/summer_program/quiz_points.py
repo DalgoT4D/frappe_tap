@@ -34,7 +34,11 @@ from tap_lms.summer_program.state_machine import (
     get_active_pe,
 )
 from tap_lms.summer_program.event_log import log_event
-from tap_lms.summer_program.utils import glific_response, resolve_student
+from tap_lms.summer_program.utils import (
+    glific_response,
+    normalize_unicode_surrogates,
+    resolve_student,
+)
 
 
 # ════════════════════════════════════════════════════════════
@@ -213,7 +217,8 @@ def compute_quiz_points(attempt):
     """
     earned = 0
     for ans in (attempt.answers or []):
-        q = frappe.get_cached_doc("QuizQuestion", ans.question)
+        question = normalize_unicode_surrogates(ans.question)
+        q = frappe.get_cached_doc("QuizQuestion", question)
         if ans.is_correct:
             earned += int(q.points or 0)
         else:
