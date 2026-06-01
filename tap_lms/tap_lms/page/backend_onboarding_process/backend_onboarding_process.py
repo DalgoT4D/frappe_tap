@@ -6,6 +6,7 @@ from frappe.utils import nowdate, nowtime, now
 from tap_lms.glific_integration import create_or_get_glific_group_for_batch, add_student_to_glific_for_onboarding, get_contact_by_phone
 from tap_lms.api import get_course_level
 import time
+import psycopg2.errors as _pg_errors  # Postgres serialization / deadlock classification (L-071)
 
 
 def normalize_phone_number(phone):
@@ -1353,33 +1354,51 @@ def process_student_record(student, glific_contact, batch_id, initial_stage, cou
                     #     "Backend Course Reuse"
                     # )
                 
-                # Create new enrollment (always) - with enhanced error handling
-                try:
-                    enrollment = {
-                        "doctype": "Enrollments",
-                        "batch": student.batch,
-                        "grade": student.grade, # Use the updated grade
-                        "date_joining": nowdate(),
-                        "school": student.school
-                    }
-                    
-                    # Add course level if we found one (can be None)
-                    if course_level:
-                        enrollment["course"] = course_level
-                    
-                    existing_student.append("enrollment", enrollment)
-                    
-                    # SHORTENED LOG MESSAGE
-                    enrollment_msg = f"Enrollment added: {student.student_name} | Batch: {student.batch} | Grade: {student.grade} | Course: {course_level or 'None'}"
-                    #frappe.log_error(
-                    #     enrollment_msg[:140], # Truncate to 140 chars
-                    #     "Backend Enrollment Added"
-                    # )
-                    
-                except Exception as enrollment_error:
-                    value = []
-                    #frappe.log_error(f"Error creating enrollment: {str(enrollment_error)}", "Backend Enrollment Error")
-                    # Continue without enrollment if there's an error
+                # Idempotency guard (L-073): skip if the student already has
+                # an enrollment for this exact batch.  Different batches are
+                # allowed — a student legitimately enrolled in a prior term
+                # AND the current term must keep both rows.
+                # Key is batch only; sibling-safety is naturally preserved
+                # because siblings are different Student docs (different
+                # student_id / doc name) each with their own child table.
+                existing_batches = {
+                    e.batch for e in (existing_student.enrollment or [])
+                }
+                if student.batch in existing_batches:
+                    # duplicate on re-run — skip silently
+                    frappe.logger().info(
+                        f"process_student_record: skipping duplicate enrollment "
+                        f"for {student.student_name} in batch {student.batch} "
+                        f"(idempotency guard L-073)"
+                    )
+                else:
+                    # Create new enrollment - with enhanced error handling
+                    try:
+                        enrollment = {
+                            "doctype": "Enrollments",
+                            "batch": student.batch,
+                            "grade": student.grade, # Use the updated grade
+                            "date_joining": nowdate(),
+                            "school": student.school
+                        }
+
+                        # Add course level if we found one (can be None)
+                        if course_level:
+                            enrollment["course"] = course_level
+
+                        existing_student.append("enrollment", enrollment)
+
+                        # SHORTENED LOG MESSAGE
+                        enrollment_msg = f"Enrollment added: {student.student_name} | Batch: {student.batch} | Grade: {student.grade} | Course: {course_level or 'None'}"
+                        #frappe.log_error(
+                        #     enrollment_msg[:140], # Truncate to 140 chars
+                        #     "Backend Enrollment Added"
+                        # )
+
+                    except Exception as enrollment_error:
+                        value = []
+                        #frappe.log_error(f"Error creating enrollment: {str(enrollment_error)}", "Backend Enrollment Error")
+                        # Continue without enrollment if there's an error
             
             # Update Glific ID if we have it and student doesn't
             if glific_contact and 'id' in glific_contact and not existing_student.glific_id:
@@ -1638,7 +1657,18 @@ def _dlq_glific(backend_student_name, error):
 
 
 def _is_transient_glific_error(exc):
-    """Return True if the exception is a transient network/rate-limit error."""
+    """Return True if the exception is a transient error that should be retried.
+
+    Transient classes:
+    - requests network errors: Timeout, ConnectionError
+    - HTTP rate-limit / server errors: 429 or 5xx (via raise_for_status())
+    - Postgres serialization / deadlock errors (L-071): these arise under
+      concurrent workers and succeed on retry without any application change.
+      Matched both by psycopg2 exception class (when the raw PG exception
+      bubbles up) AND by message substring (Frappe sometimes wraps the PG
+      exception in its own exception, preserving the message but changing
+      the type).
+    """
     if isinstance(exc, (_requests.Timeout, _requests.ConnectionError)):
         return True
     # HTTP 429 / 5xx surfaces as requests.HTTPError after raise_for_status()
@@ -1646,6 +1676,14 @@ def _is_transient_glific_error(exc):
         status = getattr(getattr(exc, "response", None), "status_code", None)
         if status is not None and (status == 429 or status >= 500):
             return True
+    # Postgres serialization failure / deadlock — both are transient under
+    # concurrent worker contention (L-071).  Match by class first (raw psycopg2
+    # exception), then by message substring (Frappe-wrapped exception).
+    if isinstance(exc, (_pg_errors.SerializationFailure, _pg_errors.DeadlockDetected)):
+        return True
+    exc_msg = str(exc).lower()
+    if "could not serialize access" in exc_msg or "deadlock detected" in exc_msg:
+        return True
     return False
 
 
