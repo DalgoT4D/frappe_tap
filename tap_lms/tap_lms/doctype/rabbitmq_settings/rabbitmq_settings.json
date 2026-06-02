@@ -1,84 +1,84 @@
 {
- "actions": [],
- "allow_rename": 1,
- "creation": "2024-10-20 17:40:05.124472",
- "default_view": "List",
- "doctype": "DocType",
- "editable_grid": 1,
- "engine": "InnoDB",
- "field_order": [
-  "host",
-  "port",
-  "virtual_host",
-  "username",
-  "password",
-  "submission_queue",
-  "plagiarism_results_queue",
-  "feedback_results_queue"
- ],
- "fields": [
-  {
-   "fieldname": "host",
-   "fieldtype": "Data",
-   "label": "Host"
-  },
-  {
-   "fieldname": "port",
-   "fieldtype": "Data",
-   "label": "Port"
-  },
-  {
-   "fieldname": "virtual_host",
-   "fieldtype": "Data",
-   "label": "Virtual Host"
-  },
-  {
-   "fieldname": "username",
-   "fieldtype": "Data",
-   "label": "Username"
-  },
-  {
-   "fieldname": "password",
-   "fieldtype": "Data",
-   "label": "Password"
-  },
-  {
-   "fieldname": "submission_queue",
-   "fieldtype": "Data",
-   "label": "Submission Queue"
-  },
-  {
-   "fieldname": "plagiarism_results_queue",
-   "fieldtype": "Data",
-   "label": "Plagiarism Results Queue"
-  },
-  {
-   "fieldname": "feedback_results_queue",
-   "fieldtype": "Data",
-   "label": "Feedback Results Queue"
-  }
- ],
- "index_web_pages_for_search": 1,
- "issingle": 1,
- "links": [],
- "modified": "2024-11-06 14:57:16.428317",
- "modified_by": "Administrator",
- "module": "Tap Lms",
- "name": "RabbitMQ Settings",
- "owner": "Administrator",
- "permissions": [
-  {
-   "create": 1,
-   "delete": 1,
-   "email": 1,
-   "print": 1,
-   "read": 1,
-   "role": "System Manager",
-   "share": 1,
-   "write": 1
-  }
- ],
- "sort_field": "modified",
- "sort_order": "DESC",
- "states": []
+  "actions": [],
+  "allow_rename": 1,
+  "creation": "2024-10-20 17:40:05.124472",
+  "default_view": "List",
+  "doctype": "DocType",
+  "editable_grid": 1,
+  "engine": "InnoDB",
+  "field_order": [
+    "host",
+    "port",
+    "virtual_host",
+    "username",
+    "password",
+    "submission_queue",
+    "plagiarism_results_queue",
+    "feedback_results_queue"
+  ],
+  "fields": [
+    {
+      "fieldname": "host",
+      "fieldtype": "Data",
+      "label": "Host"
+    },
+    {
+      "fieldname": "port",
+      "fieldtype": "Data",
+      "label": "Port"
+    },
+    {
+      "fieldname": "virtual_host",
+      "fieldtype": "Data",
+      "label": "Virtual Host"
+    },
+    {
+      "fieldname": "username",
+      "fieldtype": "Data",
+      "label": "Username"
+    },
+    {
+      "fieldname": "password",
+      "fieldtype": "Data",
+      "label": "Password"
+    },
+    {
+      "fieldname": "submission_queue",
+      "fieldtype": "Data",
+      "label": "Submission Queue"
+    },
+    {
+      "fieldname": "plagiarism_results_queue",
+      "fieldtype": "Data",
+      "label": "Plagiarism Results Queue"
+    },
+    {
+      "fieldname": "feedback_results_queue",
+      "fieldtype": "Data",
+      "label": "Feedback Results Queue"
+    }
+  ],
+  "index_web_pages_for_search": 1,
+  "issingle": 1,
+  "links": [],
+  "modified": "2027-01-01 00:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "Tap Lms",
+  "name": "RabbitMQ Settings",
+  "owner": "Administrator",
+  "permissions": [
+    {
+      "create": 1,
+      "delete": 1,
+      "email": 1,
+      "print": 1,
+      "read": 1,
+      "role": "System Manager",
+      "share": 1,
+      "write": 1
+    }
+  ],
+  "sort_field": "modified",
+  "sort_order": "DESC",
+  "states": []
 }

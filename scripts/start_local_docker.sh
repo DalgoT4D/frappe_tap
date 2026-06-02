@@ -218,6 +218,7 @@ set_single_value "RAG Settings" assignment_context_endpoint "api/method/tap_lms.
 set_single_value "RAG Settings" student_context_endpoint    "api/method/tap_lms.imgana.submission.get_student_details"
 set_single_value "RAG Settings" enable_caching              "0"
 
+bench --site "$SITE_NAME" migrate
 bench --site "$SITE_NAME" clear-cache
 ' # <--- This ends the massive Step 3 single-quoted container block cleanly!
 
