@@ -45,6 +45,7 @@ from tap_lms.summer_program.constants import (
     BPR_COLLECTIONS_READY,
 )
 from tap_lms.summer_program.event_log import log_event
+from tap_lms.summer_program.enrollment import _commit_with_serialization_retry
 from tap_lms.summer_program.utils import (
     get_student_display_name,
     normalize_unicode_surrogates,
@@ -407,19 +408,33 @@ def _process_pe_chunk(bpr_name, batch_name, student_ids, chunk_index):
             )
             errors.append(f"{sid}: {str(e)}")
 
+    # This commit flushes the per-student enqueue_after_commit Glific sync jobs
+    # in their own transaction — independent of the contended BPR counter
+    # UPDATE below (Fix 1 / BR-001). The counter conflict can never roll the
+    # sync work back because it already committed here.
     frappe.db.commit()
 
-    # Update BPR total_enrolled count
-    frappe.db.sql("""
-        UPDATE `tabBatchProgramRun`
-        SET total_enrolled = (
-            SELECT COUNT(*) FROM `tabProgramEnrollment`
-            WHERE batch = (SELECT batch FROM `tabBatchProgramRun` WHERE name = %s)
-              AND program_status != 'dropped'
-        )
-        WHERE name = %s
-    """, (bpr_name, bpr_name))
-    frappe.db.commit()
+    # Recompute BPR.total_enrolled from the authoritative PE row count, in its
+    # own retry-wrapped transaction. The shared BPR row is contended by all
+    # ~72 Phase-3 chunk workers (1000 students/chunk — MORE contention than
+    # Phase 1); without retry a SerializationFailure here leaves the count
+    # stale until a later chunk happens to recompute it, and the final chunk's
+    # conflict would strand it permanently. L-071.
+    def _recompute_counter():
+        frappe.db.sql("""
+            UPDATE `tabBatchProgramRun`
+            SET total_enrolled = (
+                SELECT COUNT(*) FROM `tabProgramEnrollment`
+                WHERE batch = (SELECT batch FROM `tabBatchProgramRun` WHERE name = %s)
+                  AND program_status != 'dropped'
+            )
+            WHERE name = %s
+        """, (bpr_name, bpr_name))
+
+    _commit_with_serialization_retry(
+        _recompute_counter,
+        context=f"bpr={bpr_name} phase=3 recompute",
+    )
 
     frappe.logger().info(
         f"SP PE chunk {chunk_index}: created={created}, skipped={skipped}, "

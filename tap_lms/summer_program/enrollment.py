@@ -10,6 +10,9 @@ Uses frappe.enqueue (queue="long") for heavy work.
 """
 import frappe
 import json
+import time
+import random
+import psycopg2.errors as pg_errors
 from frappe.utils import now_datetime
 from datetime import datetime, timezone
 
@@ -163,7 +166,6 @@ def _process_enrollment_chunk(bpr_name, batch_name, student_ids, chunk_index):
       1. Update Glific contact fields (archetype, experiment_arm, program_type)
       2. Track enrollment count on BPR
     """
-    bpr = frappe.get_doc("BatchProgramRun", bpr_name)
     batch = frappe.get_doc("Batch", batch_name)
     enrolled = 0
 
@@ -209,24 +211,122 @@ def _process_enrollment_chunk(bpr_name, batch_name, student_ids, chunk_index):
                 "SP Enrollment Chunk",
             )
 
-    # Atomically update enrolled count
-    frappe.db.sql(
-        """
-        UPDATE `tabBatchProgramRun`
-        SET total_enrolled = total_enrolled + %s
-        WHERE name = %s
-        """,
-        (enrolled, bpr_name),
-    )
+    # Flush the per-student enqueue_after_commit Glific sync jobs in their OWN
+    # transaction BEFORE touching the contended BPR counter row. Previously the
+    # sync enqueues shared a transaction with the counter UPDATE below, so a
+    # SerializationFailure on the counter rolled the sync work back too,
+    # silently dropping it (BR-001 / L-071). Committing here dispatches those
+    # jobs independently of whether the counter UPDATE later conflicts.
     frappe.db.commit()
 
-    # Check if all chunks are done
-    bpr.reload()
-    if bpr.total_enrolled >= bpr.total_imported:
-        bpr.enrollment_completed_at = now_datetime()
-        bpr.save(ignore_permissions=True)
-        frappe.db.commit()
+    # Counter UPDATE in its own retry-wrapped transaction. On exhaustion this
+    # raises so the RQ job is recorded as failed (L-056) — the lost increment
+    # surfaces in the DLQ rather than vanishing into a permanent undercount.
+    _update_bpr_counter_with_retry(bpr_name, enrolled)
+
+    # Stamp completion atomically. Multiple chunk workers can cross the
+    # total_enrolled >= total_imported threshold near-simultaneously; a
+    # reload()+save() race lets the last writer clobber concurrent counter
+    # increments and re-stamp enrollment_completed_at. The guarded UPDATE +
+    # RETURNING is the project idempotency primitive (L-010): only the worker
+    # whose UPDATE actually flips the still-NULL stamp gets a row back; the
+    # rest no-op. The WHERE re-reads total_enrolled/total_imported in the same
+    # statement, so there is no stale-snapshot window.
+    stamped = frappe.db.sql(
+        """
+        UPDATE `tabBatchProgramRun`
+        SET enrollment_completed_at = %s
+        WHERE name = %s
+          AND enrollment_completed_at IS NULL
+          AND total_enrolled >= total_imported
+        RETURNING name
+        """,
+        (now_datetime(), bpr_name),
+    )
+    frappe.db.commit()
+    if stamped:
         frappe.logger().info(f"SP enrollment complete for BPR {bpr_name}")
+
+
+# ── Serialization-retry primitives (BR-001 / L-071) ─────────
+
+
+def _commit_with_serialization_retry(do_write, *, context, max_retries=3):
+    """Run a DB write + commit, retrying on transient Postgres write conflicts.
+
+    `do_write` is a zero-arg callable that issues the UPDATE (but NOT the
+    commit — this helper owns commit/rollback so each attempt is its own
+    transaction). On `psycopg2.errors.SerializationFailure` /
+    `DeadlockDetected` (the transient PG write-contention errors, L-071) we
+    rollback and retry with exponential backoff + jitter: 100ms, 300ms, 900ms
+    (+0-50ms). Any other exception is non-transient and propagates immediately
+    after a rollback.
+
+    On retry exhaustion we `log_error` with `context` then re-raise the last
+    serialization error — the RQ job MUST see the failure (L-056), never a
+    silent swallow.
+    """
+    backoffs = (0.1, 0.3, 0.9)
+    last_exc = None
+    for attempt in range(max_retries + 1):
+        try:
+            do_write()
+            frappe.db.commit()
+            return
+        except (pg_errors.SerializationFailure, pg_errors.DeadlockDetected) as e:
+            last_exc = e
+            frappe.db.rollback()
+            if attempt < max_retries:
+                delay = backoffs[attempt] if attempt < len(backoffs) else backoffs[-1]
+                time.sleep(delay + random.uniform(0, 0.05))
+                continue
+        except Exception:
+            # Non-transient — do not retry; surface immediately.
+            frappe.db.rollback()
+            raise
+
+    # Retries exhausted — log loudly with context, then re-raise so the RQ job
+    # is recorded as failed (L-056) rather than silently undercounting.
+    try:
+        frappe.log_error(
+            message=(
+                f"BPR counter UPDATE: SerializationFailure exhausted after "
+                f"{max_retries + 1} attempts. context={context} "
+                f"last_exception={last_exc!r}"
+            ),
+            title="SP counter SerializationFailure exhausted",
+        )
+    except Exception:
+        pass
+    raise last_exc
+
+
+def _update_bpr_counter_with_retry(bpr_name, increment, max_retries=3):
+    """Increment BatchProgramRun.total_enrolled by `increment`, retry-safe.
+
+    The shared BPR row is contended by every enrollment chunk worker; under
+    concurrency Postgres raises SerializationFailure on overlapping UPDATEs
+    (L-071). Each attempt commits in its own transaction, so a conflict only
+    costs the increment — never the already-committed per-student Glific sync
+    enqueues, which the caller flushed with its own commit before calling this.
+    """
+    def _do_update():
+        # COALESCE: total_enrolled is a nullable Int (no JSON default); NULL + n
+        # is NULL in Postgres and would permanently poison the counter (L-011).
+        frappe.db.sql(
+            """
+            UPDATE `tabBatchProgramRun`
+            SET total_enrolled = COALESCE(total_enrolled, 0) + %s
+            WHERE name = %s
+            """,
+            (increment, bpr_name),
+        )
+
+    _commit_with_serialization_retry(
+        _do_update,
+        context=f"bpr={bpr_name} increment={increment}",
+        max_retries=max_retries,
+    )
 
 
 # ── Helpers ──────────────────────────────────────────────────
