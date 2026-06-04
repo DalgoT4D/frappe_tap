@@ -10,11 +10,11 @@ Uses frappe.enqueue (queue="long") for heavy work.
 """
 import frappe
 import json
-import time
-import random
-import psycopg2.errors as pg_errors
 from frappe.utils import now_datetime
 from datetime import datetime, timezone
+
+# Single source of truth in utils.py (BR-003); re-exported here for back-compat.
+from tap_lms.summer_program.utils import _commit_with_serialization_retry
 
 from tap_lms.glific_integration import (
     update_contact_fields,
@@ -248,57 +248,11 @@ def _process_enrollment_chunk(bpr_name, batch_name, student_ids, chunk_index):
         frappe.logger().info(f"SP enrollment complete for BPR {bpr_name}")
 
 
-# ── Serialization-retry primitives (BR-001 / L-071) ─────────
-
-
-def _commit_with_serialization_retry(do_write, *, context, max_retries=3):
-    """Run a DB write + commit, retrying on transient Postgres write conflicts.
-
-    `do_write` is a zero-arg callable that issues the UPDATE (but NOT the
-    commit — this helper owns commit/rollback so each attempt is its own
-    transaction). On `psycopg2.errors.SerializationFailure` /
-    `DeadlockDetected` (the transient PG write-contention errors, L-071) we
-    rollback and retry with exponential backoff + jitter: 100ms, 300ms, 900ms
-    (+0-50ms). Any other exception is non-transient and propagates immediately
-    after a rollback.
-
-    On retry exhaustion we `log_error` with `context` then re-raise the last
-    serialization error — the RQ job MUST see the failure (L-056), never a
-    silent swallow.
-    """
-    backoffs = (0.1, 0.3, 0.9)
-    last_exc = None
-    for attempt in range(max_retries + 1):
-        try:
-            do_write()
-            frappe.db.commit()
-            return
-        except (pg_errors.SerializationFailure, pg_errors.DeadlockDetected) as e:
-            last_exc = e
-            frappe.db.rollback()
-            if attempt < max_retries:
-                delay = backoffs[attempt] if attempt < len(backoffs) else backoffs[-1]
-                time.sleep(delay + random.uniform(0, 0.05))
-                continue
-        except Exception:
-            # Non-transient — do not retry; surface immediately.
-            frappe.db.rollback()
-            raise
-
-    # Retries exhausted — log loudly with context, then re-raise so the RQ job
-    # is recorded as failed (L-056) rather than silently undercounting.
-    try:
-        frappe.log_error(
-            message=(
-                f"BPR counter UPDATE: SerializationFailure exhausted after "
-                f"{max_retries + 1} attempts. context={context} "
-                f"last_exception={last_exc!r}"
-            ),
-            title="SP counter SerializationFailure exhausted",
-        )
-    except Exception:
-        pass
-    raise last_exc
+# ── Serialization-retry primitives (BR-001 / BR-003 / L-071) ─────────
+#
+# _commit_with_serialization_retry now lives in summer_program/utils.py (single
+# source of truth, BR-003). Imported at module top and re-exported here for
+# backward compatibility with any importer of enrollment._commit_with_serialization_retry.
 
 
 def _update_bpr_counter_with_retry(bpr_name, increment, max_retries=3):

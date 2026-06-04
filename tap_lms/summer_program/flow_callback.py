@@ -44,6 +44,7 @@ from tap_lms.summer_program.state_machine import (
     t13_feedback_delivered,
 )
 from tap_lms.summer_program.event_log import log_event
+from tap_lms.summer_program.utils import sp_safe_endpoint
 
 
 # ════════════════════════════════════════════════════════════
@@ -90,6 +91,7 @@ def _response(pe, status_value, **extras):
 
 
 @frappe.whitelist(allow_guest=True)
+@sp_safe_endpoint("update_flow_status")
 def update_flow_status(student_id, status, flow_name, metadata=None,
                        **_glific_kwargs):
     """

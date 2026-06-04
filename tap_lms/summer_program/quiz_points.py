@@ -38,6 +38,7 @@ from tap_lms.summer_program.utils import (
     glific_response,
     normalize_unicode_surrogates,
     resolve_student,
+    sp_safe_endpoint,
 )
 
 
@@ -128,6 +129,7 @@ def award_quiz_points(attempt):
 
 
 @frappe.whitelist(allow_guest=False)
+@sp_safe_endpoint("award_bonus_quiz_points")
 @glific_response
 def award_bonus_quiz_points(student_id, points, **_glific_kwargs):
     """Award bonus points (independent of regular quiz attempts) to the

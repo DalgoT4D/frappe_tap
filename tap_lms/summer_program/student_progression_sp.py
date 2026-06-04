@@ -26,6 +26,9 @@ from tap_lms.summer_program.utils import (
     glific_response,
     normalize_unicode_surrogates,
     resolve_student,
+    safe_sp_api_error_response,
+    sp_safe_endpoint,
+    _insert_with_serialization_retry,
 )
 
 
@@ -85,6 +88,7 @@ def _is_week_advancement_pending(pe):
 # ============================================================
 
 @frappe.whitelist(allow_guest=False)
+@sp_safe_endpoint("get_weekly_content")
 @glific_response
 def get_weekly_content(student_id, course_level=None, **_glific_kwargs):
     """
@@ -627,8 +631,9 @@ def get_next_content(student_id, course_level=None, **_glific_kwargs):
         }
 
     except Exception as e:
-        frappe.log_error(f"get_next_content error: {str(e)}", "SP Progression API")
-        return {"success": False, "status": "error", "error_detail": str(e)}
+        # BR-003: rollback-first + flat error (L-030 cascade fix). Was:
+        # log_error on the poisoned txn → InFailedSqlTransaction → Glific 400.
+        return safe_sp_api_error_response(e, "get_next_content", student_id=student_id)
 
 
 # ============================================================
@@ -798,8 +803,7 @@ def get_content_details(content_type, content_id, language=None,
         }
 
     except Exception as e:
-        frappe.log_error(f"get_content_details error: {str(e)}", "SP Progression API")
-        return {"success": False, "status": "error", "error_detail": str(e)}
+        return safe_sp_api_error_response(e, "get_content_details", student_id=student_id)
 
 
 # ============================================================
@@ -1000,8 +1004,7 @@ def complete_content(student_id, course_level, content_type, content_id,
         return _advance_to_next_content(progress_data, course_level)
 
     except Exception as e:
-        frappe.log_error(f"complete_content error: {str(e)}", "SP Progression API")
-        return {"success": False, "status": "error", "error_detail": str(e)}
+        return safe_sp_api_error_response(e, "complete_content", student_id=student_id)
 
 
 def _advance_to_next_content(progress_data, course_level):
@@ -1219,8 +1222,7 @@ def start_quiz(student_id, course_level, quiz_id, language=None,
         return response
 
     except Exception as e:
-        frappe.log_error(f"start_quiz error: {str(e)}", "SP Progression API")
-        return {"success": False, "status": "error", "error_detail": str(e)}
+        return safe_sp_api_error_response(e, "start_quiz", student_id=student_id)
 
 
 def _resume_quiz(attempt, progress_data, language=None):
@@ -1425,8 +1427,7 @@ def submit_answer(student_id, quiz_attempt_id, question_index, answer,
         return response
 
     except Exception as e:
-        frappe.log_error(f"submit_answer error: {str(e)}", "SP Progression API")
-        return {"success": False, "status": "error", "error_detail": str(e)}
+        return safe_sp_api_error_response(e, "submit_answer", student_id=student_id)
 
 
 def _complete_quiz_sp(attempt, quiz_doc, questions, language=None):
@@ -2409,6 +2410,10 @@ def _get_or_create_sp_progress(student_id, course_level, week, tier, learning_un
         "total_quizzes_failed": 0,
         "total_time_spent_seconds": 0,
     })
-    doc.insert(ignore_permissions=True)
+    # BR-003: retry on transient PG SerializationFailure. StudentStageProgress
+    # is now hash-autoname (no tabSeries lock), but the retry also covers the
+    # rollout window (workers still on the old format-autoname until recycled,
+    # L-065) and any other transient write conflict.
+    _insert_with_serialization_retry(doc)
     # Removed mid-handler commit per L-017 — Frappe commits at request-end.
     return doc.name

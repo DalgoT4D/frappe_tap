@@ -22,6 +22,10 @@ from unittest.mock import patch, MagicMock, call
 import psycopg2.errors as pg_errors
 
 import tap_lms.summer_program.enrollment as enrollment
+# _commit_with_serialization_retry (and its time.sleep backoff) moved to utils
+# in BR-003; patch the sleep there. frappe / frappe.db are shared singletons, so
+# patch.object(enrollment.frappe.db, ...) still reaches the helper in utils.
+import tap_lms.summer_program.utils as sp_utils
 
 
 _SYNC_JOB = "tap_lms.summer_program.state_machine._sync_contact_fields_job"
@@ -42,7 +46,7 @@ class TestCounterRetry(unittest.TestCase):
              patch.object(enrollment.frappe.db, "commit") as commit, \
              patch.object(enrollment.frappe.db, "rollback") as rollback, \
              patch.object(enrollment.frappe, "log_error") as log_error, \
-             patch.object(enrollment.time, "sleep") as sleep:
+             patch.object(sp_utils.time, "sleep") as sleep:
 
             enrollment._update_bpr_counter_with_retry("BT00000019", 100)
 
@@ -62,7 +66,7 @@ class TestCounterRetry(unittest.TestCase):
              patch.object(enrollment.frappe.db, "commit") as commit, \
              patch.object(enrollment.frappe.db, "rollback") as rollback, \
              patch.object(enrollment.frappe, "log_error") as log_error, \
-             patch.object(enrollment.time, "sleep"):
+             patch.object(sp_utils.time, "sleep"):
 
             with self.assertRaises(pg_errors.SerializationFailure):
                 enrollment._update_bpr_counter_with_retry("BT00000019", 100, max_retries=3)
@@ -85,7 +89,7 @@ class TestCounterRetry(unittest.TestCase):
              patch.object(enrollment.frappe.db, "commit") as commit, \
              patch.object(enrollment.frappe.db, "rollback") as rollback, \
              patch.object(enrollment.frappe, "log_error") as log_error, \
-             patch.object(enrollment.time, "sleep") as sleep:
+             patch.object(sp_utils.time, "sleep") as sleep:
 
             with self.assertRaises(ValueError):
                 enrollment._update_bpr_counter_with_retry("BT00000019", 100)
@@ -137,7 +141,7 @@ class TestSyncEnqueueSurvivesCounterFailure(unittest.TestCase):
              patch.object(enrollment.frappe.db, "commit") as commit, \
              patch.object(enrollment.frappe.db, "rollback"), \
              patch.object(enrollment.frappe, "log_error"), \
-             patch.object(enrollment.time, "sleep"), \
+             patch.object(sp_utils.time, "sleep"), \
              patch("tap_lms.summer_program.utils.get_student_display_name",
                    return_value="Test Student"):
 
@@ -192,7 +196,7 @@ class TestSyncEnqueueSurvivesCounterFailure(unittest.TestCase):
              patch.object(enrollment.frappe.db, "commit") as commit, \
              patch.object(enrollment.frappe.db, "rollback"), \
              patch.object(enrollment.frappe, "log_error"), \
-             patch.object(enrollment.time, "sleep"), \
+             patch.object(sp_utils.time, "sleep"), \
              patch("tap_lms.summer_program.utils.get_student_display_name",
                    return_value="Test Student"):
 

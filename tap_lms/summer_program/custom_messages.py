@@ -7,6 +7,7 @@ from tap_lms.summer_program.utils import (
     glific_response,
     normalize_unicode_surrogates,
     resolve_student,
+    safe_sp_api_error_response,
 )
 
 
@@ -162,12 +163,12 @@ def get_submission_message(student_id, flow_type, **_glific_kwargs):
         }
 
     except Exception as e:
-        frappe.log_error(frappe.get_traceback(), "Get Submission Message Error")
-        return {
-            "success": False,
-            "status": "error",
-            "error_detail": str(e),
-        }
+        # BR-003: rollback-first + flat error (L-030 cascade fix). The previous
+        # `frappe.log_error(...); return {...}` ran log_error's INSERT on an
+        # already-poisoned txn → InFailedSqlTransaction → Glific 400. It also
+        # leaked raw `str(e)` to the WhatsApp learner via error_detail.
+        return safe_sp_api_error_response(e, "get_submission_message",
+                                          student_id=student_id)
 
 
 def _get_learning_unit_for_enrollment(pe, current_week):

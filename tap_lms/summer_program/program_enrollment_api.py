@@ -45,10 +45,11 @@ from tap_lms.summer_program.constants import (
     BPR_COLLECTIONS_READY,
 )
 from tap_lms.summer_program.event_log import log_event
-from tap_lms.summer_program.enrollment import _commit_with_serialization_retry
+from tap_lms.summer_program.utils import _commit_with_serialization_retry
 from tap_lms.summer_program.utils import (
     get_student_display_name,
     normalize_unicode_surrogates,
+    sp_safe_endpoint,
 )
 
 
@@ -759,6 +760,7 @@ def get_enrollment_summary(batch_id):
 
 
 @frappe.whitelist(allow_guest=False)
+@sp_safe_endpoint("get_student_state")
 def get_student_state(student_id):
     """
     API A1: get_student_state
