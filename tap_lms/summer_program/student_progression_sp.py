@@ -863,6 +863,90 @@ def complete_content(student_id, course_level, content_type, content_id,
             return {"success": False, "status": "no_progress",
                     "error_detail": "No progress record found. Call get_next_content first."}
 
+        # ── PE-canonical SSP auto-correct (CR-023, mirrors get_next_content) ──
+        # The state machine owns the truth (PE.current_week / current_path /
+        # current_tier); SSP is DERIVED and can lag a week boundary — e.g. PE
+        # advanced via T14 but no get_next_content call has realigned SSP yet.
+        # Without this, complete_content validates the incoming content_id
+        # against a STALE SSP.stage and fails with content_mismatch even though
+        # the student is legitimately on the new week; worse, the stale stage
+        # would flow into _advance_to_next_content + the SCL enqueue below,
+        # writing cross-week StudentContentLog rows. Align SSP to PE BEFORE
+        # reading content_items. (Loud content_mismatch for a genuinely wrong
+        # content_id is preferred over silently passing stale SSP through.)
+        #
+        # MUST stay in sync with the get_next_content SSP-canonical block (L-074):
+        # both endpoints read SSP.stage and both require PE alignment first.
+        #
+        # Two checks get_next_content has are DELIBERATELY omitted here (L-074:
+        # enumerate the intentional differences, don't silently let the blocks
+        # diverge):
+        #   - _is_week_advancement_pending: not needed. If T14 is queued but
+        #     unrun, pe.current_week is still the OLD week, so we align SSP to
+        #     the old week and the completion proceeds normally; T14 later sets
+        #     weekly_video_done=0 which re-triggers the reset on the next call.
+        #   - content-blocking (prior-week submission gate): complete_content
+        #     MARKS content done, it does not GATE access. A blocked student
+        #     never got a valid content_id for the blocked week (get_next_content
+        #     returns content_blocked), so a stale id here fails content_mismatch.
+        student = frappe.get_doc("Student", student_id)
+        batch, bpr = _get_active_bpr_for_student(student)
+        if not batch or not bpr:
+            return {"success": False, "status": "no_active_batch",
+                    "error_detail": "No active Summer Program batch found"}
+
+        pe = get_active_pe(student.name, batch.name)
+        if not pe:
+            return {"success": False, "status": "no_active_pe",
+                    "error_detail": "No active ProgramEnrollment for this student"}
+
+        current_week = pe.current_week or _get_effective_week(
+            student, batch, _get_current_week(batch))
+        path = pe.current_path or PATH_CORE
+        tier = pe.current_tier or (
+            REMEDIAL_TIER if path == PATH_REMEDIAL
+            else TIER_BY_WEEK.get(current_week, DEFAULT_TIER)
+        )
+
+        learning_unit = _get_learning_unit(course_level, current_week, tier)
+        if not learning_unit and path == PATH_REMEDIAL:
+            # Defensive fallback: missing Remedial LU → serve Core for this week.
+            tier = TIER_BY_WEEK.get(current_week, DEFAULT_TIER)
+            learning_unit = _get_learning_unit(course_level, current_week, tier)
+            path = PATH_CORE
+        if not learning_unit:
+            return {"success": False, "status": "no_content_for_week",
+                    "error_detail": f"No content found for week {current_week}"}
+
+        # Align SSP to PE + reset content_index to 0 (identical conditions to
+        # the get_next_content auto-correct: LU drift, week lag, or new-week-
+        # no-video-yet). Atomic via a single set_value, then mirror into the
+        # in-memory progress_data so content_items + the SCL enqueue use the
+        # aligned values.
+        ssp_week = cint(progress_data.get("current_week") or 0)
+        ssp_content_index = cint(progress_data.get("current_content_index") or 0)
+        new_week_no_video_yet = (
+            not bool(pe.weekly_video_done) and ssp_content_index > 0
+        )
+        needs_reset = (
+            progress_data["stage"] != learning_unit
+            or ssp_week != current_week
+            or new_week_no_video_yet
+        )
+        if needs_reset:
+            frappe.db.set_value("StudentStageProgress", progress_data["name"], {
+                "stage": learning_unit,
+                "current_week": current_week,
+                "current_tier": tier,
+                "is_on_remedial": 1 if tier == REMEDIAL_TIER else 0,
+                "current_content_index": 0,
+                "last_activity_timestamp": now_datetime(),
+            })
+            progress_data["stage"] = learning_unit
+            progress_data["current_week"] = current_week
+            progress_data["current_tier"] = tier
+            progress_data["current_content_index"] = 0
+
         # Validate content matches current position
         content_items = _get_content_items(progress_data["stage"])
         current_index = cint(progress_data["current_content_index"])

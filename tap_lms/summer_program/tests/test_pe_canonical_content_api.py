@@ -706,3 +706,159 @@ class TestSspCanonicalAutoCorrect(FrappeTestCase):
             ]
             self.assertEqual(len(auto_correct_calls), 0,
                              "synced SSP must NOT trigger auto-correct reset")
+
+
+class TestCompleteContentSspCanonical(FrappeTestCase):
+    """CR-023: complete_content must do PE-canonical SSP alignment BEFORE it
+    validates the incoming content_id — same auto-correct get_next_content has.
+
+    Without it, a student whose PE advanced a week (T14) but whose SSP hasn't
+    been realigned yet gets a spurious content_mismatch on the new week's
+    content, and the stale SSP.stage flows into the SCL enqueue (cross-week
+    rows). The fix aligns SSP to PE first; a genuinely wrong content_id still
+    returns a clean content_mismatch (loud failure, not silent corruption).
+    """
+
+    def _ssp(self, stage, week, content_index=0):
+        return {
+            "name": "SSP-CC-001",
+            "student": "STU-CC-001",
+            "stage": stage,
+            "current_week": week,
+            "current_tier": "Intermediate",
+            "current_content_index": content_index,
+            "is_on_remedial": False,
+            "remedial_attempts": 0,
+            "content_started_at": None,
+            "course_context": "CL-001",
+        }
+
+    def _run(self, sp, mock_frappe, ssp_data, pe, computed_lu, content_items,
+             content_type, content_id):
+        """Apply the full complete_content mock chain and invoke the raw body."""
+        student_doc = MagicMock(name="STU-CC-001")
+        student_doc.archetype = "fence_sitter"
+        batch_doc = MagicMock()
+        batch_doc.name = "BATCH-CC-001"
+        batch_doc.current_calendar_week = 2
+
+        mock_frappe.get_doc.return_value = student_doc
+        mock_frappe.db.get_value.return_value = ssp_data
+        mock_frappe.db.set_value = MagicMock()
+        mock_frappe.db.sql.return_value = []          # no recent-dup SCL
+        mock_frappe.enqueue = MagicMock()
+        mock_frappe.log_error = MagicMock()
+        mock_frappe.logger.return_value = MagicMock()
+
+        with patch.object(sp, "_resolve_student_id", return_value="STU-CC-001"), \
+             patch.object(sp, "_get_active_bpr_for_student",
+                          return_value=(batch_doc, "BPR-CC-001")), \
+             patch.object(sp, "get_active_pe", return_value=pe), \
+             patch.object(sp, "_get_current_week", return_value=2), \
+             patch.object(sp, "_get_effective_week", return_value=2), \
+             patch.object(sp, "_get_learning_unit", return_value=computed_lu), \
+             patch.object(sp, "_get_content_items", return_value=content_items) as mock_items, \
+             patch.object(sp, "_advance_to_next_content",
+                          return_value={"success": True, "status": "next_content"}), \
+             patch("tap_lms.summer_program.activity_points.award_video_completion_points",
+                   return_value=5):
+            result = sp.complete_content.__wrapped__(
+                "STU-CC-001", "CL-001", content_type, content_id)
+        return result, mock_items
+
+    def test_complete_content_week_boundary_drift(self):
+        """PE.current_week=2 but SSP still on week 1 (stage=W1 LU). Completing
+        the WEEK-2 video auto-corrects SSP to the week-2 LU and succeeds."""
+        from tap_lms.summer_program import student_progression_sp as sp
+
+        ssp_data = self._ssp(stage="LU-W1-Basic", week=1, content_index=2)
+        pe = _fake_pe(current_week=2, current_path="Core", current_tier="Intermediate")
+        pe.weekly_video_done = 0
+        week2_items = [{"content_type": "VideoClass", "content_id": "VC-W2-1",
+                        "content_name": "W2 Video"}]
+
+        with patch.object(sp, "frappe") as mock_frappe:
+            result, mock_items = self._run(
+                sp, mock_frappe, ssp_data, pe, computed_lu="LU-W2-Intermediate",
+                content_items=week2_items, content_type="VideoClass",
+                content_id="VC-W2-1")
+
+        # Auto-correct fired: SSP realigned to week 2, index reset to 0.
+        ac = [c for c in mock_frappe.db.set_value.call_args_list
+              if c.args and c.args[0] == "StudentStageProgress"]
+        self.assertTrue(ac, "auto-correct must fire on week-boundary drift")
+        payload = ac[0].args[2]
+        self.assertEqual(payload["current_week"], 2)
+        self.assertEqual(payload["stage"], "LU-W2-Intermediate")
+        self.assertEqual(payload["current_content_index"], 0)
+        # content_items fetched against the ALIGNED (week-2) LU, and it succeeded.
+        mock_items.assert_called_with("LU-W2-Intermediate")
+        self.assertTrue(result["success"])
+        self.assertEqual(result["status"], "next_content")
+
+    def test_complete_content_unknown_content_id(self):
+        """PE and SSP both aligned on week 2; a stale WEEK-1 content_id (Glific
+        carryover) returns a clean content_mismatch — NOT a silent pass."""
+        from tap_lms.summer_program import student_progression_sp as sp
+
+        ssp_data = self._ssp(stage="LU-W2-Intermediate", week=2, content_index=0)
+        pe = _fake_pe(current_week=2, current_path="Core", current_tier="Intermediate")
+        pe.weekly_video_done = 1
+        week2_items = [{"content_type": "VideoClass", "content_id": "VC-W2-1",
+                        "content_name": "W2 Video"}]
+
+        with patch.object(sp, "frappe") as mock_frappe:
+            result, _ = self._run(
+                sp, mock_frappe, ssp_data, pe, computed_lu="LU-W2-Intermediate",
+                content_items=week2_items, content_type="VideoClass",
+                content_id="VC-W1-1")   # week-1 carryover id
+
+        # No auto-correct (already aligned) and a clean content_mismatch.
+        ac = [c for c in mock_frappe.db.set_value.call_args_list
+              if c.args and c.args[0] == "StudentStageProgress"]
+        self.assertFalse(ac, "aligned SSP must NOT trigger auto-correct")
+        self.assertFalse(result["success"])
+        self.assertEqual(result["status"], "content_mismatch")
+
+    def _derive_only(self, sp, mock_frappe, bpr_ret, pe_ret, lu_ret):
+        """Invoke complete_content far enough to exercise the PE-derivation
+        early-returns (no_active_batch / no_active_pe / no_content_for_week)."""
+        mock_frappe.get_doc.return_value = MagicMock(name="STU-CC-001")
+        mock_frappe.db.get_value.return_value = self._ssp("LU-W2-Intermediate", 2)
+        with patch.object(sp, "_resolve_student_id", return_value="STU-CC-001"), \
+             patch.object(sp, "_get_active_bpr_for_student", return_value=bpr_ret), \
+             patch.object(sp, "get_active_pe", return_value=pe_ret), \
+             patch.object(sp, "_get_current_week", return_value=2), \
+             patch.object(sp, "_get_effective_week", return_value=2), \
+             patch.object(sp, "_get_learning_unit", return_value=lu_ret):
+            return sp.complete_content.__wrapped__(
+                "STU-CC-001", "CL-001", "VideoClass", "VC-W2-1")
+
+    def test_complete_content_no_active_batch(self):
+        from tap_lms.summer_program import student_progression_sp as sp
+        with patch.object(sp, "frappe") as mock_frappe:
+            result = self._derive_only(sp, mock_frappe, bpr_ret=(None, None),
+                                       pe_ret=None, lu_ret="LU-W2-Intermediate")
+        self.assertFalse(result["success"])
+        self.assertEqual(result["status"], "no_active_batch")
+
+    def test_complete_content_no_active_pe(self):
+        from tap_lms.summer_program import student_progression_sp as sp
+        batch_doc = MagicMock(); batch_doc.name = "BATCH-CC-001"
+        with patch.object(sp, "frappe") as mock_frappe:
+            result = self._derive_only(sp, mock_frappe,
+                                       bpr_ret=(batch_doc, "BPR-CC-001"),
+                                       pe_ret=None, lu_ret="LU-W2-Intermediate")
+        self.assertFalse(result["success"])
+        self.assertEqual(result["status"], "no_active_pe")
+
+    def test_complete_content_no_content_for_week(self):
+        from tap_lms.summer_program import student_progression_sp as sp
+        batch_doc = MagicMock(); batch_doc.name = "BATCH-CC-001"
+        pe = _fake_pe(current_week=2, current_path="Core", current_tier="Intermediate")
+        with patch.object(sp, "frappe") as mock_frappe:
+            result = self._derive_only(sp, mock_frappe,
+                                       bpr_ret=(batch_doc, "BPR-CC-001"),
+                                       pe_ret=pe, lu_ret=None)  # no LU resolves
+        self.assertFalse(result["success"])
+        self.assertEqual(result["status"], "no_content_for_week")
