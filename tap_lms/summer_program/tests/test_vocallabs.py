@@ -36,6 +36,21 @@ from tap_lms.summer_program.constants import (
 # ════════════════════════════════════════════════════════════
 
 
+def _ensure_tap_language(name="Hindi", code="hi", glific_id=1):
+    if frappe.db.exists("TAP Language", name):
+        frappe.db.set_value("TAP Language", name, {
+            "language_code": code,
+            "glific_language_id": str(glific_id),
+        })
+        return name
+    doc = frappe.new_doc("TAP Language")
+    doc.language_name = name
+    doc.language_code = code
+    doc.glific_language_id = str(glific_id)
+    doc.insert(ignore_permissions=True)
+    return doc.name
+
+
 def _ensure_batch():
     # Delegates to the shared factory (L-037) so this fixture inherits future
     # mandatory-field additions instead of breaking with MandatoryError.
@@ -62,6 +77,8 @@ def _make_pe(batch_name, student_name, suffix):
     pe.batch = batch_name
     pe.program_type = "Summer"
     pe.glific_id = f"glific-vl-{suffix}"
+    pe.language = _ensure_tap_language()
+    pe.experiment_arm = "arm_a"
     pe.program_status = PROGRAM_ACTIVE
     pe.resolved_flow_state = STATE_NORMAL_CONTENT
     pe.journey_label = LABEL_CONTENT_DELIVERED
@@ -192,6 +209,9 @@ class TestVocallabsHappyPath(FrappeTestCase):
         # The agent reads `data.contact`, `data.student_name`, `data.status` at call time.
         self.assertIn("contact", prospect["data"])
         self.assertIn("student_name", prospect["data"])
+        self.assertEqual(prospect["data"]["language"], "Hindi")
+        self.assertEqual(prospect["data"]["archetype"], "Submitter")
+        self.assertEqual(prospect["data"]["experiment_arm"], "arm_a")
         self.assertIn("week 1", prospect["data"]["status"])
         self.assertIn("Step 2", prospect["data"]["status"])
         self.assertIn("parent_call", prospect["data"]["status"])
@@ -723,6 +743,9 @@ class TestVocallabsProspectIdCache(FrappeTestCase):
         self.assertIn("contact", update_payload["data"])
         self.assertIn("student_name", update_payload["data"])
         self.assertIn("status", update_payload["data"])
+        self.assertEqual(update_payload["data"]["language"], "Hindi")
+        self.assertEqual(update_payload["data"]["archetype"], "Submitter")
+        self.assertEqual(update_payload["data"]["experiment_arm"], "arm_a")
         # The rendered status_text reflects THIS call's variables (week 1,
         # step 4) — proves the data is being freshly rendered against the
         # currently-resolved ParentCallConfig, not pulled from a stale
