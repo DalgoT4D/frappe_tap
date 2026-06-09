@@ -29,6 +29,12 @@ from tap_lms.summer_program.utils import (
     safe_sp_api_error_response,
     sp_safe_endpoint,
     _insert_with_serialization_retry,
+    check_glific_placeholders,
+)
+# CR-024 Phase 2: in-process read cache for immutable master data (ADR-006).
+from tap_lms.summer_program.master_data_lookup import (
+    cached_question_details,
+    cached_content_details_payload,
 )
 
 
@@ -110,6 +116,17 @@ def get_weekly_content(student_id, course_level=None, **_glific_kwargs):
         dict with week info, content items, path (Core/Remedial),
         expected submission type, and LearningUnit details.
     """
+    # CR-024 Layer 3: reject Glific placeholder strings before any lookup.
+    # Checks identifier params only (student_id, course_level) — free-text
+    # params like answer or submission are intentionally NOT checked here.
+    placeholder_hit = check_glific_placeholders(
+        [("student_id", student_id), ("course_level", course_level)],
+        api_name="get_weekly_content",
+        student_id=student_id,
+    )
+    if placeholder_hit:
+        return placeholder_hit
+
     course_level = normalize_unicode_surrogates(course_level)
     student_id = _resolve_student_id(student_id)
     if not student_id:
@@ -330,6 +347,15 @@ def get_next_content(student_id, course_level=None, **_glific_kwargs):
         return resp
 
     try:
+        # CR-024 Layer 3: reject Glific placeholder strings before any lookup.
+        placeholder_hit = check_glific_placeholders(
+            [("student_id", student_id), ("course_level", course_level)],
+            api_name="get_next_content",
+            student_id=student_id,
+        )
+        if placeholder_hit:
+            return placeholder_hit
+
         course_level = normalize_unicode_surrogates(course_level)
         student_id = _resolve_student_id(student_id)
         if not student_id:
@@ -674,6 +700,18 @@ def get_content_details(content_type, content_id, language=None,
             return {"success": False, "status": "invalid_input",
                     "error_detail": "content_type and content_id are required"}
 
+        # CR-024 Layer 3: reject Glific placeholder strings on identifier params.
+        # content_type and content_id are identifier params (DB keys).
+        # student_id and language are NOT checked — student_id is optional and
+        # language is free-text, not an identifier.
+        placeholder_hit = check_glific_placeholders(
+            [("content_type", content_type), ("content_id", content_id)],
+            api_name="get_content_details",
+            student_id=student_id,
+        )
+        if placeholder_hit:
+            return placeholder_hit
+
         if content_type not in VALID_CONTENT_TYPES:
             return {"success": False, "status": "invalid_content_type",
                     "error_detail": f"Invalid content_type: {content_type}"}
@@ -685,23 +723,23 @@ def get_content_details(content_type, content_id, language=None,
             return {"success": False, "status": "not_found",
                     "error_detail": f"{content_type} not found: {content_id}"}
 
-        # Task #45 (2026-05-22): _resolve_content_language was called
-        # unconditionally here, but only the VideoClass branch consumes
-        # `language` (for translations + unguided-text lookup). The Quiz /
-        # NoteContent / Assignment / CourseProject / generic branches
-        # don't use it. Resolution does a DB lookup (resolve_student →
-        # get_active_pe), so moving it into the VideoClass branch skips
-        # 1 DB hit per get_content_details call for non-Video content.
-        doc = frappe.get_doc(content_type, content_id)
+        # CR-024 Phase 2: replace frappe.get_doc with in-process read cache for
+        # immutable master-data fields (ADR-006 Revision). Per-student/per-language
+        # bits (translation selection, unguided_text) are still resolved LIVE below.
+        #
+        # Task #45 (2026-05-22): _resolve_content_language is called only in the
+        # VideoClass branch — other branches don't use language, so skipping it
+        # there saves 1 DB hit per non-Video call.
+        payload = cached_content_details_payload(content_type, content_id)
+        if "error" in payload:
+            # Cache raised on load (e.g. doc not found); surface as not_found.
+            return {"success": False, "status": "not_found",
+                    "error_detail": f"{content_type} not found: {content_id}"}
 
         if content_type == "VideoClass":
             language = _resolve_content_language(language, student_id)
-            # Flatten `assessments` array using numeric-suffix expansion per
-            # docs/api-standard-glific.md Rule 3. `assessment_<i>_id` is CRITICAL —
-            # it's the assignment_id that Glific passes to save_submission when
-            # the student submits after watching the video. Do NOT drop this.
-            # Cap at 5 (videos typically have 1 assessment, max 2-3).
-            assessments = _get_video_assessments("VideoClass", content_id) or []
+            # Assessments from cached payload. Cap at 5 (ADR-006: immutable).
+            assessments = payload.get("assessments") or []
             ASSESSMENT_CAP = 5
             if len(assessments) > ASSESSMENT_CAP:
                 frappe.log_error(
@@ -716,13 +754,14 @@ def get_content_details(content_type, content_id, language=None,
                 "status": "video_class",
                 "content_type": "VideoClass",
                 "content_id": content_id,
-                "name": doc.video_name,
-                "youtube_url": doc.video_youtube_url,
-                "plio_url": doc.video_plio_url,
-                "video_file": doc.video_file,
-                "url": doc.video_youtube_url or doc.video_plio_url or doc.video_file,
-                "duration": str(doc.duration) if doc.duration else None,
-                "description": doc.description,
+                "name": payload.get("name"),
+                "youtube_url": payload.get("youtube_url"),
+                "plio_url": payload.get("plio_url"),
+                "video_file": payload.get("video_file"),
+                "url": (payload.get("youtube_url") or payload.get("plio_url")
+                        or payload.get("video_file")),
+                "duration": payload.get("duration"),
+                "description": payload.get("description"),
                 "translated": False,
                 "language": "",
                 "assessment_count": len(assessments),
@@ -730,17 +769,18 @@ def get_content_details(content_type, content_id, language=None,
             for i, a in enumerate(assessments, start=1):
                 result[f"assessment_{i}_type"] = a.get("assessment_type")
                 result[f"assessment_{i}_id"] = a.get("assessment_id")
-            if hasattr(doc, 'video_translations'):
-                for trans in doc.video_translations:
-                    if trans.language == language:
-                        if trans.translated_name:
-                            result["name"] = trans.translated_name
-                        if trans.video_youtube_url:
-                            result["youtube_url"] = trans.video_youtube_url
-                            result["url"] = trans.video_youtube_url
-                        result["translated"] = True
-                        result["language"] = language
-                        break
+            # Overlay per-language translation LIVE from cached translations list.
+            for trans in payload.get("translations") or []:
+                if trans.get("language") == language:
+                    if trans.get("translated_name"):
+                        result["name"] = trans["translated_name"]
+                    if trans.get("video_youtube_url"):
+                        result["youtube_url"] = trans["video_youtube_url"]
+                        result["url"] = trans["video_youtube_url"]
+                    result["translated"] = True
+                    result["language"] = language
+                    break
+            # Overlay per-student unguided_text LIVE (never cached).
             if student_id:
                 unguided = _get_video_unguided_submission_message(
                     student_id, assessments, language
@@ -750,16 +790,15 @@ def get_content_details(content_type, content_id, language=None,
             return result
 
         elif content_type == "Quiz":
-            question_count = len(doc.questions) if hasattr(doc, 'questions') else 0
             return {
                 "success": True,
                 "status": "quiz",
                 "content_type": "Quiz",
                 "content_id": content_id,
-                "name": getattr(doc, 'quiz_name', content_id),
-                "total_questions": question_count,
-                "passing_score": flt(getattr(doc, 'passing_score', 60)),
-                "time_limit": getattr(doc, 'time_limit', None),
+                "name": payload.get("name"),
+                "total_questions": payload.get("total_questions", 0),
+                "passing_score": payload.get("passing_score", 60.0),
+                "time_limit": payload.get("time_limit"),
             }
 
         elif content_type == "NoteContent":
@@ -768,8 +807,8 @@ def get_content_details(content_type, content_id, language=None,
                 "status": "note_content",
                 "content_type": "NoteContent",
                 "content_id": content_id,
-                "name": getattr(doc, 'note_name', content_id),
-                "content": getattr(doc, 'content', None),
+                "name": payload.get("name"),
+                "content": payload.get("content"),
             }
 
         elif content_type == "Assignment":
@@ -778,9 +817,9 @@ def get_content_details(content_type, content_id, language=None,
                 "status": "assignment",
                 "content_type": "Assignment",
                 "content_id": content_id,
-                "name": getattr(doc, 'assignment_name', content_id),
-                "description": getattr(doc, 'description', None),
-                "assignment_type": getattr(doc, 'assignment_type', None),
+                "name": payload.get("name"),
+                "description": payload.get("description"),
+                "assignment_type": payload.get("assignment_type"),
             }
 
         elif content_type == "CourseProject":
@@ -789,8 +828,8 @@ def get_content_details(content_type, content_id, language=None,
                 "status": "course_project",
                 "content_type": "CourseProject",
                 "content_id": content_id,
-                "name": getattr(doc, 'project_name', content_id),
-                "description": getattr(doc, 'description', None),
+                "name": payload.get("name"),
+                "description": payload.get("description"),
             }
 
         # TextMessageContent, VoiceNoteContent, ParentCallConfig — minimal
@@ -836,6 +875,23 @@ def complete_content(student_id, course_level, content_type, content_id,
         if not all([student_id, course_level, content_type, content_id]):
             return {"success": False, "status": "invalid_input",
                     "error_detail": "All parameters required"}
+
+        # CR-024 Layer 3: reject Glific placeholder strings on identifier params.
+        # student_id, course_level, content_type, content_id are identifier params.
+        # ENTRY GUARD ONLY — do NOT modify SSP alignment, dedup, points, or
+        # _advance_to_next_content logic (P-001 / L-010 atomicity preserved).
+        placeholder_hit = check_glific_placeholders(
+            [
+                ("student_id", student_id),
+                ("course_level", course_level),
+                ("content_type", content_type),
+                ("content_id", content_id),
+            ],
+            api_name="complete_content",
+            student_id=student_id,
+        )
+        if placeholder_hit:
+            return placeholder_hit
 
         course_level = normalize_unicode_surrogates(course_level)
         if content_type in ("Assignment", "Quiz"):
@@ -1207,6 +1263,19 @@ def start_quiz(student_id, course_level, quiz_id, language=None,
             return {"success": False, "status": "invalid_input",
                     "error_detail": "student_id, course_level, and quiz_id required"}
 
+        # CR-024 Layer 3: reject Glific placeholder strings on identifier params.
+        placeholder_hit = check_glific_placeholders(
+            [
+                ("student_id", student_id),
+                ("course_level", course_level),
+                ("quiz_id", quiz_id),
+            ],
+            api_name="start_quiz",
+            student_id=student_id,
+        )
+        if placeholder_hit:
+            return placeholder_hit
+
         course_level = normalize_unicode_surrogates(course_level)
         quiz_id = normalize_unicode_surrogates(quiz_id)
 
@@ -1284,7 +1353,8 @@ def start_quiz(student_id, course_level, quiz_id, language=None,
         })
         # Removed mid-handler commit per L-017 — Frappe commits at request-end.
 
-        first_q = _get_question_details(questions[0].question, language)
+        # CR-024 Phase 2: use in-process cache for immutable question payload.
+        first_q = cached_question_details(questions[0].question, language)
         # Flat shape per docs/api-standard-glific.md (Rules 2 + 3): no nested
         # question/options objects. Glific reads `question_text`, `option_a`,
         # etc. directly. Question is at index 1 (1-based).
@@ -1335,7 +1405,8 @@ def _resume_quiz(attempt, progress_data, language=None):
     # Removed mid-handler commit per L-017 — Frappe commits at request-end.
 
     q_row = questions[next_index - 1]
-    q_details = _get_question_details(q_row.question, language)
+    # CR-024 Phase 2: use in-process cache for immutable question payload.
+    q_details = cached_question_details(q_row.question, language)
     correct_so_far = sum(1 for a in attempt.answers if a.is_correct)
 
     # Flat shape per docs/api-standard-glific.md (Rules 2 + 3).
@@ -1396,6 +1467,17 @@ def submit_answer(student_id, quiz_attempt_id, question_index, answer,
             return {"success": False, "status": "invalid_input",
                     "error_detail": "All parameters required"}
 
+        # CR-024 Layer 3: reject Glific placeholder strings on identifier params.
+        # student_id and quiz_attempt_id are identifier params (DB keys).
+        # answer is free text (A/B/C/D from student) — intentionally NOT checked.
+        placeholder_hit = check_glific_placeholders(
+            [("student_id", student_id), ("quiz_attempt_id", quiz_attempt_id)],
+            api_name="submit_answer",
+            student_id=student_id,
+        )
+        if placeholder_hit:
+            return placeholder_hit
+
         question_index = cint(question_index)
         answer = answer.strip().upper()
         if answer not in OPTION_LETTERS:
@@ -1428,7 +1510,10 @@ def submit_answer(student_id, quiz_attempt_id, question_index, answer,
         questions = _get_quiz_questions(quiz_doc)
         q_row = questions[question_index - 1]
 
-        q_details = _get_question_details(q_row.question)
+        # CR-024 Phase 2: use in-process cache for immutable question payload.
+        # language is resolved from PE above; passing it here ensures the cached
+        # entry is keyed consistently for this student's language.
+        q_details = cached_question_details(q_row.question, language)
         correct_option = q_details.get("correct_option", "A")
         is_correct = (answer == correct_option)
 
@@ -1483,7 +1568,8 @@ def submit_answer(student_id, quiz_attempt_id, question_index, answer,
             # Removed mid-handler commit per L-017 — Frappe commits at request-end.
 
         next_q_row = questions[question_index]  # 0-based → next question
-        next_q = _get_question_details(next_q_row.question, language)
+        # CR-024 Phase 2: use in-process cache for immutable question payload.
+        next_q = cached_question_details(next_q_row.question, language)
 
         # Flat shape per docs/api-standard-glific.md (Rules 2 + 3):
         #   - answer_result.* → answered_question_*, was_correct, time_spent_seconds
@@ -2174,7 +2260,14 @@ def _get_quiz_questions(quiz_doc):
 
 
 def _get_question_details(question_id, language=None):
-    """Get question details with translation support."""
+    """Get question details with translation support.
+
+    # console-use only (L-050, 2026-06-08): production endpoints now call
+    # cached_question_details() from master_data_lookup, which is a strict
+    # superset (surrogate normalization + lru_cache). This function is kept
+    # for interactive bench-console diagnostic use and as a reference for the
+    # TestQuestionDetailsTranslations unit tests. Do not delete.
+    """
     try:
         from frappe.utils import strip_html_tags
 

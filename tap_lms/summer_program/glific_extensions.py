@@ -9,7 +9,6 @@ IMPORTANT: Add these functions to the EXISTING glific_integration.py file,
 or import the base helpers from there.
 """
 import frappe
-import requests
 import json
 
 from tap_lms.glific_integration import (
@@ -17,6 +16,8 @@ from tap_lms.glific_integration import (
     get_glific_auth_headers,
     check_glific_group_exists,
     create_glific_group,
+    _glific_post_with_401_retry,
+    GLIFIC_TIMEOUT,
 )
 
 
@@ -35,7 +36,6 @@ def start_group_flow(flow_id, group_id, default_results=None):
     """
     settings = get_glific_settings()
     url = f"{settings.api_url}/api"
-    headers = get_glific_auth_headers()
 
     variables = {
         "flowId": str(flow_id),
@@ -60,8 +60,8 @@ def start_group_flow(flow_id, group_id, default_results=None):
     }
 
     try:
-        response = requests.post(url, json=payload, headers=headers)
-        response.raise_for_status()
+        # CR-025: use session + 401-retry helper (was bare requests.post, no session, no timeout)
+        response = _glific_post_with_401_retry(url, payload)
         data = response.json()
 
         if "errors" in data:
@@ -79,7 +79,15 @@ def start_group_flow(flow_id, group_id, default_results=None):
         return False
 
     except Exception as e:
-        frappe.logger().error(f"Exception in start_group_flow: {str(e)}", exc_info=True)
+        # L-035: surface to the Error Log (operator-visible), not just the bench
+        # log. Contract preserved (callers rely on False) — we log loudly, not raise.
+        try:
+            frappe.log_error(
+                f"start_group_flow error: flow={flow_id} group={group_id}: {e}",
+                "Glific start_group_flow Error",
+            )
+        except Exception:
+            frappe.logger().error(f"start_group_flow error (double-fault): {e}")
         return False
 
 
@@ -101,7 +109,6 @@ def add_contacts_to_group_bulk(contact_ids, group_id):
 
     settings = get_glific_settings()
     url = f"{settings.api_url}/api"
-    headers = get_glific_auth_headers()
 
     payload = {
         "query": """
@@ -124,8 +131,8 @@ def add_contacts_to_group_bulk(contact_ids, group_id):
     }
 
     try:
-        response = requests.post(url, json=payload, headers=headers)
-        response.raise_for_status()
+        # CR-025: use session + 401-retry helper (was bare requests.post, no session, no timeout)
+        response = _glific_post_with_401_retry(url, payload)
         data = response.json()
 
         if "errors" in data:
@@ -145,9 +152,16 @@ def add_contacts_to_group_bulk(contact_ids, group_id):
         return False
 
     except Exception as e:
-        frappe.logger().error(
-            f"Exception in add_contacts_to_group_bulk: {str(e)}", exc_info=True
-        )
+        # L-035: surface to the Error Log (operator-visible), not just the bench
+        # log. Contract preserved (callers rely on False) — we log loudly, not raise.
+        try:
+            frappe.log_error(
+                f"add_contacts_to_group_bulk error: group={group_id} "
+                f"n_contacts={len(contact_ids) if contact_ids else 0}: {e}",
+                "Glific add_contacts_to_group_bulk Error",
+            )
+        except Exception:
+            frappe.logger().error(f"add_contacts_to_group_bulk error (double-fault): {e}")
         return False
 
 

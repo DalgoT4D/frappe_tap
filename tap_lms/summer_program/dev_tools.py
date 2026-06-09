@@ -1273,12 +1273,12 @@ def reconcile_pe_to_glific(pe_name, dry_run=False, verbose=True):
     }
     """
     import json
-    import requests
     from tap_lms.summer_program.utils import get_student_display_name
     from tap_lms.glific_integration import (
         update_contact_fields,
         get_glific_settings,
         get_glific_auth_headers,
+        _glific_post_with_401_retry,
     )
     from tap_lms.summer_program.constants import (
         CF_STUDENT_ID, CF_BATCH_ID, CF_ARCHETYPE, CF_LANGUAGE_ID,
@@ -1364,8 +1364,8 @@ def reconcile_pe_to_glific(pe_name, dry_run=False, verbose=True):
         "query": "query contact($id: ID!) { contact(id: $id) { contact { id fields } } }",
         "variables": {"id": str(pe.glific_id)},
     }
-    r = requests.post(f"{settings.api_url}/api", json=payload,
-                      headers=get_glific_auth_headers(), timeout=15).json()
+    # CR-025: use 401-retry helper (was bare requests.post)
+    r = _glific_post_with_401_retry(f"{settings.api_url}/api", payload).json()
     contact = (r.get("data") or {}).get("contact", {}).get("contact") or {}
     raw_fields = contact.get("fields")
     glific_fields = json.loads(raw_fields) if isinstance(raw_fields, str) else (raw_fields or {})
@@ -1772,6 +1772,159 @@ def validate_video_first_invariant(batch_name=None, verbose=True):
             print("\n  Invariant holds across all active LearningUnits.")
 
     return {"violations": violations, "checked": len(lus), "ok": ok_count}
+
+
+# ════════════════════════════════════════════════════════════
+# CR-025 (2026-06-09) — DLQ replay tool
+# ════════════════════════════════════════════════════════════
+# When the Glific token has been dead for a sustained period, the
+# _sync_contact_fields_job retry budget gets exhausted and DLQ entries
+# accumulate in tabError Log (title = GLIFIC_SYNC_DLQ_LOG_TITLE).
+#
+# This tool replays those entries by recomputing CURRENT state via
+# reconcile_pe_to_glific (safer than pushing stored-state fields which
+# may already be stale by the time the operator runs replay).
+#
+# Design decision (CR-025 §Layer 3b): recompute-current is the default.
+# Stored-field replay is NOT implemented — an old stale field dict would
+# push _older_ state, making things worse. The reconciler always pushes the
+# PE's live state from Frappe → Glific.
+#
+# Deduplication: when multiple DLQ entries exist for the same glific_id
+# (from repeated retries over a long outage), only ONE reconcile call fires
+# per glific_id (latest DLQ entry wins). This avoids redundant pushes.
+#
+# Safe to run from bench console:
+#   bench --site tap_lms.dev execute \
+#       tap_lms.summer_program.dev_tools.replay_glific_sync_dlq \
+#       --kwargs '{"dry_run": true}'
+
+def replay_glific_sync_dlq(dry_run=True, since_hours=24, verbose=True):
+    """Replay DLQ-stranded Glific contact-field sync entries.
+
+    For each unique (glific_id, pe_name) pair in the DLQ Error Log entries
+    since `since_hours` ago, calls reconcile_pe_to_glific to push the
+    CURRENT PE state to Glific (safer than re-pushing the stored field dict).
+
+    If pe_name is a synthetic "pre-pe:..." string (pre-PE enrollment chunk
+    path), uses the student_id from the DLQ payload to find the current PE
+    and reconcile that instead.
+
+    Args:
+        dry_run: If True (default), report what would be replayed without
+                 actually pushing to Glific. Set to False to apply.
+        since_hours: Look back this many hours in the Error Log.
+                     Default 24h covers typical incident resolution windows.
+        verbose: Print progress. Default True (console callers want output).
+
+    Returns:
+        dict with keys: total_dlq, skipped (no pe), replayed, failed.
+    """
+    import json as _json
+    from tap_lms.summer_program.constants import GLIFIC_SYNC_DLQ_LOG_TITLE
+
+    # Coerce since_hours — bench execute / console may pass it as a string,
+    # and make_interval(hours => '24') would raise a Postgres type error.
+    since_hours = int(since_hours)
+
+    # Query DLQ entries from tabError Log (L-042/L-051 column names: method=title, error=body)
+    rows = frappe.db.sql(
+        """
+        SELECT name, error::text AS error_text, creation
+          FROM "tabError Log"
+         WHERE method = %s
+           AND creation >= NOW() - make_interval(hours => %s)
+         ORDER BY creation DESC
+        """,
+        (GLIFIC_SYNC_DLQ_LOG_TITLE, since_hours),
+        as_dict=True,
+    )
+
+    if verbose:
+        print(f"replay_glific_sync_dlq: found {len(rows)} DLQ entries "
+              f"in the last {since_hours}h "
+              f"({'DRY RUN' if dry_run else 'LIVE'}).")
+
+    # Deduplicate by glific_id — keep the latest DLQ entry per glific_id
+    # (rows already sorted DESC by creation, so first occurrence = newest)
+    seen_glific_ids = set()
+    deduped = []
+    for row in rows:
+        try:
+            payload = _json.loads(row.get("error_text"))
+        except Exception:
+            continue
+        gid = payload.get("glific_id")
+        if not gid or gid in seen_glific_ids:
+            continue
+        seen_glific_ids.add(gid)
+        deduped.append({"dlq_name": row.get("name"), **payload})
+
+    if verbose:
+        print(f"  Unique glific_ids: {len(deduped)} "
+              f"({len(rows) - len(deduped)} duplicates skipped).")
+
+    stats = {"total_dlq": len(rows), "unique": len(deduped),
+             "replayed": 0, "skipped": 0, "failed": 0}
+
+    for entry in deduped:
+        pe_name = entry.get("pe_name", "")
+        glific_id = entry.get("glific_id", "")
+        student_id = entry.get("student_id")
+
+        # Resolve pe_name: synthetic "pre-pe:STU-..." → look up current PE
+        if pe_name.startswith("pre-pe:") or not frappe.db.exists("ProgramEnrollment", pe_name):
+            if not student_id:
+                if verbose:
+                    print(f"  SKIP  glific_id={glific_id}: no pe_name and no student_id")
+                stats["skipped"] += 1
+                continue
+            # Find the most recent active/paused PE for this student
+            resolved = frappe.db.get_value(
+                "ProgramEnrollment",
+                {
+                    "student": student_id,
+                    "program_status": ["in", ["active", "paused"]],
+                },
+                "name",
+                order_by="creation desc",
+            )
+            if not resolved:
+                if verbose:
+                    print(f"  SKIP  glific_id={glific_id} student={student_id}: "
+                          f"no active PE found")
+                stats["skipped"] += 1
+                continue
+            pe_name = resolved
+
+        if dry_run:
+            if verbose:
+                print(f"  DRY   glific_id={glific_id}  pe={pe_name}")
+            stats["replayed"] += 1
+            continue
+
+        try:
+            result = reconcile_pe_to_glific(pe_name, dry_run=False, verbose=False)
+            if verbose:
+                pushed = result.get("pushed", False)
+                diff_count = len(result.get("diff", []))
+                print(f"  {'PUSH' if pushed else 'OK  '}  glific_id={glific_id}  "
+                      f"pe={pe_name}  diff_fields={diff_count}")
+            stats["replayed"] += 1
+        except Exception as exc:
+            frappe.log_error(
+                f"replay_glific_sync_dlq: reconcile failed for pe={pe_name} "
+                f"glific_id={glific_id}: {exc}",
+                "Glific DLQ Replay Error",
+            )
+            if verbose:
+                print(f"  FAIL  glific_id={glific_id}  pe={pe_name}  error={exc}")
+            stats["failed"] += 1
+
+    if verbose:
+        print(f"\nDone. replayed={stats['replayed']} skipped={stats['skipped']} "
+              f"failed={stats['failed']}")
+    return stats
 
 
 # ════════════════════════════════════════════════════════════

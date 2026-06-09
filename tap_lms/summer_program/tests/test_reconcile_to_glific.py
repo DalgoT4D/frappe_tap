@@ -61,10 +61,14 @@ class TestReconcilePeToGlific(FrappeTestCase):
     5. Return a structured diff so the operator can audit.
     """
 
-    @patch("tap_lms.summer_program.dev_tools.requests.post")
-    @patch("tap_lms.summer_program.dev_tools.update_contact_fields")
+    @patch("tap_lms.glific_integration._glific_post_with_401_retry")
+    @patch("tap_lms.glific_integration.update_contact_fields")
     def test_no_mismatch_no_push(self, mock_update, mock_get):
-        """If Glific already matches Frappe, no fields are pushed."""
+        """If Glific already matches Frappe, no fields are pushed.
+
+        CR-025: reconcile_pe_to_glific now calls _glific_post_with_401_retry
+        instead of bare requests.post. Patch target updated accordingly.
+        """
         from tap_lms.summer_program.dev_tools import reconcile_pe_to_glific
         pe_name, sid, batch = _ensure_pe_ready(suffix="MATCH")
         pe = frappe.get_doc("ProgramEnrollment", pe_name)
@@ -93,11 +97,14 @@ class TestReconcilePeToGlific(FrappeTestCase):
             "total_submission_points": "0",
             "weekly_submission_points": "0",
             "special_gems": "0",
-            "expected_submission_type": "",
-            "grace_window_end": "",
+            "current_expected_submission_type": "emoji",
+            "grace_window_end_at": "",
+            "last_escalation_step": "0",
+            "bonus_quiz_points": "0",
+            "weekly_engagement_points": "0",
             "batch_id": "RCT01",
             "archetype": "fence_sitter",
-            "language_id": "",
+            "language_id": "1",
             "experiment_arm": "arm_a",
             "course_level": "",
             "student_name": frappe.get_value("Student", sid, "name1"),
@@ -109,8 +116,8 @@ class TestReconcilePeToGlific(FrappeTestCase):
         self.assertEqual(result["pushed"], False)
         self.assertEqual(result["diff"], [])
 
-    @patch("tap_lms.summer_program.dev_tools.requests.post")
-    @patch("tap_lms.summer_program.dev_tools.update_contact_fields")
+    @patch("tap_lms.glific_integration._glific_post_with_401_retry")
+    @patch("tap_lms.glific_integration.update_contact_fields")
     def test_mismatch_pushes_only_diff(self, mock_update, mock_get):
         """When Glific has a stale value, ONLY that field is in the push payload."""
         from tap_lms.summer_program.dev_tools import reconcile_pe_to_glific
@@ -146,8 +153,8 @@ class TestReconcilePeToGlific(FrappeTestCase):
             self.assertIn(k, diff_fields,
                           f"Pushed field {k!r} should also be in diff")
 
-    @patch("tap_lms.summer_program.dev_tools.requests.post")
-    @patch("tap_lms.summer_program.dev_tools.update_contact_fields")
+    @patch("tap_lms.glific_integration._glific_post_with_401_retry")
+    @patch("tap_lms.glific_integration.update_contact_fields")
     def test_dry_run_no_push(self, mock_update, mock_get):
         """dry_run=True reports the diff but never calls update_contact_fields."""
         from tap_lms.summer_program.dev_tools import reconcile_pe_to_glific
@@ -165,8 +172,8 @@ class TestReconcilePeToGlific(FrappeTestCase):
         # But the diff is still computed.
         self.assertTrue(any(d["field"] == "current_week" for d in result["diff"]))
 
-    @patch("tap_lms.summer_program.dev_tools.requests.post")
-    @patch("tap_lms.summer_program.dev_tools.update_contact_fields")
+    @patch("tap_lms.glific_integration._glific_post_with_401_retry")
+    @patch("tap_lms.glific_integration.update_contact_fields")
     def test_pe_without_glific_id_skipped(self, mock_update, mock_get):
         """No glific_id on the PE → no diff, no push, no error."""
         from tap_lms.summer_program.dev_tools import reconcile_pe_to_glific

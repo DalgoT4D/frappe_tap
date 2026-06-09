@@ -107,6 +107,12 @@ scheduler_events = {
             "tap_lms.summer_program.pre_launch.feedback_ready_watchdog",
             "tap_lms.summer_program.scheduler.glific_sync_dlq_watcher",
             "tap_lms.summer_program.scheduler.rq_queue_depth_watcher",
+            # CR-025 (2026-06-09): hourly probe to detect stale Glific tokens.
+            # Invalidates the stored token when it gets a 401, so the next real
+            # API call triggers a fresh login instead of queuing 6 retries against
+            # a dead token. Requires `bench migrate` to register this scheduler
+            # entry in tabScheduledJobType (L-049).
+            "tap_lms.glific_integration.probe_token_health",
         ],
         # Task #97 / removed 2026-05-26 (L-027 MVP discipline):
         # `periodic_glific_reconcile` was wired here at */10 cadence as a

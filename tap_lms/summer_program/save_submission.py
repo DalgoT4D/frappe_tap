@@ -45,6 +45,7 @@ from tap_lms.summer_program.event_log import log_event
 from tap_lms.summer_program.utils import (
     normalize_unicode_surrogates,
     safe_sp_api_error_response,
+    check_glific_placeholders,
 )
 URL_SUBMISSION_TYPES = {"audio", "image", "video"}
 SAVE_SUBMISSION_DB_RETRY_ATTEMPTS = 3
@@ -113,6 +114,23 @@ def save_submission(student_id, assignment_id=None, submission=None,
             "user_message": "Please submit your response.",
             "error_detail": "submission parameter is empty or whitespace-only",
         })
+        return
+
+    # CR-024 Layer 3: reject Glific placeholder strings on identifier params.
+    # student_id and assignment_id (or legacy content_id alias) are identifier
+    # params. submission is free text (student answer) — intentionally NOT
+    # checked. Do NOT touch _try_claim_primary / P-001 / L-010 atomicity.
+    _effective_assignment_id = assignment_id if assignment_id is not None else content_id
+    placeholder_hit = check_glific_placeholders(
+        [
+            ("student_id", student_id),
+            ("assignment_id", _effective_assignment_id),
+        ],
+        api_name="save_submission",
+        student_id=student_id,
+    )
+    if placeholder_hit:
+        frappe.local.response.update(placeholder_hit)
         return
 
     last_error = None

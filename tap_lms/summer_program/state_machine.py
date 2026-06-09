@@ -343,50 +343,77 @@ def _sync_contact_fields_job(glific_id, fields, pe_name, retry_count=0, student_
                 f"for the specific failure mode."
             )
     except Exception as e:
+        import json as _json
+        from datetime import timedelta as _timedelta
         retry_count = (retry_count or 0) + 1
         if retry_count <= GLIFIC_SYNC_MAX_RETRIES:
+            # CR-025 Layer 2 — exponential backoff delay (min(60, 2**retry) seconds).
+            # We attempt to schedule via rq Queue.enqueue_in (non-blocking, no worker
+            # sleep). If enqueue_in is unavailable (rq-scheduler not running), we fall
+            # back to an immediate frappe.enqueue so the retry still fires.
+            # do NOT use time.sleep() here — this blocks a shared worker for up to 60s.
+            delay_seconds = min(60, 2 ** retry_count)
             frappe.log_error(
                 title=GLIFIC_SYNC_RETRY_LOG_TITLE,
                 message=(
                     f"Glific sync transient failure "
                     f"(attempt {retry_count}/{GLIFIC_SYNC_MAX_RETRIES + 1}) "
-                    f"for PE {pe_name} (student={student_id or 'unknown'}): {e}"
+                    f"for PE {pe_name} (student={student_id or 'unknown'}), "
+                    f"backoff={delay_seconds}s: {e}"
                 ),
             )
             try:
-                frappe.enqueue(
+                from frappe.utils.background_jobs import get_queue as _get_queue
+                q = _get_queue("short")
+                q.enqueue_in(
+                    _timedelta(seconds=delay_seconds),
                     "tap_lms.summer_program.state_machine._sync_contact_fields_job",
-                    queue="short",
-                    timeout=30,
-                    glific_id=glific_id,
-                    fields=fields,
-                    pe_name=pe_name,
-                    retry_count=retry_count,
-                    student_id=student_id,
+                    kwargs=dict(
+                        glific_id=glific_id,
+                        fields=fields,
+                        pe_name=pe_name,
+                        retry_count=retry_count,
+                        student_id=student_id,
+                    ),
+                    job_timeout=30,
                 )
             except Exception as enqueue_err:
-                # Double-fault: queue itself is unhealthy. Surface to DLQ
-                # immediately so the update isn't lost.
-                import json as _json
-                frappe.log_error(
-                    title=GLIFIC_SYNC_DLQ_LOG_TITLE,
-                    message=_json.dumps(
-                        {
-                            "reason": "double_fault_enqueue_failed",
-                            "student_id": student_id,
-                            "pe_name": pe_name,
-                            "glific_id": glific_id,
-                            "fields": fields,
-                            "final_error": str(e),
-                            "enqueue_error": str(enqueue_err),
-                            "retries_attempted": retry_count,
-                        },
-                        indent=2,
-                        default=str,
-                    ),
-                )
+                # Double-fault: enqueue_in failed (rq-scheduler unavailable or
+                # Redis unhealthy). Fall back to immediate frappe.enqueue so we
+                # don't silently drop the retry.
+                try:
+                    frappe.enqueue(
+                        "tap_lms.summer_program.state_machine._sync_contact_fields_job",
+                        queue="short",
+                        timeout=30,
+                        glific_id=glific_id,
+                        fields=fields,
+                        pe_name=pe_name,
+                        retry_count=retry_count,
+                        student_id=student_id,
+                    )
+                except Exception as fallback_err:
+                    # Both delayed and immediate enqueue failed — queue is down.
+                    # Surface to DLQ so the update isn't silently lost.
+                    frappe.log_error(
+                        title=GLIFIC_SYNC_DLQ_LOG_TITLE,
+                        message=_json.dumps(
+                            {
+                                "reason": "double_fault_enqueue_failed",
+                                "student_id": student_id,
+                                "pe_name": pe_name,
+                                "glific_id": glific_id,
+                                "fields": fields,
+                                "final_error": str(e),
+                                "enqueue_error": str(enqueue_err),
+                                "fallback_error": str(fallback_err),
+                                "retries_attempted": retry_count,
+                            },
+                            indent=2,
+                            default=str,
+                        ),
+                    )
         else:
-            import json as _json
             frappe.log_error(
                 title=GLIFIC_SYNC_DLQ_LOG_TITLE,
                 message=_json.dumps(

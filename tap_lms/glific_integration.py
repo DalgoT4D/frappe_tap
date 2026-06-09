@@ -15,6 +15,102 @@ GLIFIC_TIMEOUT = 10  # seconds, connect+read combined
 def get_glific_settings():
     return frappe.get_single("Glific Settings")
 
+
+# ── CR-025: Token-invalidation helper ─────────────────────────────────────────
+# Clears the stored access_token and token_expiry_time in Glific Settings so
+# the NEXT call to get_glific_auth_headers() triggers a fresh login (re-fetch
+# from the phone/password credentials). Called when any API POST returns 401.
+#
+# Uses frappe.db.set_value with update_modified=False (L-039 pattern):
+#   - No save-hook chain fires (correct — Glific Settings is a singleton with
+#     no Glific-mapped fields; no reconcile needed per the L-039 exception).
+#   - Followed by frappe.db.commit() so the cleared token is visible to other
+#     workers that might also be retrying concurrent calls.
+#
+# IMPORTANT: This is NOT called from get_glific_auth_headers() itself (the
+# auth POST). It is ONLY called from _glific_post_with_401_retry() which wraps
+# API POSTs. The auth POST is never wrapped (else infinite recursion).
+
+def _invalidate_stored_token():
+    """Clear the cached Glific token to force re-authentication on next call.
+
+    After this returns, get_glific_auth_headers() will POST /api/v1/session
+    and store a fresh token.
+    """
+    settings = get_glific_settings()
+    frappe.db.set_value(
+        "Glific Settings",
+        settings.name,
+        {"access_token": None, "token_expiry_time": None},
+        update_modified=False,
+    )
+    frappe.db.commit()
+
+
+# ── CR-025: 401-resilient POST helper ─────────────────────────────────────────
+# Routes every API POST (NOT the auth POST) through a single helper that:
+#   1. Fetches fresh auth headers for EACH attempt (so callers stop passing
+#      headers and headers never go stale between retries).
+#   2. On HTTP 401: invalidates the cached token + refetches headers + retries
+#      ONCE. A second 401 raises raise_for_status() immediately — no loop.
+#   3. On any other non-2xx: raises raise_for_status() immediately.
+#
+# Pattern:
+#   OLD: response = _GLIFIC_SESSION.post(url, json=payload, headers=get_glific_auth_headers(), timeout=GLIFIC_TIMEOUT)
+#        response.raise_for_status()
+#   NEW: response = _glific_post_with_401_retry(url, payload)
+#
+# The helper NEVER wraps the auth POST itself (/api/v1/session call inside
+# get_glific_auth_headers). To guard against that, callers must pass only
+# the GraphQL /api endpoint — auth is auto-wired internally.
+
+def _glific_post_with_401_retry(url, payload, max_attempts=2):
+    """POST to a Glific API endpoint with automatic 401-token-refresh retry.
+
+    Args:
+        url: Full Glific API URL (must be /api, NOT /api/v1/session).
+        payload: dict — JSON body for the POST request.
+        max_attempts: Number of total attempts (default 2 — one fresh-headers
+                      attempt + one retry after token invalidation).
+
+    Returns:
+        requests.Response with status_code in the 2xx range.
+
+    Raises:
+        requests.HTTPError: if the response is non-2xx after all attempts,
+                            or if a 401 persists after token refresh.
+        requests.RequestException: on network errors (connect timeout, etc.).
+    """
+    last_response = None
+    for attempt in range(1, max_attempts + 1):
+        headers = get_glific_auth_headers()
+        resp = _GLIFIC_SESSION.post(url, json=payload, headers=headers,
+                                    timeout=GLIFIC_TIMEOUT)
+        if resp.status_code == 401:
+            frappe.logger().warning(
+                f"_glific_post_with_401_retry: 401 on attempt {attempt} "
+                f"for {url}; invalidating token."
+            )
+            # Invalidate on EVERY 401, including the terminal attempt. The
+            # final invalidation is a cheap idempotent no-op on the already-
+            # cleared token, but it guarantees the confirmed-dead token is gone
+            # so the NEXT operation re-authenticates instead of reusing it.
+            _invalidate_stored_token()
+            last_response = resp
+            # If this was the last attempt, fall through to raise_for_status below
+            if attempt < max_attempts:
+                continue
+        elif not resp.ok:
+            # Non-401 error — surface immediately, no retry benefit
+            resp.raise_for_status()
+        else:
+            return resp  # Success
+
+    # All attempts consumed — raise on the final bad response
+    last_response.raise_for_status()
+    return last_response  # unreachable but satisfies linters
+
+
 def get_glific_auth_headers():
     settings = get_glific_settings()
     current_time = datetime.now(timezone.utc)
@@ -112,15 +208,13 @@ def create_contact(name, phone, school_name, model_name, language_id, batch_id):
 
     frappe.logger().info(f"Attempting to create Glific contact. Name: {name}, Phone: {phone}, School: {school_name}, Model: {model_name}, Language ID: {language_id}, Batch ID: {batch_id}")
     frappe.logger().info(f"Glific API URL: {url}")
-    frappe.logger().info(f"Glific API Headers: {headers}")
     frappe.logger().info(f"Glific API Payload: {payload}")
 
     try:
-        response = _GLIFIC_SESSION.post(url, json=payload, headers=headers,
-                                        timeout=GLIFIC_TIMEOUT)
+        # CR-025: use 401-retry helper; headers fetched internally per attempt
+        response = _glific_post_with_401_retry(url, payload)
         frappe.logger().info(f"Glific API response status: {response.status_code}")
         frappe.logger().info(f"Glific API response content: {response.text}")
-        response.raise_for_status()  # B-3(a): surface 429/5xx so retry/DLQ fires
 
         if response.status_code == 200:
             data = response.json()
@@ -175,7 +269,6 @@ def update_contact_fields(contact_id, fields_to_update, language_id=None):
     """
     settings = get_glific_settings()
     url = f"{settings.api_url}/api"
-    headers = get_glific_auth_headers()
 
     # ── Step 1: Fetch existing contact fields ──────────────────
     fetch_payload = {
@@ -194,9 +287,8 @@ def update_contact_fields(contact_id, fields_to_update, language_id=None):
     }
 
     try:
-        fetch_response = _GLIFIC_SESSION.post(url, json=fetch_payload, headers=headers,
-                                              timeout=GLIFIC_TIMEOUT)
-        fetch_response.raise_for_status()
+        # CR-025: 401-retry helper fetches headers internally; no headers arg
+        fetch_response = _glific_post_with_401_retry(url, fetch_payload)
         fetch_data = fetch_response.json()
 
         if "errors" in fetch_data:
@@ -263,9 +355,8 @@ def update_contact_fields(contact_id, fields_to_update, language_id=None):
             },
         }
 
-        update_response = _GLIFIC_SESSION.post(url, json=update_payload, headers=headers,
-                                               timeout=GLIFIC_TIMEOUT)
-        update_response.raise_for_status()
+        # CR-025: 401-retry helper fetches headers internally; no headers arg
+        update_response = _glific_post_with_401_retry(url, update_payload)
         update_data = update_response.json()
 
         if "errors" in update_data:
@@ -343,7 +434,6 @@ def register_contact_field(shortcode, display_name, value_type="TEXT",
     """
     settings = get_glific_settings()
     url = f"{settings.api_url}/api"
-    headers = get_glific_auth_headers()
 
     payload = {
         "query": """
@@ -374,9 +464,8 @@ def register_contact_field(shortcode, display_name, value_type="TEXT",
     }
 
     try:
-        response = _GLIFIC_SESSION.post(url, json=payload, headers=headers,
-                                        timeout=GLIFIC_TIMEOUT)
-        response.raise_for_status()
+        # CR-025: 401-retry helper fetches headers internally
+        response = _glific_post_with_401_retry(url, payload)
         data = response.json()
 
         if "errors" in data:
@@ -430,7 +519,6 @@ def register_contact_field(shortcode, display_name, value_type="TEXT",
 def get_contact_by_phone(phone):
     settings = get_glific_settings()
     url = f"{settings.api_url}/api"
-    headers = get_glific_auth_headers()
     payload = {
         "query": """
         query contactByPhone($phone: String!) {
@@ -456,9 +544,8 @@ def get_contact_by_phone(phone):
     }
 
     try:
-        response = _GLIFIC_SESSION.post(url, json=payload, headers=headers,
-                                        timeout=GLIFIC_TIMEOUT)
-        response.raise_for_status()
+        # CR-025: 401-retry helper fetches headers internally
+        response = _glific_post_with_401_retry(url, payload)
         data = response.json()
 
         if "errors" in data:
@@ -478,7 +565,6 @@ def get_contact_by_phone(phone):
 def optin_contact(phone, name):
     settings = get_glific_settings()
     url = f"{settings.api_url}/api"
-    headers = get_glific_auth_headers()
     payload = {
         "query": """
         mutation optinContact($phone: String!, $name: String) {
@@ -505,9 +591,8 @@ def optin_contact(phone, name):
     }
 
     try:
-        response = _GLIFIC_SESSION.post(url, json=payload, headers=headers,
-                                        timeout=GLIFIC_TIMEOUT)
-        response.raise_for_status()
+        # CR-025: 401-retry helper fetches headers internally
+        response = _glific_post_with_401_retry(url, payload)
         data = response.json()
 
         if "errors" in data:
@@ -528,7 +613,6 @@ def optin_contact(phone, name):
 def create_contact_old(name, phone):
     settings = get_glific_settings()
     url = f"{settings.api_url}/api"
-    headers = get_glific_auth_headers()
     payload = {
         "query": "mutation createContact($input:ContactInput!) { createContact(input: $input) { contact { id name phone } errors { key message } } }",
         "variables": {
@@ -541,12 +625,11 @@ def create_contact_old(name, phone):
 
     frappe.logger().info(f"Attempting to create Glific contact. Name: {name}, Phone: {phone}")
     frappe.logger().info(f"Glific API URL: {url}")
-    frappe.logger().info(f"Glific API Headers: {headers}")
     frappe.logger().info(f"Glific API Payload: {payload}")
 
     try:
-        response = _GLIFIC_SESSION.post(url, json=payload, headers=headers,
-                                        timeout=GLIFIC_TIMEOUT)
+        # CR-025: 401-retry helper fetches headers internally
+        response = _glific_post_with_401_retry(url, payload)
         frappe.logger().info(f"Glific API response status: {response.status_code}")
         frappe.logger().info(f"Glific API response content: {response.text}")
 
@@ -572,7 +655,6 @@ def create_contact_old(name, phone):
 def start_contact_flow(flow_id, contact_id, default_results):
     settings = get_glific_settings()
     url = f"{settings.api_url}/api"
-    headers = get_glific_auth_headers()
     payload = {
         "query": """
         mutation startContactFlow($flowId: ID!, $contactId: ID!, $defaultResults: Json!) {
@@ -593,9 +675,8 @@ def start_contact_flow(flow_id, contact_id, default_results):
     }
 
     try:
-        response = _GLIFIC_SESSION.post(url, json=payload, headers=headers,
-                                        timeout=GLIFIC_TIMEOUT)
-        response.raise_for_status()
+        # CR-025: 401-retry helper fetches headers internally
+        response = _glific_post_with_401_retry(url, payload)
         data = response.json()
 
         if "errors" in data:
@@ -610,7 +691,21 @@ def start_contact_flow(flow_id, contact_id, default_results):
             frappe.logger().error(f"Failed to start Glific flow. Response: {data}")
             return False
     except requests.exceptions.RequestException as e:
-        frappe.logger().error(f"Error calling Glific API to start flow: {str(e)}")
+        # L-035: surface to the Error Log (operator-visible + picked up by the
+        # hourly watchers), not just the bench log file. Contract preserved —
+        # the 7 callers (pe_dispatcher, escalation, feedback, weekly flows,
+        # onboarding) rely on the False return, so we log loudly and return
+        # False rather than raising. A persistent 401 is handled INSIDE
+        # _glific_post_with_401_retry (token invalidated before it raises), so
+        # the next call recovers.
+        try:
+            frappe.log_error(
+                f"start_contact_flow network error: flow={flow_id} "
+                f"contact={contact_id}: {e}",
+                "Glific start_contact_flow Error",
+            )
+        except Exception:
+            frappe.logger().error(f"start_contact_flow error (double-fault): {e}")
         return False
 
 def update_student_glific_ids(batch_size=100):
@@ -652,7 +747,6 @@ def check_glific_group_exists(group_label):
     """Check if a group with the given label already exists in Glific"""
     settings = get_glific_settings()
     url = f"{settings.api_url}/api"
-    headers = get_glific_auth_headers()
 
     payload = {
         "query": """
@@ -672,9 +766,8 @@ def check_glific_group_exists(group_label):
     }
 
     try:
-        response = _GLIFIC_SESSION.post(url, json=payload, headers=headers,
-                                        timeout=GLIFIC_TIMEOUT)
-        response.raise_for_status()
+        # CR-025: 401-retry helper fetches headers internally
+        response = _glific_post_with_401_retry(url, payload)
         data = response.json()
 
         if "errors" in data:
@@ -693,7 +786,6 @@ def create_glific_group(label, description=""):
     """Create a new group in Glific"""
     settings = get_glific_settings()
     url = f"{settings.api_url}/api"
-    headers = get_glific_auth_headers()
 
     payload = {
         "query": """
@@ -720,9 +812,8 @@ def create_glific_group(label, description=""):
     }
 
     try:
-        response = _GLIFIC_SESSION.post(url, json=payload, headers=headers,
-                                        timeout=GLIFIC_TIMEOUT)
-        response.raise_for_status()
+        # CR-025: 401-retry helper fetches headers internally
+        response = _glific_post_with_401_retry(url, payload)
         data = response.json()
 
         if "errors" in data:
@@ -809,7 +900,6 @@ def remove_contact_from_group(contact_id, group_id):
 
     settings = get_glific_settings()
     url = f"{settings.api_url}/api"
-    headers = get_glific_auth_headers()
 
     payload = {
         "query": """
@@ -832,9 +922,8 @@ def remove_contact_from_group(contact_id, group_id):
     }
 
     try:
-        response = _GLIFIC_SESSION.post(url, json=payload, headers=headers,
-                                        timeout=GLIFIC_TIMEOUT)
-        response.raise_for_status()
+        # CR-025: 401-retry helper fetches headers internally
+        response = _glific_post_with_401_retry(url, payload)
         data = response.json()
 
         if "errors" in data:
@@ -894,7 +983,6 @@ def add_contact_to_group(contact_id, group_id):
 
     settings = get_glific_settings()
     url = f"{settings.api_url}/api"
-    headers = get_glific_auth_headers()
 
     payload = {
         "query": """
@@ -917,9 +1005,8 @@ def add_contact_to_group(contact_id, group_id):
     }
 
     try:
-        response = _GLIFIC_SESSION.post(url, json=payload, headers=headers,
-                                        timeout=GLIFIC_TIMEOUT)
-        response.raise_for_status()
+        # CR-025: 401-retry helper fetches headers internally
+        response = _glific_post_with_401_retry(url, payload)
         data = response.json()
 
         if "errors" in data:
@@ -1117,13 +1204,11 @@ def add_student_to_glific_for_onboarding(student_name, phone, school_name, batch
 
         # Execute request
         try:
-            response = _GLIFIC_SESSION.post(
+            # CR-025: 401-retry helper fetches headers internally
+            response = _glific_post_with_401_retry(
                 f"{settings.api_url}/api",
-                json=contact_data,
-                headers=get_glific_auth_headers(),
-                timeout=GLIFIC_TIMEOUT,
+                contact_data,
             )
-            response.raise_for_status()  # B-3(b): surface 429/5xx so retry/DLQ fires
 
             if response.status_code != 200:
                 frappe.logger().error(f"Failed to create contact. Status: {response.status_code}, Response: {response.text}")
@@ -1244,3 +1329,75 @@ def create_or_get_teacher_group_for_batch(batch_name, batch_id):
     # Failed to create group
     frappe.logger().error(f"Failed to create Glific group for batch {batch_id}")
     return None
+
+
+# ── CR-025 Layer 3a — hourly token-health probe ────────────────────────────────
+# Registered as an hourly cron in hooks.py (requires `bench migrate` to land
+# per L-049).
+#
+# Sends a lightweight Glific API call (the "me" query) to verify the token
+# stored in Glific Settings is valid. If the probe returns 401, the stored
+# token is invalidated so the next real API call triggers a fresh login.
+#
+# This is a PREVENTIVE probe — it doesn't block the incident (that's handled
+# by _glific_post_with_401_retry on each API call). Its value is surfacing
+# silent token drift earlier and giving the hourly alert dashboard a signal.
+#
+# IMPORTANT: the probe makes ONE Glific API call on success path (200) and
+# ONE on 401 path (then token invalidated). It NEVER calls the auth endpoint
+# (/api/v1/session) itself — _invalidate_stored_token just clears the DB value
+# so the next get_glific_auth_headers() call does the fresh login.
+
+def probe_token_health():
+    """Hourly cron: verify the stored Glific token is still valid.
+
+    Makes a lightweight introspection query against the Glific /api endpoint.
+    On 401: invalidates the stored token (so the next real API call triggers
+    a fresh login). On 200: no-op. On other errors: logs and returns without
+    invalidating (connection errors don't indicate an auth problem).
+
+    Scheduled in hooks.py under the existing "0 * * * *" hourly block.
+    Requires `bench --site <site> migrate` to register the scheduler entry.
+    """
+    settings = get_glific_settings()
+    url = f"{settings.api_url}/api"
+
+    # The lightest possible query — just reads the current user's name.
+    probe_payload = {
+        "query": "{ currentUser { user { name } } }"
+    }
+
+    try:
+        headers = get_glific_auth_headers()
+        resp = _GLIFIC_SESSION.post(url, json=probe_payload, headers=headers,
+                                    timeout=GLIFIC_TIMEOUT)
+
+        if resp.status_code == 401:
+            frappe.logger().warning(
+                "probe_token_health: 401 from Glific — invalidating cached token "
+                "so next API call triggers fresh login."
+            )
+            _invalidate_stored_token()
+            frappe.log_error(
+                "probe_token_health detected stale Glific token (HTTP 401). "
+                "Token has been invalidated; next API call will re-authenticate. "
+                "If this fires repeatedly, check Glific credentials in Glific Settings.",
+                "Glific Token Health Alert",
+            )
+        elif resp.ok:
+            frappe.logger().debug(
+                f"probe_token_health: token OK (HTTP {resp.status_code})"
+            )
+        else:
+            frappe.logger().warning(
+                f"probe_token_health: unexpected HTTP {resp.status_code} — "
+                f"not a 401, so token not invalidated. Body: {resp.text[:200]}"
+            )
+
+    except Exception as exc:
+        # Connection errors (timeout, DNS) don't indicate a bad token.
+        # Log the connectivity problem but don't invalidate — a valid token
+        # is better than no token when Glific comes back.
+        frappe.logger().error(
+            f"probe_token_health: connectivity error (not invalidating token): {exc}"
+        )

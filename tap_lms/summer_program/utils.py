@@ -12,6 +12,145 @@ from datetime import timedelta
 from frappe.utils import now_datetime, get_datetime
 
 
+# ── CR-024: Glific placeholder detection ─────────────────────────────────────
+#
+# Production incident 2026-06-04→05: Glific timed out on SP webhook calls,
+# substituted nulls, and then passed LITERAL "@results.X.Y" placeholder strings
+# BACK into downstream SP API calls. These look like valid string parameters so
+# they bypass absence checks and make it deep enough into the endpoint to cause
+# "Error getting assignment context" cascade errors (81 occurrences).
+#
+# Layer 3 (this): detect the placeholder at endpoint entry, return a clean
+# status so the Glific flow can retry instead of crashing a lookup.
+# Architecture review: COMPATIBLE (ADR-006). Zero behavior change for healthy
+# calls — the guard only rejects already-broken input.
+
+_PLACEHOLDER_PREFIX = "@results."
+
+
+def is_unresolved_glific_placeholder(value):
+    """Return True if `value` is Glific's literal unresolved template token.
+
+    Glific substitutes real values into webhook parameters at flow execution
+    time. When an upstream webhook times out (as in the 2026-06-04 incident),
+    Glific fails to substitute and instead passes the raw token string —
+    e.g. '@results.content_details.youtube_url' — as the parameter value.
+
+    Detection rule: starts with "@results." AND has a second dot after the
+    prefix (e.g. "@results.foo.bar" → True; "@results.foo" → False because
+    that's only one path segment and could be a legitimate Glific variable
+    reference that never contained a dot, which is an unexpected shape).
+
+    Returns False for non-strings, None, and empty strings so callers can
+    use this as a direct replacement for identity checks.
+
+    Examples:
+        is_unresolved_glific_placeholder("@results.content_details.youtube_url")
+        → True
+        is_unresolved_glific_placeholder("@results.quiz_response.option_a")
+        → True
+        is_unresolved_glific_placeholder("@results.foo")
+        → False  (no second dot — ambiguous, treated as safe)
+        is_unresolved_glific_placeholder("ReadingFluency-Literacy-C0001")
+        → False  (normal course_level value)
+        is_unresolved_glific_placeholder(None)
+        → False
+    """
+    if not isinstance(value, str):
+        return False
+    if not value.startswith(_PLACEHOLDER_PREFIX):
+        return False
+    # Require a second dot AFTER the prefix, e.g. "@results.X.Y" (not "@results.X")
+    return "." in value[len(_PLACEHOLDER_PREFIX):]
+
+
+def check_glific_placeholders(params, api_name, student_id=None):
+    """Check a sequence of (param_name, value) pairs for unresolved Glific
+    placeholders and return a flat api-standard error dict on the first hit.
+
+    Returns None when all params are clean (no placeholder detected) — the
+    caller continues normally.  Returns the error dict on the first hit — the
+    caller should return it immediately without further processing.
+
+    The ProgramEventLog write is attempted (rollback-safe per L-077 / L-030):
+    if the PE is not yet resolved at entry-guard time, we log via frappe.log_error
+    (DB-independent, no FK required) instead of inserting a ProgramEventLog row.
+    If even that fails, the error is swallowed so the clean status is always
+    returned to Glific.
+
+    Usage:
+        hit = check_glific_placeholders(
+            [("student_id", student_id), ("course_level", course_level)],
+            api_name="get_weekly_content",
+            student_id=student_id,
+        )
+        if hit:
+            return hit
+
+    Args:
+        params: iterable of (str param_name, any value) — only str values are
+                ever flagged; non-str values are skipped (absence checks live
+                elsewhere).
+        api_name: endpoint name for the log (snake_case, e.g. "get_content_details").
+        student_id: optional raw student identifier for log context (truncated
+                    to 50 chars so an unresolved placeholder itself can't bloat
+                    the log record).
+
+    Returns:
+        None — all params clean.
+        dict  — flat api-standard error: success=False,
+                status="upstream_resolution_failed",
+                error_detail="..." (safe, no Glific internal detail leaked).
+    """
+    for param_name, value in params:
+        if not is_unresolved_glific_placeholder(value):
+            continue
+
+        # Hit — attempt a ProgramEventLog-level record. We don't have a PE at
+        # entry guard time, so fall back to frappe.log_error (no FK needed,
+        # DB-independent title column — L-077 / L-030 rollback-safe pattern).
+        safe_sid = str(student_id)[:50] if student_id else ""
+        details_dict = {
+            "api": api_name,
+            "param": param_name,
+            "value": str(value)[:200],
+            "student_id": safe_sid,
+        }
+        try:
+            frappe.db.rollback()
+        except Exception:
+            pass
+        try:
+            frappe.log_error(
+                title="SP Glific placeholder",
+                message=(
+                    f"glific_unresolved_placeholder | api={api_name} "
+                    f"param={param_name} "
+                    f"value={str(value)[:200]} "
+                    f"student_id={safe_sid}"
+                ),
+            )
+        except Exception:
+            try:
+                frappe.logger().warning(
+                    f"SP Glific placeholder (log_error double-fault): "
+                    f"api={api_name} param={param_name} value={str(value)[:200]}"
+                )
+            except Exception:
+                pass
+
+        return {
+            "success": False,
+            "status": "upstream_resolution_failed",
+            "error_detail": (
+                "Upstream Glific webhook did not resolve a placeholder; "
+                "flow should retry."
+            ),
+        }
+
+    return None
+
+
 def normalize_unicode_surrogates(value):
     """Convert escaped UTF-16 surrogate pairs into valid Unicode."""
     if not isinstance(value, str):

@@ -60,37 +60,39 @@ class TestUpdateContactFieldsLanguage(FrappeTestCase):
     when callers omit the kwarg (backward compat for the dozens of pre-2026-05-19
     call sites that don't pass language_id)."""
 
-    @patch("tap_lms.glific_integration.requests.post")
-    def test_includes_languageId_when_passed(self, mock_post):
+    @patch("tap_lms.glific_integration.get_glific_auth_headers")
+    @patch("tap_lms.glific_integration._GLIFIC_SESSION")
+    def test_includes_languageId_when_passed(self, mock_session, mock_headers):
+        """CR-025: update_contact_fields now routes through _glific_post_with_401_retry
+        which calls _GLIFIC_SESSION.post (not bare requests.post). Mock target updated.
+        Also mock get_glific_auth_headers to skip the token-expiry check."""
         from tap_lms.glific_integration import update_contact_fields
 
-        # Mock both round-trips: fetch contact + write update
-        mock_post.side_effect = [
-            # Fetch response
-            MagicMock(
-                status_code=200,
-                raise_for_status=MagicMock(),
-                json=MagicMock(return_value={
-                    "data": {"contact": {"contact": {
-                        "id": "13325", "name": "X", "fields": "{}",
-                    }}}
-                }),
-            ),
-            # Update response
-            MagicMock(
-                status_code=200,
-                raise_for_status=MagicMock(),
-                json=MagicMock(return_value={
-                    "data": {"updateContact": {"contact": {"id": "13325", "fields": "{}"}}}
-                }),
-            ),
-        ]
+        mock_headers.return_value = {"authorization": "test-token"}
 
-        ok = update_contact_fields("13325", {"course_level": "X"}, language_id=5)
+        # Mock both round-trips: fetch contact + write update
+        fetch_resp = MagicMock(status_code=200, ok=True)
+        fetch_resp.raise_for_status = MagicMock()
+        fetch_resp.json.return_value = {
+            "data": {"contact": {"contact": {
+                "id": "13325", "name": "X", "fields": "{}",
+            }}}
+        }
+        update_resp = MagicMock(status_code=200, ok=True)
+        update_resp.raise_for_status = MagicMock()
+        update_resp.json.return_value = {
+            "data": {"updateContact": {"contact": {"id": "13325", "fields": "{}"}}}
+        }
+        mock_session.post.side_effect = [fetch_resp, update_resp]
+
+        with patch("tap_lms.glific_integration.get_glific_settings") as mock_settings:
+            mock_settings.return_value.api_url = "https://api.glific.example.com"
+            ok = update_contact_fields("13325", {"course_level": "X"}, language_id=5)
+
         self.assertTrue(ok)
 
         # Inspect the second POST (the updateContact mutation)
-        update_call = mock_post.call_args_list[1]
+        update_call = mock_session.post.call_args_list[1]
         payload = update_call.kwargs.get("json") or update_call.args[1]
         mutation_input = payload["variables"]["input"]
         self.assertIn(
@@ -103,36 +105,40 @@ class TestUpdateContactFieldsLanguage(FrappeTestCase):
             "languageId in mutation must equal the int form of the passed value."
         )
 
-    @patch("tap_lms.glific_integration.requests.post")
-    def test_omits_languageId_when_not_passed(self, mock_post):
+    @patch("tap_lms.glific_integration.get_glific_auth_headers")
+    @patch("tap_lms.glific_integration._GLIFIC_SESSION")
+    def test_omits_languageId_when_not_passed(self, mock_session, mock_headers):
         """Backward-compat: callers that don't pass language_id must not
         accidentally set core language. Verifies languageId key is absent
-        from the mutation input."""
+        from the mutation input.
+
+        CR-025: mock target updated from requests.post to _GLIFIC_SESSION.
+        """
         from tap_lms.glific_integration import update_contact_fields
 
-        mock_post.side_effect = [
-            MagicMock(
-                status_code=200,
-                raise_for_status=MagicMock(),
-                json=MagicMock(return_value={
-                    "data": {"contact": {"contact": {
-                        "id": "13325", "name": "X", "fields": "{}",
-                    }}}
-                }),
-            ),
-            MagicMock(
-                status_code=200,
-                raise_for_status=MagicMock(),
-                json=MagicMock(return_value={
-                    "data": {"updateContact": {"contact": {"id": "13325", "fields": "{}"}}}
-                }),
-            ),
-        ]
+        mock_headers.return_value = {"authorization": "test-token"}
 
-        ok = update_contact_fields("13325", {"course_level": "X"})
+        fetch_resp = MagicMock(status_code=200, ok=True)
+        fetch_resp.raise_for_status = MagicMock()
+        fetch_resp.json.return_value = {
+            "data": {"contact": {"contact": {
+                "id": "13325", "name": "X", "fields": "{}",
+            }}}
+        }
+        update_resp = MagicMock(status_code=200, ok=True)
+        update_resp.raise_for_status = MagicMock()
+        update_resp.json.return_value = {
+            "data": {"updateContact": {"contact": {"id": "13325", "fields": "{}"}}}
+        }
+        mock_session.post.side_effect = [fetch_resp, update_resp]
+
+        with patch("tap_lms.glific_integration.get_glific_settings") as mock_settings:
+            mock_settings.return_value.api_url = "https://api.glific.example.com"
+            ok = update_contact_fields("13325", {"course_level": "X"})
+
         self.assertTrue(ok)
 
-        update_call = mock_post.call_args_list[1]
+        update_call = mock_session.post.call_args_list[1]
         payload = update_call.kwargs.get("json") or update_call.args[1]
         mutation_input = payload["variables"]["input"]
         self.assertNotIn(
@@ -141,37 +147,41 @@ class TestUpdateContactFieldsLanguage(FrappeTestCase):
             "didn't pass language_id (backward compatibility)."
         )
 
-    @patch("tap_lms.glific_integration.requests.post")
-    def test_skips_invalid_language_id_gracefully(self, mock_post):
+    @patch("tap_lms.glific_integration.get_glific_auth_headers")
+    @patch("tap_lms.glific_integration._GLIFIC_SESSION")
+    def test_skips_invalid_language_id_gracefully(self, mock_session, mock_headers):
         """A non-integer language_id (e.g. 'not-a-number') should NOT crash —
         log a warning and skip the core-language update, but still process
-        the fields update."""
+        the fields update.
+
+        CR-025: mock target updated from requests.post to _GLIFIC_SESSION.
+        """
         from tap_lms.glific_integration import update_contact_fields
 
-        mock_post.side_effect = [
-            MagicMock(
-                status_code=200,
-                raise_for_status=MagicMock(),
-                json=MagicMock(return_value={
-                    "data": {"contact": {"contact": {
-                        "id": "13325", "name": "X", "fields": "{}",
-                    }}}
-                }),
-            ),
-            MagicMock(
-                status_code=200,
-                raise_for_status=MagicMock(),
-                json=MagicMock(return_value={
-                    "data": {"updateContact": {"contact": {"id": "13325", "fields": "{}"}}}
-                }),
-            ),
-        ]
+        mock_headers.return_value = {"authorization": "test-token"}
 
-        # Passing a non-integer-coercible value should be tolerated
-        ok = update_contact_fields("13325", {"course_level": "X"}, language_id="not-a-number")
+        fetch_resp = MagicMock(status_code=200, ok=True)
+        fetch_resp.raise_for_status = MagicMock()
+        fetch_resp.json.return_value = {
+            "data": {"contact": {"contact": {
+                "id": "13325", "name": "X", "fields": "{}",
+            }}}
+        }
+        update_resp = MagicMock(status_code=200, ok=True)
+        update_resp.raise_for_status = MagicMock()
+        update_resp.json.return_value = {
+            "data": {"updateContact": {"contact": {"id": "13325", "fields": "{}"}}}
+        }
+        mock_session.post.side_effect = [fetch_resp, update_resp]
+
+        with patch("tap_lms.glific_integration.get_glific_settings") as mock_settings:
+            mock_settings.return_value.api_url = "https://api.glific.example.com"
+            # Passing a non-integer-coercible value should be tolerated
+            ok = update_contact_fields("13325", {"course_level": "X"}, language_id="not-a-number")
+
         self.assertTrue(ok)
 
-        update_call = mock_post.call_args_list[1]
+        update_call = mock_session.post.call_args_list[1]
         payload = update_call.kwargs.get("json") or update_call.args[1]
         mutation_input = payload["variables"]["input"]
         # Bad language_id is skipped, not propagated to mutation

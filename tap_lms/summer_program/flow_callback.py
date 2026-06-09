@@ -44,7 +44,7 @@ from tap_lms.summer_program.state_machine import (
     t13_feedback_delivered,
 )
 from tap_lms.summer_program.event_log import log_event
-from tap_lms.summer_program.utils import sp_safe_endpoint
+from tap_lms.summer_program.utils import sp_safe_endpoint, check_glific_placeholders
 
 
 # ════════════════════════════════════════════════════════════
@@ -112,6 +112,18 @@ def update_flow_status(student_id, status, flow_name, metadata=None,
     Returns:
         dict with result and any next action scheduled
     """
+    # CR-024 Layer 3: reject Glific placeholder strings on identifier params.
+    # student_id and flow_name are identifier params. status is a controlled
+    # enum value ('completed'/'no_response'/'timeout'/'error') — not checked.
+    placeholder_hit = check_glific_placeholders(
+        [("student_id", student_id), ("flow_name", flow_name)],
+        api_name="update_flow_status",
+        student_id=student_id,
+    )
+    if placeholder_hit:
+        frappe.local.response.update(placeholder_hit)
+        return
+
     student_id = _resolve_student(student_id)
     if not student_id:
         frappe.local.response.update({

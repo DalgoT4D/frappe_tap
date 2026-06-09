@@ -145,12 +145,12 @@ class TestStartQuizFlatShape(unittest.TestCase):
     """start_quiz must produce flat responses for new + resume variants."""
 
     @patch("tap_lms.summer_program.student_progression_sp._get_language_for_student")
-    @patch("tap_lms.summer_program.student_progression_sp._get_question_details")
+    @patch("tap_lms.summer_program.student_progression_sp.cached_question_details")
     @patch("tap_lms.summer_program.student_progression_sp._get_quiz_questions")
     @patch("tap_lms.summer_program.student_progression_sp._resolve_student_id")
     @patch("tap_lms.summer_program.student_progression_sp.frappe")
     def test_new_quiz_response_is_flat(
-        self, mock_frappe, mock_resolve, mock_get_questions, mock_get_q_details,
+        self, mock_frappe, mock_resolve, mock_get_questions, mock_cached_q_details,
         mock_get_language
     ):
         from tap_lms.summer_program import student_progression_sp as api
@@ -177,7 +177,9 @@ class TestStartQuizFlatShape(unittest.TestCase):
         q_row = MagicMock()
         q_row.question = "QN001"
         mock_get_questions.return_value = [q_row]
-        mock_get_q_details.return_value = {
+        # Phase 2: cached_question_details (in master_data_lookup) replaces
+        # _get_question_details. Mock the new seam.
+        mock_cached_q_details.return_value = {
             "question": "What is X?",
             "question_type": "Multiple Choice",
             "option_a": "A",
@@ -205,13 +207,14 @@ class TestStartQuizFlatShape(unittest.TestCase):
         self.assertNotIn("option_d", resp)
         self.assertEqual(resp["question_index"], 1)
         mock_get_language.assert_called_once_with("STU-001", "CL-1")
-        mock_get_q_details.assert_called_once_with("QN001", "Hindi")
+        # Phase 2: assert the NEW seam (cached_question_details) is called.
+        mock_cached_q_details.assert_called_once_with("QN001", "Hindi")
 
-    @patch("tap_lms.summer_program.student_progression_sp._get_question_details")
+    @patch("tap_lms.summer_program.student_progression_sp.cached_question_details")
     @patch("tap_lms.summer_program.student_progression_sp._get_quiz_questions")
     @patch("tap_lms.summer_program.student_progression_sp.frappe")
     def test_resume_quiz_omits_absent_option_fields(
-        self, mock_frappe, mock_get_questions, mock_get_q_details
+        self, mock_frappe, mock_get_questions, mock_cached_q_details
     ):
         from tap_lms.summer_program import student_progression_sp as api
 
@@ -227,7 +230,8 @@ class TestStartQuizFlatShape(unittest.TestCase):
         q2 = MagicMock()
         q2.question = "QN002"
         mock_get_questions.return_value = [q1, q2]
-        mock_get_q_details.return_value = {
+        # Phase 2: mock the new seam — cached_question_details in master_data_lookup.
+        mock_cached_q_details.return_value = {
             "question": "What is next?",
             "question_type": "Multiple Choice",
             "option_a": "A",
@@ -400,12 +404,12 @@ class TestSubmitAnswerFlatShape(unittest.TestCase):
     and 'quiz complete' variants."""
 
     @patch("tap_lms.summer_program.student_progression_sp._get_language_for_student")
-    @patch("tap_lms.summer_program.student_progression_sp._get_question_details")
+    @patch("tap_lms.summer_program.student_progression_sp.cached_question_details")
     @patch("tap_lms.summer_program.student_progression_sp._get_quiz_questions")
     @patch("tap_lms.summer_program.student_progression_sp._resolve_student_id")
     @patch("tap_lms.summer_program.student_progression_sp.frappe")
     def test_next_question_response_is_flat(
-        self, mock_frappe, mock_resolve, mock_get_questions, mock_get_q_details,
+        self, mock_frappe, mock_resolve, mock_get_questions, mock_cached_q_details,
         mock_get_language
     ):
         from tap_lms.summer_program import student_progression_sp as api
@@ -437,7 +441,8 @@ class TestSubmitAnswerFlatShape(unittest.TestCase):
         q2.question = "QN002"
         mock_get_questions.return_value = [q1, q2, MagicMock()]
 
-        mock_get_q_details.side_effect = [
+        # Phase 2: mock the new seam — cached_question_details in master_data_lookup.
+        mock_cached_q_details.side_effect = [
             {  # current question details
                 "correct_option": "A",
                 "option_a": "A", "option_b": "B",
@@ -460,15 +465,16 @@ class TestSubmitAnswerFlatShape(unittest.TestCase):
         self.assertEqual(resp["question_index"], 2)
         self.assertEqual(resp["option_b"], "X")
         mock_get_language.assert_called_once_with("STU-001", "CL-1")
-        mock_get_q_details.assert_any_call("QN002", "Hindi")
+        # Phase 2: assert the NEW seam is called for the next question.
+        mock_cached_q_details.assert_any_call("QN002", "Hindi")
 
     @patch("tap_lms.summer_program.student_progression_sp._get_language_for_student")
-    @patch("tap_lms.summer_program.student_progression_sp._get_question_details")
+    @patch("tap_lms.summer_program.student_progression_sp.cached_question_details")
     @patch("tap_lms.summer_program.student_progression_sp._get_quiz_questions")
     @patch("tap_lms.summer_program.student_progression_sp._resolve_student_id")
     @patch("tap_lms.summer_program.student_progression_sp.frappe")
     def test_next_question_omits_absent_option_fields(
-        self, mock_frappe, mock_resolve, mock_get_questions, mock_get_q_details,
+        self, mock_frappe, mock_resolve, mock_get_questions, mock_cached_q_details,
         mock_get_language
     ):
         from tap_lms.summer_program import student_progression_sp as api
@@ -500,7 +506,8 @@ class TestSubmitAnswerFlatShape(unittest.TestCase):
         q2.question = "QN002"
         mock_get_questions.return_value = [q1, q2, MagicMock()]
 
-        mock_get_q_details.side_effect = [
+        # Phase 2: mock the new seam.
+        mock_cached_q_details.side_effect = [
             {
                 "correct_option": "A",
                 "option_a": "A",
@@ -531,11 +538,23 @@ class TestGetContentDetailsFlatShape(unittest.TestCase):
     """get_content_details has 6 content-type branches; all must be flat.
     `assessments` array (was the only nested field) was dropped in this refactor."""
 
+    def setUp(self):
+        # Phase 2: get_content_details now uses lru_cache (cached_content_details_payload).
+        # Clear the cache before each test so cold-miss tests don't get stale hits
+        # from earlier tests that used the same content_id.
+        from tap_lms.summer_program.master_data_lookup import clear_master_data_cache
+        clear_master_data_cache()
+
+    @patch("tap_lms.summer_program.master_data_lookup.frappe")
     @patch("tap_lms.summer_program.student_progression_sp.frappe")
-    def test_video_class_response_is_flat(self, mock_frappe):
+    def test_video_class_response_is_flat(self, mock_sp_frappe, mock_mdl_frappe):
         from tap_lms.summer_program import student_progression_sp as api
 
-        mock_frappe.db.exists.return_value = True
+        # Phase 2: get_content_details fetches the VideoClass doc via
+        # cached_content_details_payload (master_data_lookup.frappe.get_doc),
+        # not via sp.frappe.get_doc. Patch both frappe namespaces.
+        mock_sp_frappe.db.exists.return_value = True
+
         doc = MagicMock()
         doc.video_name = "V1"
         doc.video_youtube_url = "https://youtu.be/x"
@@ -544,7 +563,8 @@ class TestGetContentDetailsFlatShape(unittest.TestCase):
         doc.duration = 300
         doc.description = "..."
         doc.video_translations = []
-        mock_frappe.get_doc.return_value = doc
+        mock_mdl_frappe.get_doc.return_value = doc
+        mock_mdl_frappe.get_all.return_value = []   # no assessments
 
         resp = api.get_content_details.__wrapped__("VideoClass", "VC-1")
         assert_flat_response(resp)
@@ -552,17 +572,21 @@ class TestGetContentDetailsFlatShape(unittest.TestCase):
         self.assertNotIn("assessments", resp,
                          "assessments[] array must not be in flat response")
 
+    @patch("tap_lms.summer_program.master_data_lookup.frappe")
     @patch("tap_lms.summer_program.student_progression_sp.frappe")
-    def test_quiz_response_is_flat(self, mock_frappe):
+    def test_quiz_response_is_flat(self, mock_sp_frappe, mock_mdl_frappe):
         from tap_lms.summer_program import student_progression_sp as api
 
-        mock_frappe.db.exists.return_value = True
+        # Phase 2: Quiz doc is fetched via cached_content_details_payload.
+        mock_sp_frappe.db.exists.return_value = True
+
         doc = MagicMock()
         doc.questions = [MagicMock(), MagicMock(), MagicMock()]
         doc.quiz_name = "Q1"
         doc.passing_score = 60
         doc.time_limit = None
-        mock_frappe.get_doc.return_value = doc
+        mock_mdl_frappe.get_doc.return_value = doc
+        mock_mdl_frappe.get_all.return_value = []
 
         resp = api.get_content_details.__wrapped__("Quiz", "Q1")
         assert_flat_response(resp)
@@ -830,14 +854,24 @@ class TestGetContentDetailsAssessmentsPreserved(unittest.TestCase):
     `assessment_<i>_id` because that's the assignment_id Glific passes to
     save_submission. Dropping it (an earlier mistake) broke the submission flow."""
 
-    @patch("tap_lms.summer_program.student_progression_sp._get_video_assessments")
+    def setUp(self):
+        # Phase 2: cached_content_details_payload uses lru_cache shared across tests.
+        # Clear to ensure cold-miss for each test (no stale cached payload from
+        # TestGetContentDetailsFlatShape which also uses "VC-1").
+        from tap_lms.summer_program.master_data_lookup import clear_master_data_cache
+        clear_master_data_cache()
+
+    @patch("tap_lms.summer_program.master_data_lookup.frappe")
     @patch("tap_lms.summer_program.student_progression_sp.frappe")
     def test_video_class_includes_assessment_ids_as_flat_suffixed_keys(
-        self, mock_frappe, mock_assessments
+        self, mock_sp_frappe, mock_mdl_frappe
     ):
         from tap_lms.summer_program import student_progression_sp as api
 
-        mock_frappe.db.exists.return_value = True
+        # Phase 2: assessments are fetched by cached_content_details_payload via
+        # master_data_lookup.frappe.get_all (AssessmentList), NOT _get_video_assessments.
+        mock_sp_frappe.db.exists.return_value = True
+
         doc = MagicMock()
         doc.video_name = "V1"
         doc.video_youtube_url = "https://youtu.be/x"
@@ -846,13 +880,16 @@ class TestGetContentDetailsAssessmentsPreserved(unittest.TestCase):
         doc.duration = 300
         doc.description = "..."
         doc.video_translations = []
-        mock_frappe.get_doc.return_value = doc
+        mock_mdl_frappe.get_doc.return_value = doc
 
-        # Simulate 2 assessments linked to the video
-        mock_assessments.return_value = [
-            {"assessment_type": "Assignment", "assessment_id": "ASN-001"},
-            {"assessment_type": "CourseProject", "assessment_id": "CP-002"},
-        ]
+        # AssessmentList rows returned by frappe.get_all in master_data_lookup.
+        asn_row = MagicMock()
+        asn_row.assessment_type = "Assignment"
+        asn_row.assessment = "ASN-001"
+        cp_row = MagicMock()
+        cp_row.assessment_type = "CourseProject"
+        cp_row.assessment = "CP-002"
+        mock_mdl_frappe.get_all.return_value = [asn_row, cp_row]
 
         resp = api.get_content_details.__wrapped__("VideoClass", "VC-1")
         assert_flat_response(resp)
@@ -866,14 +903,16 @@ class TestGetContentDetailsAssessmentsPreserved(unittest.TestCase):
         # And the array form is GONE
         self.assertNotIn("assessments", resp)
 
-    @patch("tap_lms.summer_program.student_progression_sp._get_video_assessments")
+    @patch("tap_lms.summer_program.master_data_lookup.frappe")
     @patch("tap_lms.summer_program.student_progression_sp.frappe")
     def test_video_class_no_assessments_returns_zero_count(
-        self, mock_frappe, mock_assessments
+        self, mock_sp_frappe, mock_mdl_frappe
     ):
         from tap_lms.summer_program import student_progression_sp as api
 
-        mock_frappe.db.exists.return_value = True
+        # Phase 2: assessments come from cache (master_data_lookup.frappe.get_all).
+        mock_sp_frappe.db.exists.return_value = True
+
         doc = MagicMock()
         doc.video_name = "V1"
         doc.video_youtube_url = None
@@ -882,9 +921,8 @@ class TestGetContentDetailsAssessmentsPreserved(unittest.TestCase):
         doc.duration = None
         doc.description = ""
         doc.video_translations = []
-        mock_frappe.get_doc.return_value = doc
-
-        mock_assessments.return_value = None  # no assessments
+        mock_mdl_frappe.get_doc.return_value = doc
+        mock_mdl_frappe.get_all.return_value = []  # no assessments
 
         resp = api.get_content_details.__wrapped__("VideoClass", "VC-1")
         assert_flat_response(resp)

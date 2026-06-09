@@ -6,11 +6,11 @@ from frappe.utils import now_datetime, add_to_date, get_datetime
 import requests
 import uuid
 from tap_lms.glific_integration import (
-    get_glific_auth_headers,
     get_contact_by_phone,
     create_or_get_glific_group_for_batch,
     add_contact_to_group,
-    start_contact_flow
+    start_contact_flow,
+    _glific_post_with_401_retry,
 )
 
 
@@ -131,33 +131,37 @@ def _trigger_onboarding_flow_job(onboarding_set, onboarding_stage, student_statu
         
         # Get the Glific settings
         glific_settings = frappe.get_doc("Glific Settings")
-        
-        # Get auth headers from the glific_integration module
-        auth_headers = get_glific_auth_headers()
-        if not auth_headers or not auth_headers.get("authorization"):
-            frappe.logger().error("Failed to get Glific auth headers")
-            return {"error": "Failed to authenticate with Glific API"}
-            
-        auth_token = auth_headers.get("authorization")
-        
+
+        # CR-025 follow-up: NO pre-flight auth fetch. Every Glific POST inside
+        # trigger_group_flow / start_contact_flow routes through
+        # _glific_post_with_401_retry, which fetches + refreshes the token
+        # per-call (and invalidates on 401). The old pre-flight guard returned
+        # {"error": ...} on a transiently-stale token, which RQ counts as a
+        # SUCCESSFUL job (L-056 silent failure). auth_token is passed as None —
+        # it is unused downstream (kept only for signature compatibility).
         results = {}
-        
+
         # Process based on flow type
         if flow_type == "Group":
             # Group flow processing with status filter
-            results = trigger_group_flow(onboarding, stage, auth_token, student_status, flow_id)
+            results = trigger_group_flow(onboarding, stage, None, student_status, flow_id)
         else:
             # Individual flow processing with status filter
-            results = trigger_individual_flows(onboarding, stage, auth_token, student_status, flow_id)
+            results = trigger_individual_flows(onboarding, stage, None, student_status, flow_id)
         
         frappe.logger().info(f"Flow trigger job completed successfully: {results}")
         return results
         
     except Exception as e:
         error_traceback = traceback.format_exc()
-        frappe.log_error(message=f"Error in onboarding flow job: {str(e)}\n{error_traceback}", 
+        frappe.log_error(message=f"Error in onboarding flow job: {str(e)}\n{error_traceback}",
                         title="Onboarding Flow Job Error")
-        return {"error": str(e)}
+        # L-056: this is an frappe.enqueue RQ job — re-raise after logging so
+        # RQ records the failure (FailedJobRegistry + queue-depth watchers).
+        # Returning {"error": ...} made every failure look like a successful
+        # job. The page enqueues fire-and-forget (job_id only), so raising does
+        # not affect the UI.
+        raise
 
 
 
@@ -222,17 +226,14 @@ def trigger_group_flow(onboarding, stage, auth_token, student_status=None, flow_
 
         # Make the API call to Glific
         settings = frappe.get_doc("Glific Settings")
-        headers = {
-            "authorization": auth_token,
-            "Content-Type": "application/json"
-        }
         payload = {
             "query": mutation,
             "variables": variables
         }
 
         frappe.logger().debug(f"Glific API request payload: {payload}")
-        response = requests.post(settings.api_url + "/api", json=payload, headers=headers)
+        # CR-025: use 401-retry helper (was bare requests.post, no session, no timeout)
+        response = _glific_post_with_401_retry(settings.api_url + "/api", payload)
 
         if response.status_code != 200:
             frappe.logger().error(f"Glific API error: Status {response.status_code}, Response: {response.text}")

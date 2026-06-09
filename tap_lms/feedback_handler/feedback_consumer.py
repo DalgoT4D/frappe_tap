@@ -237,6 +237,33 @@ class FeedbackConsumer:
             error_msg = str(e)
             frappe.logger().error(f"Error processing submission {submission_id}: {error_msg}")
 
+            # CR-026: make the failure DURABLY visible in tabError Log.
+            # Downstream hooks (e.g. on_feedback_ready) call frappe.log_error
+            # inside this same transaction — the rollback above erases those
+            # rows, which is why the 2026-06-09 stale-module-cache incident left
+            # ZERO Error Log entries despite 858 failures. Re-log AFTER the
+            # rollback and commit it so the record survives.
+            try:
+                hint = ""
+                if isinstance(e, ImportError):
+                    # Classic symptom of a long-running consumer whose cached
+                    # modules predate a code change. The fix is a process
+                    # restart, not a code change — say so loudly.
+                    hint = (
+                        "\n\nLikely cause: this long-running consumer holds a "
+                        "STALE module cache from before a deploy. Restart the "
+                        "consumer process (it is not supervisor-managed) so it "
+                        "reloads current code."
+                    )
+                frappe.log_error(
+                    message=f"Error processing submission {submission_id}: {error_msg}{hint}",
+                    title="Feedback Consumer Failure",
+                )
+                frappe.db.commit()
+            except Exception:
+                # Never let logging failure mask the original error handling.
+                frappe.db.rollback()
+
             # Determine if error is retryable
             if self.processor.is_retryable_error(e):
                 frappe.logger().warning(f"Retryable error for submission {submission_id}, will retry")
@@ -355,9 +382,17 @@ class FeedbackConsumer:
                     f"[SP] Hook returned error for {submission_id}: {result.get('message')}"
                 )
             return result
-        except ImportError:
-            # Summer Program module not installed/available — skip silently
-            return {"status": "skipped", "reason": "import_error"}
+        except ImportError as e:
+            # CR-026: an ImportError here is almost never "SP module not
+            # installed" (it is) — it is a STALE module cache in this
+            # long-running consumer. Surface it instead of skipping silently so
+            # it is not mistaken for a benign no-op. Re-raise so process_message
+            # logs it durably and the message is NACKed (not silently acked).
+            frappe.logger().error(
+                f"[SP] ImportError resolving on_feedback_ready for {submission_id}: "
+                f"{str(e)} — consumer likely needs a restart (stale module cache)."
+            )
+            raise
         except Exception as e:
             frappe.logger().warning(f"[SP] State update failed for {submission_id}: {str(e)}")
             # Re-raise so process_message logs it but continues
