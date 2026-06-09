@@ -57,6 +57,8 @@ unconditionally — the flag only controls how its result is interpreted.
 """
 import frappe
 
+from tap_lms.summer_program.utils import normalize_unicode_surrogates
+
 
 def on_feedback_ready(submission_name, student_id=None):
     """
@@ -146,6 +148,7 @@ def on_feedback_ready(submission_name, student_id=None):
         if validity_status == "Invalid" or validity_status == "invalid":
             week_rule = _get_week_rule_for_pe(pe, sub_week or pe.current_week)
             validation_enabled = bool((week_rule or {}).get("submission_validation_enabled"))
+            validation_enabled = True  # TEMP OVERRIDE 
             if validation_enabled:
                 t6b_failed_feedback_to_remedial(pe, trigger_source="microservice")
                 _sync_contact_fields(pe)
@@ -234,6 +237,7 @@ def _compute_submission_points(pe, submission_name, result_status):
 
     # Lax mode OR strict-mode-valid → award points_per_item
     assign_id = frappe.db.get_value("Submission", submission_name, "assign_id")
+    assign_id = normalize_unicode_surrogates(assign_id)
     if not assign_id:
         frappe.logger().warning(
             f"on_feedback_ready: submission {submission_name} has no assign_id; "

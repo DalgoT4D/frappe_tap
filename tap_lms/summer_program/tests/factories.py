@@ -48,6 +48,7 @@ def make_batch(
     current_calendar_week=1,
     grace_window_days=14,
     program_type="Summer",
+    program="TestProgram",
 ):
     """Idempotent: create or return a Batch with name1=label.
 
@@ -63,6 +64,13 @@ def make_batch(
     existing = frappe.get_value("Batch", {"name1": label}, "name")
     if existing:
         return existing
+    # Batch.program became mandatory in commit bf24daf (Link to Program).
+    # Ensure a Program exists so the factory keeps populating EVERY required
+    # Batch field (L-037).
+    if not frappe.db.exists("Program", program):
+        prog = frappe.new_doc("Program")
+        prog.program = program
+        prog.insert(ignore_permissions=True)
     batch = frappe.new_doc("Batch")
     batch.name1 = label
     batch.start_date = start_date
@@ -73,6 +81,7 @@ def make_batch(
     batch.regist_start_date = regist_start_date
     batch.regist_end_date = regist_end_date
     batch.batch_id = batch_id
+    batch.program = program
     batch.program_type = program_type
     batch.total_weeks = total_weeks
     batch.current_calendar_week = current_calendar_week

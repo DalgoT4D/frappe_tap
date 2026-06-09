@@ -27,9 +27,11 @@ from tap_lms.summer_program.state_machine import (
     t21_binge_resume,
 )
 from tap_lms.summer_program.event_log import log_event
+from tap_lms.summer_program.utils import sp_safe_endpoint
 
 
 @frappe.whitelist(allow_guest=False)
+@sp_safe_endpoint("reactivate_student")
 def reactivate_student(student_id, **_glific_kwargs):
     """
     API A5: reactivate_student

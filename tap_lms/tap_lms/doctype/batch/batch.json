@@ -11,6 +11,7 @@
  "engine": "InnoDB",
  "field_order": [
   "name1",
+  "program",
   "start_date",
   "end_date",
   "title",
@@ -32,6 +33,14 @@
    "label": "Name",
    "reqd": 1,
    "unique": 1
+  },
+  {
+   "fieldname": "program",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Program",
+   "options": "Program",
+   "reqd": 1
   },
   {
    "fieldname": "start_date",
@@ -99,7 +108,6 @@
    "label": "Grace Window Days"
   },
   {
-   "description": "Advances weekly via cron or admin action. Controls binge limit.",
    "fieldname": "current_calendar_week",
    "fieldtype": "Int",
    "label": "Current Calendar Week",
@@ -108,7 +116,7 @@
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-05-04 20:18:14.926501",
+ "modified": "2026-05-16 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Tap Lms",
  "name": "Batch",

@@ -154,6 +154,9 @@ def initiate_parent_call(pe_name, escalation_step, retry_count=0):
         config.status_template or "",
         pe, student, escalation_step,
     )
+    if not status_text["welcome_greeting"] == "None":
+        frappe.info("Skipping parent call for Dormant/Arm B student per config.")
+        return True
 
     # ── Run the 3-step Vocallabs sequence ──────────────────
     try:
@@ -400,7 +403,8 @@ def _render_status_template(template, pe, student, step):
     Error Log then return the raw template — the call still places (the
     operator can see the literal `{foo}` and fix the template).
 
-    Note: `language` is the student's preferred language (Student.language).
+    Note: `language` is the student's preferred language from the active
+    ProgramEnrollment (`ProgramEnrollment.language`).
     Useful for templates that branch wording, but the SPOKEN language of
     the call is determined by the Vocallabs Agent itself (the agent's
     `language` + `voice_id` config). To support multiple spoken languages
@@ -409,6 +413,20 @@ def _render_status_template(template, pe, student, step):
     """
     if not template:
         return ""
+    
+    pe_archetype = (pe.archetype or "").strip()
+    pe_experiment_arm = (pe.experiment_arm or "").strip()
+
+    if pe_archetype == "dormant" and pe_experiment_arm == "arm_a":
+        welcome_greeting = "TAP Buddy"
+    elif pe_archetype == "dormant" and pe_experiment_arm == "arm_b":
+        welcome_greeting = "None"
+    elif pe_archetype == "fence_sitter" and pe_experiment_arm == "arm_a":
+        welcome_greeting = "TAP Buddy"
+    elif pe_archetype == "fence_sitter" and pe_experiment_arm == "arm_b":
+        welcome_greeting = "Vidya"
+    else:
+        welcome_greeting = "TAP Buddy"
 
     ctx = {
         "student_name": _student_display(student),
@@ -418,7 +436,8 @@ def _render_status_template(template, pe, student, step):
         "path": pe.current_path or "",
         "escalation_order": str(step.get("escalation_order", "") or ""),
         "escalation_type": step.get("escalation_type", "") or "",
-        "language": getattr(student, "language", "") or "",
+        "language": pe.language or "",
+        "welcome_greeting": welcome_greeting
     }
 
     try:

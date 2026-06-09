@@ -397,6 +397,8 @@ def handle_escalation(pe_row):
         # SP_Escalation entirely — Glific is not involved for parent calls.
         # The Vocallabs module handles its own retry/DLQ; the dispatcher
         # tick continues without waiting on the actual call.
+
+
         frappe.enqueue(
             "tap_lms.summer_program.vocallabs.initiate_parent_call",
             queue="long",
@@ -405,14 +407,19 @@ def handle_escalation(pe_row):
             pe_name=pe.name,
             escalation_step=step_config,
         )
+
+
         log_event(pe, "escalation_sent", trigger_source="dispatcher",
                   details={"step": next_step, "escalation_type": "parent_call"})
         return
 
     # Text or voice-note channels → fire SP_Escalation flow.
+
     flow_id = _get_flow_id(pe_row.batch, ACTION_ESCALATION)
     if flow_id and pe.glific_id:
         _trigger_flow(flow_id, pe.glific_id, pe.name, "escalation")
+
+    return
 
 
 # CR-003 follow-up: `_push_escalation_contact_fields` removed. The two

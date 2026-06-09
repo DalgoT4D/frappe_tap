@@ -22,7 +22,14 @@ from frappe.utils import (
 
 from tap_lms.summer_program.custom_messages import EXPECTED_SUBMISSION_LABELS
 from tap_lms.summer_program.state_machine import get_active_pe
-from tap_lms.summer_program.utils import glific_response, resolve_student
+from tap_lms.summer_program.utils import (
+    glific_response,
+    normalize_unicode_surrogates,
+    resolve_student,
+    safe_sp_api_error_response,
+    sp_safe_endpoint,
+    _insert_with_serialization_retry,
+)
 
 
 def _time_diff_in_seconds(dt1, dt2):
@@ -81,6 +88,7 @@ def _is_week_advancement_pending(pe):
 # ============================================================
 
 @frappe.whitelist(allow_guest=False)
+@sp_safe_endpoint("get_weekly_content")
 @glific_response
 def get_weekly_content(student_id, course_level=None, **_glific_kwargs):
     """
@@ -102,6 +110,7 @@ def get_weekly_content(student_id, course_level=None, **_glific_kwargs):
         dict with week info, content items, path (Core/Remedial),
         expected submission type, and LearningUnit details.
     """
+    course_level = normalize_unicode_surrogates(course_level)
     student_id = _resolve_student_id(student_id)
     if not student_id:
         return {"success": False, "status": "not_found",
@@ -321,6 +330,7 @@ def get_next_content(student_id, course_level=None, **_glific_kwargs):
         return resp
 
     try:
+        course_level = normalize_unicode_surrogates(course_level)
         student_id = _resolve_student_id(student_id)
         if not student_id:
             return {"success": False, "status": "not_found",
@@ -621,8 +631,9 @@ def get_next_content(student_id, course_level=None, **_glific_kwargs):
         }
 
     except Exception as e:
-        frappe.log_error(f"get_next_content error: {str(e)}", "SP Progression API")
-        return {"success": False, "status": "error", "error_detail": str(e)}
+        # BR-003: rollback-first + flat error (L-030 cascade fix). Was:
+        # log_error on the poisoned txn → InFailedSqlTransaction → Glific 400.
+        return safe_sp_api_error_response(e, "get_next_content", student_id=student_id)
 
 
 # ============================================================
@@ -666,6 +677,9 @@ def get_content_details(content_type, content_id, language=None,
         if content_type not in VALID_CONTENT_TYPES:
             return {"success": False, "status": "invalid_content_type",
                     "error_detail": f"Invalid content_type: {content_type}"}
+
+        if content_type in ("Assignment", "Quiz"):
+            content_id = normalize_unicode_surrogates(content_id)
 
         if not frappe.db.exists(content_type, content_id):
             return {"success": False, "status": "not_found",
@@ -789,8 +803,7 @@ def get_content_details(content_type, content_id, language=None,
         }
 
     except Exception as e:
-        frappe.log_error(f"get_content_details error: {str(e)}", "SP Progression API")
-        return {"success": False, "status": "error", "error_detail": str(e)}
+        return safe_sp_api_error_response(e, "get_content_details", student_id=student_id)
 
 
 # ============================================================
@@ -824,6 +837,10 @@ def complete_content(student_id, course_level, content_type, content_id,
             return {"success": False, "status": "invalid_input",
                     "error_detail": "All parameters required"}
 
+        course_level = normalize_unicode_surrogates(course_level)
+        if content_type in ("Assignment", "Quiz"):
+            content_id = normalize_unicode_surrogates(content_id)
+
         if content_type == "Quiz":
             return {"success": False, "status": "wrong_endpoint",
                     "error_detail": "Use start_quiz and submit_answer for Quiz content"}
@@ -845,6 +862,90 @@ def complete_content(student_id, course_level, content_type, content_id,
         if not progress_data:
             return {"success": False, "status": "no_progress",
                     "error_detail": "No progress record found. Call get_next_content first."}
+
+        # ── PE-canonical SSP auto-correct (CR-023, mirrors get_next_content) ──
+        # The state machine owns the truth (PE.current_week / current_path /
+        # current_tier); SSP is DERIVED and can lag a week boundary — e.g. PE
+        # advanced via T14 but no get_next_content call has realigned SSP yet.
+        # Without this, complete_content validates the incoming content_id
+        # against a STALE SSP.stage and fails with content_mismatch even though
+        # the student is legitimately on the new week; worse, the stale stage
+        # would flow into _advance_to_next_content + the SCL enqueue below,
+        # writing cross-week StudentContentLog rows. Align SSP to PE BEFORE
+        # reading content_items. (Loud content_mismatch for a genuinely wrong
+        # content_id is preferred over silently passing stale SSP through.)
+        #
+        # MUST stay in sync with the get_next_content SSP-canonical block (L-074):
+        # both endpoints read SSP.stage and both require PE alignment first.
+        #
+        # Two checks get_next_content has are DELIBERATELY omitted here (L-074:
+        # enumerate the intentional differences, don't silently let the blocks
+        # diverge):
+        #   - _is_week_advancement_pending: not needed. If T14 is queued but
+        #     unrun, pe.current_week is still the OLD week, so we align SSP to
+        #     the old week and the completion proceeds normally; T14 later sets
+        #     weekly_video_done=0 which re-triggers the reset on the next call.
+        #   - content-blocking (prior-week submission gate): complete_content
+        #     MARKS content done, it does not GATE access. A blocked student
+        #     never got a valid content_id for the blocked week (get_next_content
+        #     returns content_blocked), so a stale id here fails content_mismatch.
+        student = frappe.get_doc("Student", student_id)
+        batch, bpr = _get_active_bpr_for_student(student)
+        if not batch or not bpr:
+            return {"success": False, "status": "no_active_batch",
+                    "error_detail": "No active Summer Program batch found"}
+
+        pe = get_active_pe(student.name, batch.name)
+        if not pe:
+            return {"success": False, "status": "no_active_pe",
+                    "error_detail": "No active ProgramEnrollment for this student"}
+
+        current_week = pe.current_week or _get_effective_week(
+            student, batch, _get_current_week(batch))
+        path = pe.current_path or PATH_CORE
+        tier = pe.current_tier or (
+            REMEDIAL_TIER if path == PATH_REMEDIAL
+            else TIER_BY_WEEK.get(current_week, DEFAULT_TIER)
+        )
+
+        learning_unit = _get_learning_unit(course_level, current_week, tier)
+        if not learning_unit and path == PATH_REMEDIAL:
+            # Defensive fallback: missing Remedial LU → serve Core for this week.
+            tier = TIER_BY_WEEK.get(current_week, DEFAULT_TIER)
+            learning_unit = _get_learning_unit(course_level, current_week, tier)
+            path = PATH_CORE
+        if not learning_unit:
+            return {"success": False, "status": "no_content_for_week",
+                    "error_detail": f"No content found for week {current_week}"}
+
+        # Align SSP to PE + reset content_index to 0 (identical conditions to
+        # the get_next_content auto-correct: LU drift, week lag, or new-week-
+        # no-video-yet). Atomic via a single set_value, then mirror into the
+        # in-memory progress_data so content_items + the SCL enqueue use the
+        # aligned values.
+        ssp_week = cint(progress_data.get("current_week") or 0)
+        ssp_content_index = cint(progress_data.get("current_content_index") or 0)
+        new_week_no_video_yet = (
+            not bool(pe.weekly_video_done) and ssp_content_index > 0
+        )
+        needs_reset = (
+            progress_data["stage"] != learning_unit
+            or ssp_week != current_week
+            or new_week_no_video_yet
+        )
+        if needs_reset:
+            frappe.db.set_value("StudentStageProgress", progress_data["name"], {
+                "stage": learning_unit,
+                "current_week": current_week,
+                "current_tier": tier,
+                "is_on_remedial": 1 if tier == REMEDIAL_TIER else 0,
+                "current_content_index": 0,
+                "last_activity_timestamp": now_datetime(),
+            })
+            progress_data["stage"] = learning_unit
+            progress_data["current_week"] = current_week
+            progress_data["current_tier"] = tier
+            progress_data["current_content_index"] = 0
 
         # Validate content matches current position
         content_items = _get_content_items(progress_data["stage"])
@@ -987,8 +1088,7 @@ def complete_content(student_id, course_level, content_type, content_id,
         return _advance_to_next_content(progress_data, course_level)
 
     except Exception as e:
-        frappe.log_error(f"complete_content error: {str(e)}", "SP Progression API")
-        return {"success": False, "status": "error", "error_detail": str(e)}
+        return safe_sp_api_error_response(e, "complete_content", student_id=student_id)
 
 
 def _advance_to_next_content(progress_data, course_level):
@@ -1001,6 +1101,7 @@ def _advance_to_next_content(progress_data, course_level):
       - progress fields flattened to progress_completed / progress_total /
         progress_percentage
     """
+    course_level = normalize_unicode_surrogates(course_level)
     current_index = cint(progress_data["current_content_index"])
     new_index = current_index + 1
     content_items = _get_content_items(progress_data["stage"])
@@ -1106,6 +1207,9 @@ def start_quiz(student_id, course_level, quiz_id, language=None,
             return {"success": False, "status": "invalid_input",
                     "error_detail": "student_id, course_level, and quiz_id required"}
 
+        course_level = normalize_unicode_surrogates(course_level)
+        quiz_id = normalize_unicode_surrogates(quiz_id)
+
         student_id = _resolve_student_id(student_id)
         if not student_id:
             return {"success": False, "status": "not_found",
@@ -1202,13 +1306,13 @@ def start_quiz(student_id, course_level, quiz_id, language=None,
         return response
 
     except Exception as e:
-        frappe.log_error(f"start_quiz error: {str(e)}", "SP Progression API")
-        return {"success": False, "status": "error", "error_detail": str(e)}
+        return safe_sp_api_error_response(e, "start_quiz", student_id=student_id)
 
 
 def _resume_quiz(attempt, progress_data, language=None):
     """Resume an in-progress quiz attempt."""
-    quiz_doc = frappe.get_doc("Quiz", attempt.quiz)
+    quiz_id = normalize_unicode_surrogates(attempt.quiz)
+    quiz_doc = frappe.get_doc("Quiz", quiz_id)
     questions = _get_quiz_questions(quiz_doc)
 
     answered_indices = {cint(a.question_index) for a in attempt.answers}
@@ -1319,7 +1423,8 @@ def submit_answer(student_id, quiz_attempt_id, question_index, answer,
             return {"success": False, "status": "invalid_question_index",
                     "error_detail": f"Invalid question_index. Must be 1-{attempt.total_questions}"}
 
-        quiz_doc = frappe.get_doc("Quiz", attempt.quiz)
+        quiz_id = normalize_unicode_surrogates(attempt.quiz)
+        quiz_doc = frappe.get_doc("Quiz", quiz_id)
         questions = _get_quiz_questions(quiz_doc)
         q_row = questions[question_index - 1]
 
@@ -1406,8 +1511,7 @@ def submit_answer(student_id, quiz_attempt_id, question_index, answer,
         return response
 
     except Exception as e:
-        frappe.log_error(f"submit_answer error: {str(e)}", "SP Progression API")
-        return {"success": False, "status": "error", "error_detail": str(e)}
+        return safe_sp_api_error_response(e, "submit_answer", student_id=student_id)
 
 
 def _complete_quiz_sp(attempt, quiz_doc, questions, language=None):
@@ -1452,7 +1556,8 @@ def _complete_quiz_sp(attempt, quiz_doc, questions, language=None):
         as_dict=True,
     )
 
-    course_level = progress_data["course_context"]
+    course_level = normalize_unicode_surrogates(progress_data["course_context"])
+    quiz_id = normalize_unicode_surrogates(attempt.quiz)
 
     # Clear quiz state
     frappe.db.set_value("StudentStageProgress", progress_data["name"], {
@@ -1473,7 +1578,7 @@ def _complete_quiz_sp(attempt, quiz_doc, questions, language=None):
         course_level=course_level,
         progress_name=progress_data["name"],
         content_type="Quiz",
-        content_id=attempt.quiz,
+        content_id=quiz_id,
         action="completed" if passed else "failed",
         score=score, max_score=100, passed=passed,
         time_spent_seconds=total_time,
@@ -1787,6 +1892,7 @@ def _get_learning_unit(course_level, week, tier):
     """
     Get the LearningUnit for a specific week and tier from Course Level.
     """
+    course_level = normalize_unicode_surrogates(course_level)
     result = frappe.db.sql("""
         SELECT lul.learning_unit
         FROM `tabLearningUnitList` lul
@@ -1804,6 +1910,7 @@ def _get_learning_unit(course_level, week, tier):
 
 def _get_content_items(learning_unit):
     """Get content items for a learning unit."""
+    learning_unit = normalize_unicode_surrogates(learning_unit)
     items = frappe.get_all(
         "UnitContentItem",
         filters={"parent": learning_unit, "parenttype": "LearningUnit"},
@@ -1827,6 +1934,8 @@ def _get_content_items(learning_unit):
 
 def _get_content_display_name(content_type, content_id):
     """Get display name for content."""
+    if content_type in ("Assignment", "Quiz"):
+        content_id = normalize_unicode_surrogates(content_id)
     field_map = {
         "VideoClass": "video_name",
         "Quiz": "quiz_name",
@@ -1869,8 +1978,17 @@ def _get_video_assessments(content_type, content_id):
     )
     if not rows:
         return None
-    return [{"assessment_type": r.assessment_type, "assessment_id": r.assessment}
-            for r in rows if r.assessment]
+    return [
+        {
+            "assessment_type": r.assessment_type,
+            "assessment_id": (
+                normalize_unicode_surrogates(r.assessment)
+                if r.assessment_type == "Assignment"
+                else r.assessment
+            ),
+        }
+        for r in rows if r.assessment
+    ]
 
 
 def _get_video_unguided_submission_message(student_id, assessments, language=None):
@@ -1923,6 +2041,7 @@ def _get_video_unguided_submission_message(student_id, assessments, language=Non
         if assessment.get("assessment_type") == "Assignment":
             assignment_id = assessment.get("assessment_id")
             break
+    assignment_id = normalize_unicode_surrogates(assignment_id)
 
     if not assignment_id:
         _log_unguided_submission(
@@ -2000,6 +2119,8 @@ def _strip_html_text(value):
 
 def _get_next_learning_unit(course_level, week_no, tier, after_lu):
     """Get next LU after current one in same week/tier."""
+    course_level = normalize_unicode_surrogates(course_level)
+    after_lu = normalize_unicode_surrogates(after_lu)
     current_idx = frappe.db.get_value(
         "LearningUnitList",
         {"parent": course_level, "parenttype": "Course Level", "learning_unit": after_lu},
@@ -2025,6 +2146,7 @@ def _get_next_learning_unit(course_level, week_no, tier, after_lu):
 
 def _check_week_exists(course_level, week_no):
     """Check if a week exists in course level."""
+    course_level = normalize_unicode_surrogates(course_level)
     return frappe.db.exists("LearningUnitList", {
         "parent": course_level, "parenttype": "Course Level", "week_no": week_no
     })
@@ -2034,6 +2156,7 @@ def _get_learning_unit_info(learning_unit):
     """Get LU display info."""
     if not learning_unit:
         return None
+    learning_unit = normalize_unicode_surrogates(learning_unit)
     try:
         lu = frappe.get_doc("LearningUnit", learning_unit)
         return {"id": learning_unit, "name": getattr(lu, 'unit_name', learning_unit)}
@@ -2055,6 +2178,7 @@ def _get_question_details(question_id, language=None):
     try:
         from frappe.utils import strip_html_tags
 
+        question_id = normalize_unicode_surrogates(question_id)
         q = frappe.get_doc("QuizQuestion", question_id)
         question_text = q.question or getattr(q, 'question_name', '') or ""
 
@@ -2174,7 +2298,7 @@ def _get_course_level_for_student(student, batch):
     the batch via _get_active_bpr_for_student, so if the PE row was used
     to find the batch, the PE row is also the right source for course_level.
     """
-    return frappe.db.get_value(
+    course_level = frappe.db.get_value(
         "ProgramEnrollment",
         {
             "student": student.name,
@@ -2182,7 +2306,8 @@ def _get_course_level_for_student(student, batch):
             "program_status": ["in", [PROGRAM_ACTIVE, PROGRAM_PAUSED]],
         },
         "course_level",
-    ) or None
+    )
+    return normalize_unicode_surrogates(course_level) or None
 
 
 def _get_language_for_student(student_id, course_level=None):
@@ -2194,6 +2319,7 @@ def _get_language_for_student(student_id, course_level=None):
     or incomplete enrollment rows. API-provided language is intentionally not
     considered.
     """
+    course_level = normalize_unicode_surrogates(course_level)
     filters = {
         "student": student_id,
         "program_status": ["in", [PROGRAM_ACTIVE, PROGRAM_PAUSED]],
@@ -2323,6 +2449,8 @@ def _get_or_create_sp_progress(student_id, course_level, week, tier, learning_un
     """
     Get or create a StudentStageProgress record for Summer Program.
     """
+    course_level = normalize_unicode_surrogates(course_level)
+    learning_unit = normalize_unicode_surrogates(learning_unit)
     progress = frappe.db.get_value(
         "StudentStageProgress",
         {
@@ -2366,6 +2494,10 @@ def _get_or_create_sp_progress(student_id, course_level, week, tier, learning_un
         "total_quizzes_failed": 0,
         "total_time_spent_seconds": 0,
     })
-    doc.insert(ignore_permissions=True)
+    # BR-003: retry on transient PG SerializationFailure. StudentStageProgress
+    # is now hash-autoname (no tabSeries lock), but the retry also covers the
+    # rollout window (workers still on the old format-autoname until recycled,
+    # L-065) and any other transient write conflict.
+    _insert_with_serialization_retry(doc)
     # Removed mid-handler commit per L-017 — Frappe commits at request-end.
     return doc.name

@@ -195,7 +195,7 @@ class FeedbackProcessor:
 
         # Extract translated feedback and language
         overall_feedback_translated = feedback_data.get("overall_feedback_translated", "")
-        translation_language = feedback_data.get("translation_language", "")
+        translation_language = feedback_data.get("translation_language", "English")
         print("plag status:", plagiarism_status)    
         # Generate audio feedback if translated text and language are provided
         audio_feedback_url = ""

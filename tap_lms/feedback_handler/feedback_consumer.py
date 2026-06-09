@@ -235,6 +235,10 @@ class FeedbackConsumer:
             frappe.db.rollback()
 
             error_msg = str(e)
+            import traceback
+            traceback_str = traceback.format_exc()
+            error_msg += f"\nTraceback:\n{traceback_str}"
+            print(f"Error processing feedback for submission {submission_id}: {error_msg}")
             frappe.logger().error(f"Error processing submission {submission_id}: {error_msg}")
 
             # Determine if error is retryable

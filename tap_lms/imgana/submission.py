@@ -9,6 +9,17 @@ from tap_lms.imgana.gcs_client import upload_to_gcs
 URL_SUBMISSION_TYPES = {"audio", "image", "video"}
 
 
+def _normalize_unicode_surrogates(value):
+    """Convert escaped UTF-16 surrogate pairs into valid Unicode."""
+    if not isinstance(value, str):
+        return value
+
+    if not any(0xD800 <= ord(char) <= 0xDFFF for char in value):
+        return value
+
+    return value.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+
+
 def get_rabbitmq_settings():
     """
     Fetch RabbitMQ configuration from the RabbitMQ Settings DocType.
@@ -328,6 +339,7 @@ def assignment_feedback(api_key, submission_id):
 def get_assignment_context(assignment_id, student_id=None):
     """Get complete assignment context for RAG service"""
     try:
+        assignment_id = _normalize_unicode_surrogates(assignment_id)
         assignment = frappe.get_doc("Assignment", assignment_id)
         images = []
         for row in assignment.get("reference_images") or []:

@@ -13,6 +13,9 @@ import json
 from frappe.utils import now_datetime
 from datetime import datetime, timezone
 
+# Single source of truth in utils.py (BR-003); re-exported here for back-compat.
+from tap_lms.summer_program.utils import _commit_with_serialization_retry
+
 from tap_lms.glific_integration import (
     update_contact_fields,
     add_contact_to_group,
@@ -163,7 +166,6 @@ def _process_enrollment_chunk(bpr_name, batch_name, student_ids, chunk_index):
       1. Update Glific contact fields (archetype, experiment_arm, program_type)
       2. Track enrollment count on BPR
     """
-    bpr = frappe.get_doc("BatchProgramRun", bpr_name)
     batch = frappe.get_doc("Batch", batch_name)
     enrolled = 0
 
@@ -209,24 +211,76 @@ def _process_enrollment_chunk(bpr_name, batch_name, student_ids, chunk_index):
                 "SP Enrollment Chunk",
             )
 
-    # Atomically update enrolled count
-    frappe.db.sql(
-        """
-        UPDATE `tabBatchProgramRun`
-        SET total_enrolled = total_enrolled + %s
-        WHERE name = %s
-        """,
-        (enrolled, bpr_name),
-    )
+    # Flush the per-student enqueue_after_commit Glific sync jobs in their OWN
+    # transaction BEFORE touching the contended BPR counter row. Previously the
+    # sync enqueues shared a transaction with the counter UPDATE below, so a
+    # SerializationFailure on the counter rolled the sync work back too,
+    # silently dropping it (BR-001 / L-071). Committing here dispatches those
+    # jobs independently of whether the counter UPDATE later conflicts.
     frappe.db.commit()
 
-    # Check if all chunks are done
-    bpr.reload()
-    if bpr.total_enrolled >= bpr.total_imported:
-        bpr.enrollment_completed_at = now_datetime()
-        bpr.save(ignore_permissions=True)
-        frappe.db.commit()
+    # Counter UPDATE in its own retry-wrapped transaction. On exhaustion this
+    # raises so the RQ job is recorded as failed (L-056) — the lost increment
+    # surfaces in the DLQ rather than vanishing into a permanent undercount.
+    _update_bpr_counter_with_retry(bpr_name, enrolled)
+
+    # Stamp completion atomically. Multiple chunk workers can cross the
+    # total_enrolled >= total_imported threshold near-simultaneously; a
+    # reload()+save() race lets the last writer clobber concurrent counter
+    # increments and re-stamp enrollment_completed_at. The guarded UPDATE +
+    # RETURNING is the project idempotency primitive (L-010): only the worker
+    # whose UPDATE actually flips the still-NULL stamp gets a row back; the
+    # rest no-op. The WHERE re-reads total_enrolled/total_imported in the same
+    # statement, so there is no stale-snapshot window.
+    stamped = frappe.db.sql(
+        """
+        UPDATE `tabBatchProgramRun`
+        SET enrollment_completed_at = %s
+        WHERE name = %s
+          AND enrollment_completed_at IS NULL
+          AND total_enrolled >= total_imported
+        RETURNING name
+        """,
+        (now_datetime(), bpr_name),
+    )
+    frappe.db.commit()
+    if stamped:
         frappe.logger().info(f"SP enrollment complete for BPR {bpr_name}")
+
+
+# ── Serialization-retry primitives (BR-001 / BR-003 / L-071) ─────────
+#
+# _commit_with_serialization_retry now lives in summer_program/utils.py (single
+# source of truth, BR-003). Imported at module top and re-exported here for
+# backward compatibility with any importer of enrollment._commit_with_serialization_retry.
+
+
+def _update_bpr_counter_with_retry(bpr_name, increment, max_retries=3):
+    """Increment BatchProgramRun.total_enrolled by `increment`, retry-safe.
+
+    The shared BPR row is contended by every enrollment chunk worker; under
+    concurrency Postgres raises SerializationFailure on overlapping UPDATEs
+    (L-071). Each attempt commits in its own transaction, so a conflict only
+    costs the increment — never the already-committed per-student Glific sync
+    enqueues, which the caller flushed with its own commit before calling this.
+    """
+    def _do_update():
+        # COALESCE: total_enrolled is a nullable Int (no JSON default); NULL + n
+        # is NULL in Postgres and would permanently poison the counter (L-011).
+        frappe.db.sql(
+            """
+            UPDATE `tabBatchProgramRun`
+            SET total_enrolled = COALESCE(total_enrolled, 0) + %s
+            WHERE name = %s
+            """,
+            (increment, bpr_name),
+        )
+
+    _commit_with_serialization_retry(
+        _do_update,
+        context=f"bpr={bpr_name} increment={increment}",
+        max_retries=max_retries,
+    )
 
 
 # ── Helpers ──────────────────────────────────────────────────

@@ -45,7 +45,12 @@ from tap_lms.summer_program.constants import (
     BPR_COLLECTIONS_READY,
 )
 from tap_lms.summer_program.event_log import log_event
-from tap_lms.summer_program.utils import get_student_display_name
+from tap_lms.summer_program.utils import _commit_with_serialization_retry
+from tap_lms.summer_program.utils import (
+    get_student_display_name,
+    normalize_unicode_surrogates,
+    sp_safe_endpoint,
+)
 
 
 # ════════════════════════════════════════════════════════════
@@ -404,19 +409,33 @@ def _process_pe_chunk(bpr_name, batch_name, student_ids, chunk_index):
             )
             errors.append(f"{sid}: {str(e)}")
 
+    # This commit flushes the per-student enqueue_after_commit Glific sync jobs
+    # in their own transaction — independent of the contended BPR counter
+    # UPDATE below (Fix 1 / BR-001). The counter conflict can never roll the
+    # sync work back because it already committed here.
     frappe.db.commit()
 
-    # Update BPR total_enrolled count
-    frappe.db.sql("""
-        UPDATE `tabBatchProgramRun`
-        SET total_enrolled = (
-            SELECT COUNT(*) FROM `tabProgramEnrollment`
-            WHERE batch = (SELECT batch FROM `tabBatchProgramRun` WHERE name = %s)
-              AND program_status != 'dropped'
-        )
-        WHERE name = %s
-    """, (bpr_name, bpr_name))
-    frappe.db.commit()
+    # Recompute BPR.total_enrolled from the authoritative PE row count, in its
+    # own retry-wrapped transaction. The shared BPR row is contended by all
+    # ~72 Phase-3 chunk workers (1000 students/chunk — MORE contention than
+    # Phase 1); without retry a SerializationFailure here leaves the count
+    # stale until a later chunk happens to recompute it, and the final chunk's
+    # conflict would strand it permanently. L-071.
+    def _recompute_counter():
+        frappe.db.sql("""
+            UPDATE `tabBatchProgramRun`
+            SET total_enrolled = (
+                SELECT COUNT(*) FROM `tabProgramEnrollment`
+                WHERE batch = (SELECT batch FROM `tabBatchProgramRun` WHERE name = %s)
+                  AND program_status != 'dropped'
+            )
+            WHERE name = %s
+        """, (bpr_name, bpr_name))
+
+    _commit_with_serialization_retry(
+        _recompute_counter,
+        context=f"bpr={bpr_name} phase=3 recompute",
+    )
 
     frappe.logger().info(
         f"SP PE chunk {chunk_index}: created={created}, skipped={skipped}, "
@@ -465,6 +484,8 @@ def create_program_enrollment(student_id, batch_id, archetype=None,
 
     if not archetype:
         return {"success": False, "error": "Student has no archetype assigned"}
+
+    course_level = normalize_unicode_surrogates(course_level)
 
     # Resolve course level if not provided
     if not course_level:
@@ -739,6 +760,7 @@ def get_enrollment_summary(batch_id):
 
 
 @frappe.whitelist(allow_guest=False)
+@sp_safe_endpoint("get_student_state")
 def get_student_state(student_id):
     """
     API A1: get_student_state
@@ -919,7 +941,7 @@ def _resolve_course_level(student, batch):
         return None
     for enrollment in student.enrollment:
         if enrollment.batch == batch.name and enrollment.course:
-            return enrollment.course
+            return normalize_unicode_surrogates(enrollment.course)
     return None
 
 

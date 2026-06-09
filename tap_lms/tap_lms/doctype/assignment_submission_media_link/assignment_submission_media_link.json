@@ -17,7 +17,7 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Link Type",
-   "options": "Drive\nYouTube",
+   "options": "Drive\nYouTube\nCanva",
    "reqd": 1
   },
   {
