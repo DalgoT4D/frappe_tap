@@ -75,6 +75,33 @@ def get_glific_auth_headers():
             "Content-Type": "application/json"
         }
 
+
+def _glific_post_with_401_retry(url, payload):
+    """POST to Glific and retry once on 401 after forcing token refresh."""
+    headers = get_glific_auth_headers()
+    response = _GLIFIC_SESSION.post(
+        url, json=payload, headers=headers, timeout=GLIFIC_TIMEOUT
+    )
+    if response.status_code != 401:
+        return response
+
+    settings = get_glific_settings()
+    frappe.db.set_value(
+        "Glific Settings",
+        settings.name,
+        {
+            "access_token": "",
+            "token_expiry_time": None,
+        },
+        update_modified=False,
+    )
+    frappe.db.commit()
+
+    refreshed_headers = get_glific_auth_headers()
+    return _GLIFIC_SESSION.post(
+        url, json=payload, headers=refreshed_headers, timeout=GLIFIC_TIMEOUT
+    )
+
 def create_contact(name, phone, school_name, model_name, language_id, batch_id):
     settings = get_glific_settings()
     url = f"{settings.api_url}/api"
@@ -181,7 +208,6 @@ def update_contact_fields(contact_id, fields_to_update, language_id=None):
     """
     settings = get_glific_settings()
     url = f"{settings.api_url}/api"
-    headers = get_glific_auth_headers()
 
     # ── Step 1: Fetch existing contact fields ──────────────────
     fetch_payload = {
@@ -200,8 +226,7 @@ def update_contact_fields(contact_id, fields_to_update, language_id=None):
     }
 
     try:
-        fetch_response = _GLIFIC_SESSION.post(url, json=fetch_payload, headers=headers,
-                                              timeout=GLIFIC_TIMEOUT)
+        fetch_response = _glific_post_with_401_retry(url, fetch_payload)
         fetch_response.raise_for_status()
         fetch_data = fetch_response.json()
 
@@ -269,8 +294,7 @@ def update_contact_fields(contact_id, fields_to_update, language_id=None):
             },
         }
 
-        update_response = _GLIFIC_SESSION.post(url, json=update_payload, headers=headers,
-                                               timeout=GLIFIC_TIMEOUT)
+        update_response = _glific_post_with_401_retry(url, update_payload)
         update_response.raise_for_status()
         update_data = update_response.json()
 
