@@ -165,6 +165,88 @@ def add_contacts_to_group_bulk(contact_ids, group_id):
         return False
 
 
+def remove_contacts_from_group_bulk(contact_ids, group_id):
+    """
+    Remove multiple contacts from a Glific collection in one API call.
+
+    Mirrors `add_contacts_to_group_bulk` but flips the GroupContactsInput to
+    use deleteContactIds instead of addContactIds. Same updateGroupContacts
+    mutation under the hood.
+
+    NOTE: uses `_glific_post_with_401_retry` (the CR-025 / L-078 session +
+    token-refresh helper), NOT a bare `requests.post`. A bulk migration
+    (CR-027, 62K contacts) is exactly when a token can expire mid-run — the
+    401-retry path is mandatory here.
+
+    Args:
+        contact_ids: list of Glific contact ID strings
+        group_id: Glific group ID string
+
+    Returns:
+        True on success, False on failure
+    """
+    if not contact_ids or not group_id:
+        return False
+
+    settings = get_glific_settings()
+    url = f"{settings.api_url}/api"
+
+    payload = {
+        "query": """
+        mutation updateGroupContacts($input: GroupContactsInput!) {
+          updateGroupContacts(input: $input) {
+            groupContacts {
+              id
+            }
+            numberDeleted
+          }
+        }
+        """,
+        "variables": {
+            "input": {
+                "groupId": str(group_id),
+                "addContactIds": [],
+                "deleteContactIds": [str(cid) for cid in contact_ids],
+            }
+        },
+    }
+
+    try:
+        response = _glific_post_with_401_retry(url, payload)
+        data = response.json()
+
+        if "errors" in data:
+            frappe.logger().error(
+                f"Glific API error in remove_contacts_from_group_bulk: {data['errors']}"
+            )
+            return False
+
+        result = data.get("data", {}).get("updateGroupContacts")
+        if result is not None:
+            frappe.logger().info(
+                f"Bulk-removed {len(contact_ids)} contacts from group {group_id}"
+            )
+            return True
+
+        frappe.logger().error(
+            f"remove_contacts_from_group_bulk unexpected response: {data}"
+        )
+        return False
+
+    except Exception as e:
+        # L-035: surface to the Error Log (operator-visible), not just the bench
+        # log. Contract preserved (callers rely on False) — we log loudly, not raise.
+        try:
+            frappe.log_error(
+                f"remove_contacts_from_group_bulk error: group={group_id} "
+                f"n_contacts={len(contact_ids) if contact_ids else 0}: {e}",
+                "Glific remove_contacts_from_group_bulk Error",
+            )
+        except Exception:
+            frappe.logger().error(f"remove_contacts_from_group_bulk error (double-fault): {e}")
+        return False
+
+
 def create_or_get_collection(label, description=""):
     """
     Idempotent helper: return existing Glific group or create a new one.

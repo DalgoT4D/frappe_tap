@@ -88,6 +88,17 @@ scheduler_events = {
         "0 0 * * 1": [
             "tap_lms.summer_program.batch_admin.auto_advance_batch_week",
         ],
+        # CR-027 (2026-06-09): Monday 06:00 UTC weekly content sweep. Runs
+        # AFTER auto_advance_batch_week (Monday 00:00 UTC) bumps
+        # Batch.current_calendar_week, so the sweep sees the new calendar week.
+        # Phase 1 demotes behind students (wk < calendar_week, no video) to
+        # normal_escalation via t2_start_escalation; Phase 2 delivers this
+        # week's content to current-week candidates via a temp Glific sweep
+        # collection. Requires `bench migrate` to register this entry in
+        # tabScheduledJobType (L-049) — `bench restart` alone is not enough.
+        "0 6 * * 1": [
+            "tap_lms.summer_program.scheduler.weekly_content_sweep",
+        ],
         # CR-005 (2026-05-15): Tuesday 03:30 UTC = Tuesday 09:00 IST.
         # Fires SP_Content_Delivery against each active BPR's `main`
         # Glific collection. Membership is maintained continuously by

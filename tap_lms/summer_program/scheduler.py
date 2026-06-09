@@ -13,7 +13,7 @@ Register in hooks.py:
     }
 """
 import frappe
-from frappe.utils import now_datetime, getdate, today, date_diff
+from frappe.utils import now_datetime, getdate, today, date_diff, nowdate
 
 from tap_lms.glific_integration import start_contact_flow
 from tap_lms.summer_program.constants import (
@@ -25,13 +25,27 @@ from tap_lms.summer_program.constants import (
     PER_STUDENT_ACTIONS,
     ARCHETYPE_DORMANT,
     ARCHETYPE_FENCE_SITTER,
+    PROGRAM_ACTIVE,
+    STATE_NORMAL_CONTENT,
 )
 # CR-003: ACTION_REENGAGEMENT and ACTION_GRACE_REMINDER removed from constants.
 # _run_reengagement and _run_grace_notifications were the daily-scheduler
 # entry points that consumed those action types; both functions are deleted
 # from this file (re-engagement is now inbound-only; grace reminders are
 # replaced by per-week escalation steps).
-from tap_lms.summer_program.glific_extensions import start_group_flow
+from tap_lms.summer_program.glific_extensions import (
+    start_group_flow,
+    add_contacts_to_group_bulk,
+    create_or_get_collection,
+)
+# CR-027: shared per-candidate demotion routine (also used by the one-time
+# backlog migration). Imported at module level so tests can patch it as
+# `scheduler._demote_behind_pe` and so the sweep mirrors the migration exactly.
+from tap_lms.summer_program.migrations.sweep_migration import (
+    _demote_behind_pe,
+    _bulk_move_to_escalation,
+    find_behind_candidates,
+)
 
 
 def run_daily_actions():
@@ -353,6 +367,282 @@ def weekly_content_delivery_trigger():
                 f"{bpr['name']}: {e}",
                 "SP Weekly Content Delivery",
             )
+
+
+# ════════════════════════════════════════════════════════════
+# CR-027 (2026-06-09): weekly content delivery sweep
+# Monday 06:00 UTC — registered in hooks.scheduler_events.cron.
+# ════════════════════════════════════════════════════════════
+
+
+def _sweep_phase1_demote_behind(active_bprs, summary):
+    """Phase 1 — demote behind students (per active BPR) to normal_escalation.
+
+    "Behind" = normal_content_delivery, current_week < calendar_week,
+    weekly_video_done = 0. Uses the SAME shared routines as the one-time
+    backlog migration: `_demote_behind_pe` (transition with skip_glific=True,
+    escalation params from ArchetypeConfig) per candidate, then ONE
+    `_bulk_move_to_escalation` per BPR — NO per-PE Glific jobs. See
+    sweep_migration module docstring + L-081 for the scale rationale.
+
+    Per-row commit so a later failure keeps prior work; per-row rollback on
+    failure so a poisoned txn (L-030) doesn't cascade into the next row.
+    """
+    for bpr in active_bprs:
+        batch_name = bpr["batch"]
+        try:
+            batch = frappe.get_doc("Batch", batch_name)
+            calendar_week = batch.current_calendar_week
+        except Exception as e:
+            summary["errors"].append(f"BPR {bpr['name']}: phase1 batch load failed: {e}")
+            continue
+
+        if not calendar_week:
+            summary["errors"].append(
+                f"BPR {bpr['name']}: batch {batch_name} has no current_calendar_week"
+            )
+            continue
+
+        candidates = find_behind_candidates(batch_name, calendar_week)
+        transitioned_glific_ids = []
+        for candidate in candidates:
+            pe_name = candidate["name"]
+            try:
+                pe_doc = frappe.get_doc("ProgramEnrollment", pe_name)
+                status, detail, glific_id = _demote_behind_pe(
+                    pe_doc, trigger_source="weekly_content_sweep"
+                )
+                if status == "no_config":
+                    summary["phase1_no_config"] += 1
+                    if len(summary["errors"]) < 50:
+                        summary["errors"].append(detail)
+                    frappe.db.rollback()
+                else:
+                    summary["phase1_demoted"] += 1
+                    if glific_id:
+                        transitioned_glific_ids.append(glific_id)
+                    frappe.db.commit()  # per-row commit
+            except Exception as e:
+                summary["phase1_failed"] += 1
+                frappe.db.rollback()
+                if len(summary["errors"]) < 50:
+                    summary["errors"].append(f"phase1 {pe_name}: {e}")
+                try:
+                    frappe.log_error(
+                        f"weekly_content_sweep phase1: PE {pe_name} failed: {e}",
+                        "CR-027 Weekly Sweep",
+                    )
+                except Exception:
+                    frappe.logger().error(
+                        f"weekly_content_sweep phase1 double-fault on {pe_name}: {e}"
+                    )
+
+        # Bulk Glific collection move for this BPR's transitioned PEs (replaces
+        # the per-PE maintain_collections that skip_glific=True bypassed).
+        if transitioned_glific_ids:
+            move = _bulk_move_to_escalation(bpr["name"], transitioned_glific_ids)
+            summary["phase1_removed_from_main"] += move["removed_from_main"]
+            summary["phase1_added_to_escalation"] += move["added_to_escalation"]
+            for err in move["errors"][:10]:
+                if len(summary["errors"]) < 50:
+                    summary["errors"].append(err)
+
+
+def _sweep_phase2_deliver_current_week(active_bprs, summary):
+    """Phase 2 — deliver this week's content to current-week candidates.
+
+    For each active BPR:
+      - find normal_content_delivery PEs at current_week == calendar_week with
+        weekly_video_done = 0 and a glific_id set,
+      - build/reuse a temp Glific sweep collection containing only those
+        candidates,
+      - trigger the BPR's content_delivery_flow against that collection.
+
+    Bulk via temp collection (one Glific group-flow start) — same pattern as
+    the staggered launch sub-collections, NOT per-student calls (L-014).
+
+    Idempotent within a week: candidates are filtered by weekly_video_done = 0,
+    so a student who already received the video (video_done = 1) is excluded on
+    a re-run.
+    """
+    for bpr in active_bprs:
+        batch_name = bpr["batch"]
+        try:
+            batch = frappe.get_doc("Batch", batch_name)
+            calendar_week = batch.current_calendar_week
+        except Exception as e:
+            summary["errors"].append(f"BPR {bpr['name']}: phase2 batch load failed: {e}")
+            continue
+
+        if not calendar_week:
+            summary["errors"].append(
+                f"BPR {bpr['name']}: batch {batch_name} has no current_calendar_week"
+            )
+            continue
+
+        content_flow = bpr.get("content_delivery_flow")
+        if not content_flow:
+            summary["bprs_without_content_flow"] += 1
+            summary["errors"].append(
+                f"BPR {bpr['name']}: no content_delivery_flow configured"
+            )
+            continue
+
+        candidates = frappe.db.sql(
+            """
+            SELECT pe.glific_id
+              FROM "tabProgramEnrollment" pe
+             WHERE pe.batch = %(batch)s
+               AND pe.program_status = %(active)s
+               AND pe.resolved_flow_state = %(state)s
+               AND pe.current_week = %(calendar_week)s
+               AND COALESCE(pe.weekly_video_done, 0) = 0
+               AND COALESCE(pe.glific_id, '') != ''
+            """,
+            {
+                "batch": batch_name,
+                "active": PROGRAM_ACTIVE,
+                "state": STATE_NORMAL_CONTENT,
+                "calendar_week": calendar_week,
+            },
+            as_dict=True,
+        )
+
+        if not candidates:
+            summary["bprs_with_no_phase2_candidates"] += 1
+            continue
+
+        contact_ids = [str(c["glific_id"]) for c in candidates]
+
+        # Build/reuse the sweep collection (one per batch per week per day).
+        date_token = nowdate().replace("-", "")
+        sweep_label = f"SP_{batch_name}_sweep_wk{calendar_week}_{date_token}"
+        sweep_group = create_or_get_collection(
+            label=sweep_label,
+            description=(
+                f"Weekly content sweep candidates for {batch_name} "
+                f"week {calendar_week} on {nowdate()}"
+            ),
+        )
+        # create_or_get_collection returns a dict {"id": ..., "label": ...}
+        # (or None) — NOT a bare id. Extract the id defensively.
+        sweep_group_id = sweep_group.get("id") if isinstance(sweep_group, dict) else None
+        if not sweep_group_id:
+            summary["errors"].append(
+                f"BPR {bpr['name']}: failed to create/get sweep group {sweep_label}"
+            )
+            continue
+
+        add_ok = add_contacts_to_group_bulk(contact_ids, sweep_group_id)
+        if not add_ok:
+            summary["errors"].append(
+                f"BPR {bpr['name']}: bulk add to sweep group {sweep_group_id} failed"
+            )
+            continue
+
+        trigger_ok = start_group_flow(
+            flow_id=str(content_flow), group_id=str(sweep_group_id)
+        )
+        if trigger_ok:
+            summary["phase2_triggered"] += len(contact_ids)
+            summary["phase2_groups_used"].append({
+                "bpr": bpr["name"],
+                "group_id": sweep_group_id,
+                "label": sweep_label,
+                "students": len(contact_ids),
+            })
+            frappe.logger().info(
+                f"weekly_content_sweep: triggered flow {content_flow} against "
+                f"sweep group {sweep_group_id} ({sweep_label}) for "
+                f"{len(contact_ids)} candidates in batch {batch_name}"
+            )
+        else:
+            summary["errors"].append(
+                f"BPR {bpr['name']}: start_group_flow failed for sweep group "
+                f"{sweep_group_id}"
+            )
+
+
+def _active_bprs_for_sweep():
+    """Active BatchProgramRuns the sweep operates over (draft/completed
+    excluded). Extracted as a seam so tests can scope the global cron to a
+    single fixture batch."""
+    return frappe.db.sql(
+        """
+        SELECT name, batch, content_delivery_flow
+          FROM "tabBatchProgramRun"
+         WHERE status = %s
+        """,
+        (BPR_ACTIVE,),
+        as_dict=True,
+    )
+
+
+def weekly_content_sweep():
+    """Weekly cron — runs Monday 06:00 UTC (after auto_advance_batch_week at
+    Monday 00:00 bumps Batch.current_calendar_week).
+
+    Phase 1: demote behind students (normal_content_delivery, wk < calendar_week,
+             video_done = 0) to normal_escalation via `_demote_behind_pe`
+             (transition(..., skip_glific=True) — NOT t2_start_escalation), with
+             escalation_type resolved per-PE via _get_escalation_steps_for_pe —
+             same logic as the dispatcher. Per-BPR bulk Glific collection move
+             (`_bulk_move_to_escalation`) replaces the per-PE maintain_collections.
+
+    Phase 2: for each active BPR, deliver this week's content to current-week
+             candidates (wk == calendar_week, video_done = 0) via a temp Glific
+             sweep collection + content_delivery_flow.
+
+    Idempotent: Phase 2 candidates are filtered by weekly_video_done = 0, so
+    re-running within the same week skips students who already got the video.
+
+    Returns a summary dict (also logged to the scheduler log + Error Log).
+    """
+    active_bprs = _active_bprs_for_sweep()
+
+    summary = {
+        "active_bprs": len(active_bprs),
+        "phase1_demoted": 0,
+        "phase1_failed": 0,
+        "phase1_no_config": 0,
+        "phase1_removed_from_main": 0,
+        "phase1_added_to_escalation": 0,
+        "phase2_triggered": 0,
+        "phase2_groups_used": [],
+        "bprs_without_content_flow": 0,
+        "bprs_with_no_phase2_candidates": 0,
+        "errors": [],
+    }
+
+    if not active_bprs:
+        frappe.logger().info("weekly_content_sweep: no active BPRs — nothing to do.")
+        return summary
+
+    _sweep_phase1_demote_behind(active_bprs, summary)
+    _sweep_phase2_deliver_current_week(active_bprs, summary)
+
+    # Final summary — logged to the scheduler log AND the Error Log so
+    # operators can monitor the run from the Frappe Desk Error Log list view.
+    msg = (
+        f"weekly_content_sweep DONE: active_bprs={summary['active_bprs']} "
+        f"phase1_demoted={summary['phase1_demoted']} "
+        f"phase1_failed={summary['phase1_failed']} "
+        f"phase1_no_config={summary['phase1_no_config']} "
+        f"phase1_removed_from_main={summary['phase1_removed_from_main']} "
+        f"phase1_added_to_escalation={summary['phase1_added_to_escalation']} "
+        f"phase2_triggered={summary['phase2_triggered']} "
+        f"bprs_without_content_flow={summary['bprs_without_content_flow']} "
+        f"bprs_with_no_phase2_candidates={summary['bprs_with_no_phase2_candidates']} "
+        f"errors={len(summary['errors'])}"
+    )
+    frappe.logger().info(msg)
+    try:
+        frappe.log_error(msg, "CR-027 Weekly Sweep Summary")
+        frappe.db.commit()
+    except Exception:
+        frappe.logger().error(f"weekly_content_sweep: failed to log summary: {msg}")
+
+    return summary
 
 
 # ════════════════════════════════════════════════════════════
