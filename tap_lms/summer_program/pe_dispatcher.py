@@ -399,14 +399,14 @@ def handle_escalation(pe_row):
         # tick continues without waiting on the actual call.
 
 
-        # frappe.enqueue(
-        #     "tap_lms.summer_program.vocallabs.initiate_parent_call",
-        #     queue="long",
-        #     timeout=300,
-        #     enqueue_after_commit=True,
-        #     pe_name=pe.name,
-        #     escalation_step=step_config,
-        # )
+        frappe.enqueue(
+            "tap_lms.summer_program.vocallabs.initiate_parent_call",
+            queue="long",
+            timeout=300,
+            enqueue_after_commit=True,
+            pe_name=pe.name,
+            escalation_step=step_config,
+        )
 
 
         log_event(pe, "escalation_sent", trigger_source="dispatcher",
@@ -415,9 +415,9 @@ def handle_escalation(pe_row):
 
     # Text or voice-note channels → fire SP_Escalation flow.
 
-    # flow_id = _get_flow_id(pe_row.batch, ACTION_ESCALATION)
-    # if flow_id and pe.glific_id:
-    #     _trigger_flow(flow_id, pe.glific_id, pe.name, "escalation")
+    flow_id = _get_flow_id(pe_row.batch, ACTION_ESCALATION)
+    if flow_id and pe.glific_id:
+        _trigger_flow(flow_id, pe.glific_id, pe.name, "escalation")
 
     return
 

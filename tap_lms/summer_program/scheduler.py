@@ -84,7 +84,7 @@ def _process_bpr_actions(bpr, batch):
     _run_collection_action(bpr, ACTION_CONTENT_DELIVERY)
 
     # Escalation: for Dormant and Fence Sitter collections
-    # _run_escalation(bpr)
+    _run_escalation(bpr)
 
     # CR-003: proactive re-engagement removed. Dropped students are
     # re-engaged via SP_Incoming_Router when they send an inbound
