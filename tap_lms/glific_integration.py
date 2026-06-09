@@ -12,20 +12,26 @@ from dateutil.parser import isoparse
 _GLIFIC_SESSION = requests.Session()
 GLIFIC_TIMEOUT = 10  # seconds, connect+read combined
 
+
+def _coerce_utc_datetime(value):
+    """Normalize supported datetime representations to aware UTC datetimes."""
+    if not value:
+        return value
+    if isinstance(value, str):
+        value = isoparse(value)
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
 def get_glific_settings():
     return frappe.get_single("Glific Settings")
 
 def get_glific_auth_headers():
     settings = get_glific_settings()
     current_time = datetime.now(timezone.utc)
-    
-    # Convert token_expiry_time to datetime if it's a string
-    if settings.token_expiry_time:
-        if isinstance(settings.token_expiry_time, str):
-            settings.token_expiry_time = isoparse(settings.token_expiry_time)
-        elif settings.token_expiry_time.tzinfo is None:
-            settings.token_expiry_time = settings.token_expiry_time.replace(tzinfo=timezone.utc)
-    
+
+    settings.token_expiry_time = _coerce_utc_datetime(settings.token_expiry_time)
+
     if not settings.access_token or not settings.token_expiry_time or \
        current_time >= settings.token_expiry_time:
         # Token is expired or not set, get a new one
@@ -46,7 +52,7 @@ def get_glific_auth_headers():
             data = response.json()["data"]
 
             # Parse the token_expiry_time string to a timezone-aware datetime object
-            token_expiry_time = isoparse(data["token_expiry_time"])
+            token_expiry_time = _coerce_utc_datetime(data["token_expiry_time"])
             
             # Update the Glific Settings directly in the database
             frappe.db.set_value("Glific Settings", settings.name, {

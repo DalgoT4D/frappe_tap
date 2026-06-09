@@ -19,6 +19,7 @@ version). All tests that call Glific leaf functions now also patch
 The assertions about session.post() routing and timeout kwarg remain unchanged.
 """
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch, MagicMock, call
 
 import requests
@@ -44,6 +45,30 @@ class TestGlificSharedSession(unittest.TestCase):
         """GLIFIC_TIMEOUT must be <= 15 seconds — large enough to avoid spurious
         failures on a slow connection but small enough to prevent a permanent hang."""
         self.assertLessEqual(gi.GLIFIC_TIMEOUT, 15)
+
+    def test_coerce_utc_datetime_normalizes_naive_values(self):
+        """Naive datetimes from Frappe Datetime fields must become aware UTC."""
+        naive = datetime(2026, 6, 9, 12, 0, 0)
+        normalized = gi._coerce_utc_datetime(naive)
+        self.assertEqual(normalized.tzinfo, timezone.utc)
+        self.assertEqual(normalized.hour, 12)
+
+
+class TestGlificAuthHeaders(unittest.TestCase):
+    """Regression coverage for mixed naive/aware token expiry handling."""
+
+    @patch("tap_lms.glific_integration.get_glific_settings")
+    def test_get_glific_auth_headers_accepts_naive_expiry(self, mock_settings):
+        """Stored naive expiry must not crash comparison with aware current time."""
+        mock_settings.return_value = MagicMock(
+            access_token="tok_existing",
+            token_expiry_time=datetime.now() + timedelta(minutes=5),
+        )
+
+        headers = gi.get_glific_auth_headers()
+
+        self.assertEqual(headers["authorization"], "tok_existing")
+        self.assertEqual(headers["Content-Type"], "application/json")
 
 
 class TestGlificTimeoutRaisesPromptly(unittest.TestCase):
