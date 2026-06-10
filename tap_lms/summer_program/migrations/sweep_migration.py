@@ -443,3 +443,315 @@ def _record_error(summary, message):
     """
     if len(summary["errors"]) < 50:
         summary["errors"].append(message)
+
+
+# ════════════════════════════════════════════════════════════
+# SET-BASED bulk demotion (the simple, fast alternative)
+# Added 2026-06-09 after the per-PE loop version hung at ~1 PE/min under
+# live-system DB contention (62K rows × per-row get_doc + 158ms config lookup
+# + per-row commit). This version does the state change as ~8 combo-targeted
+# SQL UPDATEs (one per distinct experiment_arm × archetype × current_path),
+# then the SAME bulk Glific collection move. Runtime: seconds of SQL + minutes
+# of Glific, instead of hours.
+# ════════════════════════════════════════════════════════════
+
+
+def _behind_combos(batch_name, calendar_week):
+    """Distinct (experiment_arm, archetype, current_path) combos among the
+    behind candidates for a batch. There are at most ~8 (2 arms × 2 archetypes
+    × 2 paths), so resolving escalation params once per combo collapses the
+    62K per-PE ArchetypeConfig lookups to a handful."""
+    return frappe.db.sql(
+        """
+        SELECT COALESCE(experiment_arm, '') AS experiment_arm,
+               COALESCE(archetype, '')      AS archetype,
+               COALESCE(current_path, '')   AS current_path,
+               COUNT(*)                     AS n
+          FROM "tabProgramEnrollment"
+         WHERE batch = %(batch)s
+           AND program_status = %(active)s
+           AND resolved_flow_state = %(state)s
+           AND current_week < %(calendar_week)s
+           AND COALESCE(weekly_video_done, 0) = 0
+         GROUP BY 1, 2, 3
+         ORDER BY 1, 2, 3
+        """,
+        {
+            "batch": batch_name,
+            "active": PROGRAM_ACTIVE,
+            "state": STATE_NORMAL_CONTENT,
+            "calendar_week": calendar_week,
+        },
+        as_dict=True,
+    )
+
+
+def _resolve_combo_escalation(batch_name, combo):
+    """Resolve (escalation_type, hours) for one combo using a representative
+    behind PE + the SAME `_get_escalation_steps_for_pe` the dispatcher uses
+    (so the result is identical to what the per-PE path would have produced).
+
+    Returns (escalation_type, hours) or (None, None) if the combo has no
+    ArchetypeConfig escalation_steps — caller treats that as no_config and
+    leaves those PEs untouched.
+
+    INVARIANT (L-029): `_get_escalation_steps_for_pe` resolves escalation from
+    the representative PE's STUDENT (`student.archetype` / `student.experiment_arm`),
+    while the demotion UPDATE filters on the PE columns. These agree because
+    archetype/experiment_arm are upstream-supplied and set ONCE at enrollment,
+    never reassigned by the SP. If a bulk Student correction has run since
+    enrollment (so Student ≠ PE copy), use the per-PE migration instead — it
+    reads the Student per row.
+    """
+    # Any active normal_content_delivery PE of this combo works — escalation
+    # resolution depends only on (arm, archetype, path), not on current_week or
+    # weekly_video_done. `program_status = active` mirrors `_behind_combos` so
+    # we never pick a paused/dropped row as the representative. COALESCE
+    # matching mirrors the UPDATE filter exactly (empty-string combo value
+    # represents a NULL column).
+    rep = frappe.db.sql(
+        """
+        SELECT name FROM "tabProgramEnrollment"
+         WHERE batch = %(batch)s
+           AND program_status = %(active)s
+           AND resolved_flow_state = %(state)s
+           AND COALESCE(experiment_arm, '') = %(arm)s
+           AND COALESCE(archetype, '')      = %(arch)s
+           AND COALESCE(current_path, '')   = %(path)s
+         LIMIT 1
+        """,
+        {
+            "batch": batch_name,
+            "active": PROGRAM_ACTIVE,
+            "state": STATE_NORMAL_CONTENT,
+            "arm": combo["experiment_arm"] or "",
+            "arch": combo["archetype"] or "",
+            "path": combo["current_path"] or "",
+        },
+    )
+    if not rep:
+        return (None, None)
+
+    pe_doc = frappe.get_doc("ProgramEnrollment", rep[0][0])
+    steps = _get_escalation_steps_for_pe(pe_doc)
+    if not steps:
+        return (None, None)
+
+    step_config = _pick_first_escalation_step(steps)
+    escalation_type = step_config.get("escalation_type") or DEFAULT_ESCALATION_TYPE
+    hours = float(step_config.get("hours_after_previous", DEFAULT_NEXT_HOURS))
+    return (escalation_type, hours)
+
+
+@frappe.whitelist()
+def migrate_behind_students_to_escalation_bulk(
+    batch_name,
+    dry_run=True,
+    i_know_this_is_destructive=False,
+):
+    """SET-BASED one-time backlog demotion — the fast alternative to the per-PE
+    `migrate_behind_students_to_escalation`.
+
+    Same target population (behind = normal_content_delivery, current_week <
+    calendar_week, weekly_video_done = 0) and same outcome (normal_escalation
+    with step-1 escalation params from ArchetypeConfig), but the state change
+    is done as ONE SQL UPDATE per distinct (arm, archetype, path) combo
+    (~8 statements) instead of 62K per-row Python transitions. Then the SAME
+    bulk Glific collection move (`_bulk_move_to_escalation`) runs.
+
+    Trade-offs vs the per-PE version (all deliberate for a one-time op):
+      - Bypasses `transition()` → no per-PE save hooks / no per-PE
+        ProgramEventLog row from THIS step. The resolved_flow_state change is
+        the visible outcome, a summary lands in the Error Log, and each PE
+        gets a real per-PE audit row from its NEXT dispatcher-driven step
+        (T4 escalation step 2) within hours. (L-014 caution taken knowingly,
+        same posture as the 730/858 one-time scripts.)
+      - Contact-field sync skipped (same as the per-PE version; catches up on
+        next organic transition). Routing works via collection membership,
+        which IS moved in bulk here. See L-081.
+      - `next_action_at` gets ±jitter so the dispatcher doesn't fire all the
+        next escalation steps in the same minute (L-013 thundering herd).
+
+    Args:
+        batch_name: Batch doc name (e.g. 'BT00000019').
+        dry_run: If True (default), report per-combo counts + resolved
+                 escalation_type WITHOUT writing.
+        i_know_this_is_destructive: Must be True for a non-dry-run.
+
+    Returns:
+        dict summary (combos, demoted, no_config_pes, bulk_move, errors, …).
+    """
+    frappe.only_for(["TAP Admin", "System Manager"])
+
+    dry_run = _coerce_bool(dry_run)
+    destructive_ok = _coerce_bool(i_know_this_is_destructive)
+
+    if not dry_run and not destructive_ok:
+        raise frappe.ValidationError(
+            "Refusing to run a non-dry-run bulk migration without "
+            "i_know_this_is_destructive=True. Pass dry_run=True to preview."
+        )
+
+    batch = frappe.get_doc("Batch", batch_name)
+    calendar_week = batch.current_calendar_week
+    if not calendar_week:
+        raise frappe.ValidationError(
+            f"Batch {batch_name} has no current_calendar_week set."
+        )
+
+    bpr_name = frappe.db.get_value(
+        "BatchProgramRun", {"batch": batch_name, "status": BPR_ACTIVE}, "name"
+    )
+
+    combos = _behind_combos(batch_name, calendar_week)
+    summary = {
+        "batch": batch_name,
+        "bpr": bpr_name,
+        "calendar_week": calendar_week,
+        "dry_run": dry_run,
+        "candidates": sum(c["n"] for c in combos),
+        "combos": [],
+        "demoted": 0,
+        "no_config_pes": 0,
+        "bulk_move": None,
+        "errors": [],
+    }
+
+    changed_glific_ids = []
+    label = LABEL_CONTENT_DELIVERED
+    action = ACTION_ESCALATION
+    user = frappe.session.user
+
+    for combo in combos:
+        etype, hours = _resolve_combo_escalation(batch_name, combo)
+        combo_report = {
+            "experiment_arm": combo["experiment_arm"],
+            "archetype": combo["archetype"],
+            "current_path": combo["current_path"],
+            "candidates": combo["n"],
+            "escalation_type": etype,
+            "hours_after_previous": hours,
+            "demoted": 0,
+        }
+
+        if etype is None:
+            # No ArchetypeConfig escalation_steps for this combo — leave these
+            # PEs untouched; the SP team fixes the config. (Same posture as the
+            # per-PE version's no_config.)
+            summary["no_config_pes"] += combo["n"]
+            _record_error(
+                summary,
+                f"no escalation_steps in ArchetypeConfig for "
+                f"(arm={combo['experiment_arm']}, archetype={combo['archetype']}, "
+                f"path={combo['current_path']}) — {combo['n']} PEs left in "
+                f"normal_content_delivery",
+            )
+            summary["combos"].append(combo_report)
+            continue
+
+        if dry_run:
+            combo_report["demoted"] = combo["n"]  # would-demote count
+            summary["demoted"] += combo["n"]
+            summary["combos"].append(combo_report)
+            continue
+
+        # One set-based UPDATE for the whole combo. RETURNING collects exactly
+        # the rows we changed (precise — no guessing which normal_escalation
+        # rows were pre-existing). NULL arm/archetype/path matched via COALESCE.
+        rows = frappe.db.sql(
+            """
+            UPDATE "tabProgramEnrollment"
+               SET resolved_flow_state   = %(esc_state)s,
+                   current_escalation_step = 1,
+                   current_escalation_type = %(etype)s,
+                   journey_label         = %(label)s,
+                   next_action_type      = %(action)s,
+                   next_action_at        = NOW()
+                                           + (%(hours)s * interval '1 hour')
+                                           + (random() * interval '30 minutes'),
+                   last_label_change_at  = NOW(),
+                   modified              = NOW(),
+                   modified_by           = %(user)s
+             WHERE batch = %(batch)s
+               AND program_status = %(active)s
+               AND resolved_flow_state = %(content_state)s
+               AND current_week < %(cal)s
+               AND COALESCE(weekly_video_done, 0) = 0
+               AND COALESCE(experiment_arm, '') = %(arm)s
+               AND COALESCE(archetype, '')      = %(arch)s
+               AND COALESCE(current_path, '')   = %(path)s
+            RETURNING glific_id
+            """,
+            {
+                "esc_state": STATE_NORMAL_ESCALATION,
+                "etype": etype,
+                "label": label,
+                "action": action,
+                "hours": hours,
+                "user": user,
+                "batch": batch_name,
+                "active": PROGRAM_ACTIVE,
+                "content_state": STATE_NORMAL_CONTENT,
+                "cal": calendar_week,
+                "arm": combo["experiment_arm"] or "",
+                "arch": combo["archetype"] or "",
+                "path": combo["current_path"] or "",
+            },
+            as_dict=True,
+        )
+        n_changed = len(rows)
+        combo_report["demoted"] = n_changed
+        summary["demoted"] += n_changed
+        changed_glific_ids.extend(
+            r["glific_id"] for r in rows if r.get("glific_id")
+        )
+        summary["combos"].append(combo_report)
+        frappe.logger().info(
+            f"migrate_behind_students_to_escalation_bulk: combo "
+            f"(arm={combo['experiment_arm']}, archetype={combo['archetype']}, "
+            f"path={combo['current_path']}) → {n_changed} demoted, "
+            f"escalation_type={etype}"
+        )
+
+    if not dry_run:
+        frappe.db.commit()  # persist all combo UPDATEs before the Glific move
+
+        # Bulk Glific collection move (shared with the per-PE migration).
+        if changed_glific_ids:
+            if bpr_name:
+                summary["bulk_move"] = _bulk_move_to_escalation(
+                    bpr_name, changed_glific_ids
+                )
+                room = max(0, 50 - len(summary["errors"]))
+                summary["errors"].extend(summary["bulk_move"]["errors"][:room])
+            else:
+                _record_error(
+                    summary,
+                    f"batch {batch_name}: no active BPR — {len(changed_glific_ids)} "
+                    f"PEs demoted but NOT moved on Glific; re-run the bulk move "
+                    f"once a BPR is active.",
+                )
+
+        # Coarse audit: one Error Log summary (per-PE audit rows arrive from
+        # each PE's next dispatcher-driven escalation step). L-080: log AFTER
+        # the commit so the record survives.
+        try:
+            frappe.log_error(
+                f"bulk demotion: batch={batch_name} demoted={summary['demoted']} "
+                f"no_config_pes={summary['no_config_pes']} "
+                f"bulk_move={summary['bulk_move']}",
+                "CR-027 Bulk Sweep Migration",
+            )
+            frappe.db.commit()
+        except Exception:
+            frappe.logger().error(
+                f"bulk demotion summary log failed: {summary}"
+            )
+
+    frappe.logger().info(
+        f"migrate_behind_students_to_escalation_bulk DONE: batch={batch_name} "
+        f"candidates={summary['candidates']} demoted={summary['demoted']} "
+        f"no_config_pes={summary['no_config_pes']} dry_run={dry_run} "
+        f"bulk_move={summary['bulk_move']}"
+    )
+    return summary

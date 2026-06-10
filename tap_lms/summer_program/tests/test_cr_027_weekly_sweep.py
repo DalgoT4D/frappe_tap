@@ -91,6 +91,8 @@ def _make_pe(
     program_status=PROGRAM_ACTIVE,
     glific_id=None,
     current_path=PATH_CORE,
+    archetype="fence_sitter",
+    experiment_arm="arm_a",
 ):
     suffix = _next()
     student = _make_student()
@@ -100,8 +102,8 @@ def _make_pe(
     pe.batch = batch_name
     pe.program_type = "Summer"
     pe.glific_id = glific_id if glific_id is not None else f"pe-glific-{suffix}"
-    pe.archetype = "fence_sitter"
-    pe.experiment_arm = "arm_a"
+    pe.archetype = archetype
+    pe.experiment_arm = experiment_arm
     pe.current_path = current_path
     pe.current_tier = "Basic"
     pe.journey_label = LABEL_CONTENT_DELIVERED
@@ -446,6 +448,151 @@ class TestSweepMigration(FrappeTestCase):
         m_rm.assert_not_called()
         m_add.assert_not_called()
         self.assertTrue(any("no active BPR" in e for e in res["errors"]))
+
+
+# ════════════════════════════════════════════════════════════
+# Set-based bulk migration (Option A — the fast alternative)
+# ════════════════════════════════════════════════════════════
+
+
+class TestBulkSweepMigration(FrappeTestCase):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.batch = make_batch(
+            label="CR027BulkBatch", batch_id="CR027B", current_calendar_week=2
+        )
+
+    def setUp(self):
+        for pe in frappe.get_all(
+            "ProgramEnrollment", filters={"batch": self.batch}, pluck="name"
+        ):
+            frappe.delete_doc("ProgramEnrollment", pe, force=True)
+        for bpr in frappe.get_all(
+            "BatchProgramRun", filters={"batch": self.batch}, pluck="name"
+        ):
+            frappe.delete_doc("BatchProgramRun", bpr, force=True)
+
+    def _bulk(self, **kw):
+        from tap_lms.summer_program.migrations import sweep_migration
+        return sweep_migration.migrate_behind_students_to_escalation_bulk(self.batch, **kw)
+
+    def test_bulk_dry_run_reports_combos_without_writes(self):
+        behind = _make_pe(self.batch, current_week=1)
+        with patch(f"{SWEEP_MIG}._get_escalation_steps_for_pe", return_value=_mk_steps()):
+            res = self._bulk(dry_run=True)
+        self.assertEqual(res["candidates"], 1)
+        self.assertEqual(res["demoted"], 1)            # would-demote
+        self.assertEqual(len(res["combos"]), 1)
+        self.assertEqual(res["combos"][0]["escalation_type"], "help_note_a")
+        # No writes.
+        self.assertEqual(
+            frappe.db.get_value("ProgramEnrollment", behind, "resolved_flow_state"),
+            STATE_NORMAL_CONTENT,
+        )
+
+    def test_bulk_excludes_non_behind(self):
+        _make_pe(self.batch, current_week=1)                       # behind ✓
+        _make_pe(self.batch, current_week=2)                       # on-track ✗
+        _make_pe(self.batch, current_week=3)                       # ahead ✗
+        _make_pe(self.batch, current_week=1, weekly_video_done=1)  # engaged ✗
+        _make_pe(self.batch, resolved_flow_state=STATE_PROGRAM_DROPPED, current_week=1)  # terminal ✗
+        with patch(f"{SWEEP_MIG}._get_escalation_steps_for_pe", return_value=_mk_steps()):
+            res = self._bulk(dry_run=True)
+        self.assertEqual(res["candidates"], 1)
+
+    def test_bulk_demotes_behind_set_based(self):
+        from datetime import timedelta
+        from frappe.utils import now_datetime, get_datetime
+        a = _make_pe(self.batch, current_week=1)
+        b = _make_pe(self.batch, current_week=1)
+        with patch(f"{SWEEP_MIG}._get_escalation_steps_for_pe",
+                   return_value=_mk_steps(etype="help_note_a", hours=24)), \
+             patch(f"{SWEEP_MIG}._bulk_move_to_escalation",
+                   return_value={"removed_from_main": 0, "added_to_escalation": 0, "errors": []}), \
+             patch.object(frappe.db, "commit"), patch.object(frappe.db, "rollback"):
+            res = self._bulk(dry_run=False, i_know_this_is_destructive=True)
+        self.assertEqual(res["demoted"], 2)
+        for pe in (a, b):
+            row = frappe.db.get_value(
+                "ProgramEnrollment", pe,
+                ["resolved_flow_state", "current_escalation_step",
+                 "current_escalation_type", "next_action_type", "next_action_at",
+                 "journey_label"],
+                as_dict=True,
+            )
+            self.assertEqual(row.resolved_flow_state, STATE_NORMAL_ESCALATION)
+            self.assertEqual(row.current_escalation_step, 1)
+            self.assertEqual(row.current_escalation_type, "help_note_a")
+            self.assertEqual(row.next_action_type, ACTION_ESCALATION)
+            self.assertEqual(row.journey_label, LABEL_CONTENT_DELIVERED)
+            # Jitter window: NOW() + 24h + up to 30min (L-013 anti-herd).
+            # Assert BOTH bounds so a wrong multiplier / missing jitter is caught.
+            nxt = get_datetime(row.next_action_at)
+            self.assertGreater(nxt, now_datetime() + timedelta(hours=23))
+            self.assertLess(nxt, now_datetime() + timedelta(hours=25))
+
+    def test_bulk_resolves_escalation_type_per_combo(self):
+        pe_a = _make_pe(self.batch, current_week=1, experiment_arm="arm_a")
+        pe_b = _make_pe(self.batch, current_week=1, experiment_arm="arm_b")
+
+        def by_arm(pe_doc):
+            return _mk_steps(etype="voice_note") if pe_doc.experiment_arm == "arm_b" \
+                else _mk_steps(etype="help_note_a")
+
+        with patch(f"{SWEEP_MIG}._get_escalation_steps_for_pe", side_effect=by_arm), \
+             patch(f"{SWEEP_MIG}._bulk_move_to_escalation",
+                   return_value={"removed_from_main": 0, "added_to_escalation": 0, "errors": []}), \
+             patch.object(frappe.db, "commit"), patch.object(frappe.db, "rollback"):
+            res = self._bulk(dry_run=False, i_know_this_is_destructive=True)
+        self.assertEqual(res["demoted"], 2)
+        self.assertEqual(
+            frappe.db.get_value("ProgramEnrollment", pe_a, "current_escalation_type"),
+            "help_note_a",
+        )
+        self.assertEqual(
+            frappe.db.get_value("ProgramEnrollment", pe_b, "current_escalation_type"),
+            "voice_note",
+        )
+
+    def test_bulk_skips_combo_with_no_config(self):
+        behind = _make_pe(self.batch, current_week=1)
+        with patch(f"{SWEEP_MIG}._get_escalation_steps_for_pe", return_value=[]), \
+             patch(f"{SWEEP_MIG}._bulk_move_to_escalation") as m_bulk, \
+             patch.object(frappe.db, "commit"), patch.object(frappe.db, "rollback"):
+            res = self._bulk(dry_run=False, i_know_this_is_destructive=True)
+        self.assertEqual(res["demoted"], 0)
+        self.assertEqual(res["no_config_pes"], 1)
+        # The PE is left untouched.
+        self.assertEqual(
+            frappe.db.get_value("ProgramEnrollment", behind, "resolved_flow_state"),
+            STATE_NORMAL_CONTENT,
+        )
+        m_bulk.assert_not_called()  # no glific ids changed → no bulk move
+
+    def test_bulk_collects_glific_ids_and_calls_bulk_move(self):
+        _make_bpr(self.batch, collections=[("main", "MAIN1"), ("escalation", "ESC1")])
+        _make_pe(self.batch, current_week=1, glific_id="gid-A")
+        _make_pe(self.batch, current_week=1, glific_id="gid-B")
+        with patch(f"{SWEEP_MIG}._get_escalation_steps_for_pe", return_value=_mk_steps()), \
+             patch(f"{SWEEP_MIG}._bulk_move_to_escalation",
+                   return_value={"removed_from_main": 2, "added_to_escalation": 2, "errors": []}) as m_bulk, \
+             patch.object(frappe.db, "commit"), patch.object(frappe.db, "rollback"):
+            res = self._bulk(dry_run=False, i_know_this_is_destructive=True)
+        m_bulk.assert_called_once()
+        bpr_arg, ids_arg = m_bulk.call_args.args
+        self.assertEqual(set(ids_arg), {"gid-A", "gid-B"})
+
+    def test_bulk_destructive_guard_blocks_real_run_without_flag(self):
+        _make_pe(self.batch, current_week=1)
+        with self.assertRaises(frappe.ValidationError):
+            self._bulk(dry_run=False)
+
+    def test_bulk_requires_admin_role(self):
+        _make_pe(self.batch, current_week=1)
+        with patch(f"{SWEEP_MIG}.frappe.only_for") as m_only_for:
+            self._bulk(dry_run=True)
+        m_only_for.assert_called_once_with(["TAP Admin", "System Manager"])
 
 
 # ════════════════════════════════════════════════════════════
