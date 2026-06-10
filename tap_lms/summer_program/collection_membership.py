@@ -32,6 +32,7 @@ STATE_TO_AUDIT_KIND = {
     "normal_escalation":   "escalation",
     "remedial_escalation": "escalation",
     "paused_binge":        "binge_paused",
+    "program_paused":      "program_dropped",
     "program_completed":   "program_completed",
     "program_dropped":     "program_dropped",
     # grace_waiting → None (Gap-fill A per CR-005)

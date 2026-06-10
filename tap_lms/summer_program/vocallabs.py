@@ -117,14 +117,6 @@ def initiate_parent_call(pe_name, escalation_step, retry_count=0):
         )
         return False
 
-    if not settings.agent_id:
-        frappe.log_error(
-            f"Vocallabs: VoiceAgentSettings.agent_id is unset; "
-            f"cannot initiate call for PE {pe_name}.",
-            "SP Vocallabs Config",
-        )
-        return False
-
     # ── Resolve config ──────────────────────────────────────
     config = _resolve_parent_call_config(pe, pe.current_week or 1, settings)
     if not config:
@@ -538,7 +530,15 @@ def _call_vocallabs(settings, token, student, parent_phone, student_name, status
         "contact": parent_display,
         "student_name": student_name,
         "status": status_text,
+        "language": getattr(student, "language", "") or "",
     }
+    agent_id = _resolve_agent_id(settings, data_block.get("language"))
+    if not agent_id:
+        raise RuntimeError(
+            "Vocallabs: no agent_id resolved for parent call; "
+            "configure VoiceAgentSettings.agents for this language or set "
+            "VoiceAgentSettings.agent_id as fallback"
+        )
 
     # ── Cache hit: refresh data then call ─────────────────
     cached_prospect_id = (getattr(student, "vocallabs_prospect_id", "") or "").strip()
@@ -562,7 +562,7 @@ def _call_vocallabs(settings, token, student, parent_phone, student_name, status
         return _post_initiate_call(
             service_url=service_url,
             auth_headers=auth_headers,
-            agent_id=settings.agent_id,
+            agent_id=agent_id,
             prospect_id=cached_prospect_id,
         )
 
@@ -630,7 +630,7 @@ def _call_vocallabs(settings, token, student, parent_phone, student_name, status
                 return _post_initiate_call(
                     service_url=service_url,
                     auth_headers=auth_headers,
-                    agent_id=settings.agent_id,
+                    agent_id=agent_id,
                     prospect_id=existing_id,
                 )
             # Lookup failed — fall back to the pre-lookup behavior.
@@ -657,9 +657,26 @@ def _call_vocallabs(settings, token, student, parent_phone, student_name, status
     return _post_initiate_call(
         service_url=service_url,
         auth_headers=auth_headers,
-        agent_id=settings.agent_id,
+        agent_id=agent_id,
         prospect_id=prospect_id,
     )
+
+
+def _resolve_agent_id(settings, language):
+    """Resolve the Vocallabs agent_id from per-language mappings first.
+
+    Matching is against the raw value stored in the call data block's
+    `language` key, which is sourced from Student.language. That is
+    typically the TAP Language docname in this codebase.
+    """
+    normalized = (language or "").strip().casefold()
+    for row in getattr(settings, "agents", []) or []:
+        if not getattr(row, "enabled", 0):
+            continue
+        row_language = (getattr(row, "language", "") or "").strip().casefold()
+        if normalized and row_language == normalized:
+            return (getattr(row, "agent_id", "") or "").strip()
+    return (getattr(settings, "agent_id", "") or "").strip()
 
 
 def _post_initiate_call(service_url, auth_headers, agent_id, prospect_id):

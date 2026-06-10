@@ -21,7 +21,7 @@ from tap_lms.summer_program.constants import (
     STATE_GRACE_WAITING, STATE_PAUSED_BINGE,
     STATE_SUBMITTED_AWAITING, STATE_FEEDBACK_READY,
     STATE_WEEK_COMPLETED, STATE_PROGRAM_COMPLETED, STATE_PROGRAM_DROPPED,
-    PAUSED_STATES, TERMINAL_STATES,
+    STATE_PROGRAM_PAUSED, PAUSED_STATES, TERMINAL_STATES,
     LABEL_CONTENT_DELIVERED, LABEL_REMEDIAL_STARTED,
     LABEL_SUBMITTED, LABEL_FEEDBACK_DELIVERED,
     LABEL_GRACE_WINDOW, LABEL_PAUSED, LABEL_RESUMED,
@@ -1073,11 +1073,11 @@ def t17_grace_expired(pe, trigger_source="scheduler"):
     that import by the old name; both point to the same function so existing
     grep'ed call sites still work during the cutover window.
     """
-    log_event(pe, "program_dropped", trigger_source=trigger_source,
+    log_event(pe, "program_paused", trigger_source=trigger_source,
               details={"reason": "grace_expired"})
-    return transition(pe, STATE_PROGRAM_DROPPED, trigger_source, {
-        "journey_label": LABEL_DROPPED,
-        "program_status": PROGRAM_DROPPED,
+    return transition(pe, STATE_PROGRAM_PAUSED, trigger_source, {
+        "journey_label": LABEL_PAUSED,
+        "program_status": PROGRAM_PAUSED,
         "drop_reason": "grace_expired",
         "in_grace_window": 0,
         "next_action_at": None,
@@ -1117,6 +1117,20 @@ def t21_binge_resume(pe, trigger_source="scheduler"):
         "pause_reason": "",
         "next_action_at": now_datetime(),
         "next_action_type": ACTION_WEEK_ADVANCEMENT,
+    })
+
+def t21_a_resume_paused(pe, trigger_source="scheduler"):
+    """T21: paused → normal_content_delivery (calendar advanced)."""
+    return transition(pe, STATE_NORMAL_CONTENT, trigger_source, {
+        "journey_label": LABEL_RESUMED,
+        "program_status": PROGRAM_ACTIVE,
+        "pause_reason": "",
+        "drop_reason": "",
+        "in_grace_window": 0,
+        "grace_window_start": None,
+        "grace_window_end_at": None,
+        "next_action_at": now_datetime(),
+        "next_action_type": ACTION_CONTENT_DELIVERY,
     })
 
 

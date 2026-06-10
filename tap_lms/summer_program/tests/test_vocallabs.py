@@ -42,15 +42,19 @@ def _ensure_batch():
     return make_batch(label="VocallabsTestBatch", batch_id="VLT01")
 
 
-def _ensure_student(suffix, phone=None):
+def _ensure_student(suffix, phone=None, language=None):
     phone = phone or f"+9999500{suffix}"
     name = frappe.get_value("Student", {"phone": phone}, "name")
     if name:
+        if language is not None:
+            frappe.db.set_value("Student", name, "language", language)
         return name
     s = frappe.new_doc("Student")
     s.name1 = f"VocallabsTestStudent{suffix}"
     s.phone = phone
     s.glific_id = f"glific-vl-{suffix}"
+    if language is not None:
+        s.language = language
     s.insert(ignore_permissions=True)
     return s.name
 
@@ -88,7 +92,7 @@ def _ensure_parent_call_config(title="VLT-Default"):
 
 
 def _ensure_voice_settings(enabled=1, agent_id="agent-VLT", default_config=None,
-                          ttl=3600):
+                          ttl=3600, agent_mappings=None):
     settings = frappe.get_single("VoiceAgentSettings")
     settings.enabled = enabled
     settings.service_url = "https://vocallabs.test"
@@ -101,6 +105,13 @@ def _ensure_voice_settings(enabled=1, agent_id="agent-VLT", default_config=None,
     settings.agent_id = agent_id
     settings.default_parent_call_config = default_config
     settings.auth_token_cache_ttl = ttl
+    settings.set("agents", [])
+    for row in agent_mappings or []:
+        settings.append("agents", {
+            "language": row["language"],
+            "agent_id": row["agent_id"],
+            "enabled": row.get("enabled", 1),
+        })
     settings.save(ignore_permissions=True)
     return settings
 
@@ -192,6 +203,7 @@ class TestVocallabsHappyPath(FrappeTestCase):
         # The agent reads `data.contact`, `data.student_name`, `data.status` at call time.
         self.assertIn("contact", prospect["data"])
         self.assertIn("student_name", prospect["data"])
+        self.assertIn("language", prospect["data"])
         self.assertIn("week 1", prospect["data"]["status"])
         self.assertIn("Step 2", prospect["data"]["status"])
         self.assertIn("parent_call", prospect["data"]["status"])
@@ -200,6 +212,75 @@ class TestVocallabsHappyPath(FrappeTestCase):
         init_payload = captured_calls[2][1]
         self.assertEqual(init_payload["agentId"], "agent-VLT")
         self.assertEqual(init_payload["prospect_id"], "prospect-001")
+
+    def test_initiate_parent_call_uses_language_mapped_agent(self):
+        """Enabled VoiceAgentSettings.agents row overrides fallback agent_id."""
+        from tap_lms.summer_program import vocallabs
+
+        cfg = _ensure_parent_call_config()
+        _ensure_voice_settings(
+            enabled=1,
+            agent_id="agent-fallback",
+            default_config=cfg,
+            agent_mappings=[{"language": "Hindi", "agent_id": "agent-hindi"}],
+        )
+
+        student = _ensure_student("01b", phone="+99995001B", language="Hindi")
+        pe_name = _make_pe(self.batch_name, student, "01b")
+
+        captured_calls = []
+
+        def fake_post(url, payload, headers):
+            captured_calls.append((url, payload, headers))
+            if url.endswith("/b2b/createAuthToken/"):
+                return {"authToken": "tok-xyz"}
+            if url.endswith("/b2b/vocallabs/addMultipleContactsToGroup"):
+                return {
+                    "data": {
+                        "insert_vocallabs_prospects": {
+                            "affected_rows": 1,
+                            "returning": [{"id": "prospect-001"}],
+                        }
+                    }
+                }
+            if url.endswith("/b2b/vocallabs/initiateVocallabsCall"):
+                return {"status": "queued", "call_id": "call-001"}
+            self.fail(f"Unexpected URL hit: {url}")
+
+        with patch.object(vocallabs, "_http_post", side_effect=fake_post):
+            ok = vocallabs.initiate_parent_call(pe_name, _step(order=2, etype="parent_call"))
+
+        self.assertTrue(ok)
+        add_payload = captured_calls[1][1]
+        self.assertEqual(add_payload["prospects"][0]["data"]["language"], "Hindi")
+        init_payload = captured_calls[2][1]
+        self.assertEqual(init_payload["agentId"], "agent-hindi")
+
+    def test_initiate_parent_call_skips_when_no_agent_resolves(self):
+        """No language mapping and no fallback agent_id => fail closed before call."""
+        from tap_lms.summer_program import vocallabs
+
+        cfg = _ensure_parent_call_config()
+        _ensure_voice_settings(enabled=1, agent_id="", default_config=cfg)
+
+        student = _ensure_student("01c", phone="+99995001C", language="Hindi")
+        pe_name = _make_pe(self.batch_name, student, "01c")
+
+        def fake_post(url, payload, headers):
+            if url.endswith("/b2b/createAuthToken/"):
+                return {"authToken": "tok-xyz"}
+            if url.endswith("/b2b/vocallabs/initiateVocallabsCall"):
+                self.fail("initiateVocallabsCall must not fire without a resolved agent")
+            if url.endswith("/b2b/vocallabs/addMultipleContactsToGroup"):
+                self.fail("addMultipleContactsToGroup must not fire without a resolved agent")
+            self.fail(f"Unexpected URL hit: {url}")
+
+        with patch.object(vocallabs, "_http_post", side_effect=fake_post) as fake_post:
+            ok = vocallabs.initiate_parent_call(pe_name, _step(order=2, etype="parent_call"))
+
+        self.assertFalse(ok)
+        urls = [c.kwargs["url"] for c in fake_post.call_args_list]
+        self.assertEqual(urls, ["https://vocallabs.test/b2b/createAuthToken/"])
 
     def test_token_cache_returns_cached_within_ttl(self):
         """Second call within TTL window does NOT re-hit /createAuthToken."""
