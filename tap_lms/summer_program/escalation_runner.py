@@ -35,23 +35,47 @@ def run_escalation_check():
 
     Runs every 2 hours via Frappe scheduler cron.
     """
-    active_bprs = frappe.get_all(
-        "BatchProgramRun",
-        filters={"status": BPR_ACTIVE},
-        fields=["name", "batch", "escalation_flow"],
-    )
+    import time as _time
+    from tap_lms.monitoring import record_job
+    _t0 = _time.monotonic()
+    _status = "success"
+    _error = None
+    _bpr_count = 0
 
-    for bpr_row in active_bprs:
-        if not bpr_row.escalation_flow:
-            continue
+    try:
+        active_bprs = frappe.get_all(
+            "BatchProgramRun",
+            filters={"status": BPR_ACTIVE},
+            fields=["name", "batch", "escalation_flow"],
+        )
+        _bpr_count = len(active_bprs)
 
+        for bpr_row in active_bprs:
+            if not bpr_row.escalation_flow:
+                continue
+
+            try:
+                _process_bpr_escalation(bpr_row)
+            except Exception as e:
+                frappe.log_error(
+                    f"Escalation runner error for BPR {bpr_row.name}: {str(e)}",
+                    "SP Escalation Runner",
+                )
+    except Exception as e:
+        _status = "error"
+        _error = str(e)
+        raise
+    finally:
         try:
-            _process_bpr_escalation(bpr_row)
-        except Exception as e:
-            frappe.log_error(
-                f"Escalation runner error for BPR {bpr_row.name}: {str(e)}",
-                "SP Escalation Runner",
+            record_job(
+                job_name="run_escalation_check",
+                status=_status,
+                duration_ms=(_time.monotonic() - _t0) * 1000,
+                error=_error,
+                bpr_count=_bpr_count,
             )
+        except Exception:
+            pass
 
 
 def _process_bpr_escalation(bpr_row):

@@ -413,7 +413,14 @@ def submit_artwork_internal(api_key, assign_id, name1, glific_id, img_url):
     # Switch to the user associated with the API key
     frappe.set_user(api_key_doc.user)
 
-    student_id = "ST00000206"
+    # Resolve student from name1 + glific_id, same as submit_artwork.
+    # Previously this was hardcoded to "ST00000206" — fixed per SRE risk item.
+    student = frappe.db.get_value(
+        "Student", {"name1": name1, "glific_id": glific_id}, "name"
+    )
+    if not student:
+        frappe.throw("Student not found with provided name and glific_id")
+    student_id = student
 
     try:
         # Create a new submission first (to get the submission name)
@@ -585,6 +592,22 @@ def enqueue_submission(submission_id):
 
         # Close the connection
         connection.close()
+
+        # SRE: pipeline trace — step 1. This structured log is the anchor for
+        # the submission_id trace in Cloud Logging and BigQuery.
+        from tap_lms.monitoring import record_submission_published
+
+        try:
+            record_submission_published(
+                submission_id=submission_id,
+                student_id=payload.get("student_id", ""),
+                assign_id=payload.get("assign_id", ""),
+                submission_type=payload.get("submission_type", ""),
+                queue_name=rabbitmq_config["queue"],
+            )
+        except Exception as e:
+            print(f"[monitoring] record_submission_published failed: {e}", flush=True)
+            # Just print and do nothing else - monitoring issues should never fail the process
 
         frappe.logger("submission").info(
             f"Enqueued submission {submission_id} with GCS URL: {submission.submission_url}"

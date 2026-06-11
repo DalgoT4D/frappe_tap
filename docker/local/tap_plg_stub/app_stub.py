@@ -37,6 +37,21 @@ APP_ENV                   = os.getenv("APP_ENV", "dev")
 API_PORT                  = int(os.getenv("TAP_PLG_API_PORT", "8080"))
 STUB_PROCESSING_DELAY_MS  = int(os.getenv("STUB_PROCESSING_DELAY_MS", "500"))
 
+# Configurable result rates for integration test branch coverage.
+# Set these env vars to exercise plagiarism/AI-detected branches in rag_service
+# and the feedback pipeline — otherwise every submission is "original".
+#
+# Results are deterministic per submission_id (seeded RNG) so the same
+# submission always gets the same outcome across test runs.
+#
+# Examples:
+#   STUB_PLAGIARISM_RATE=0.1    — 10% of submissions flagged as plagiarised
+#   STUB_AI_GENERATED_RATE=0.05 — 5% of submissions flagged as AI-generated
+#   STUB_PLAGIARISM_RATE=1.0    — all submissions flagged (useful for testing
+#                                 the plagiarism feedback path end-to-end)
+STUB_PLAGIARISM_RATE     = float(os.getenv("STUB_PLAGIARISM_RATE", "0.0"))
+STUB_AI_GENERATED_RATE   = float(os.getenv("STUB_AI_GENERATED_RATE", "0.0"))
+
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO),
@@ -107,19 +122,52 @@ def _log(severity: str, message: str, **kwargs):
 def _make_result(data: dict) -> dict:
     """
     Build a plagiarism result matching the exact schema rag_service expects.
-    Always marks submissions as original — no real ML processing.
+
+    Result is deterministic per submission_id — the same submission always
+    gets the same outcome across test runs, making test failures reproducible.
+
+    Branch coverage is controlled by environment variables:
+        STUB_PLAGIARISM_RATE   — fraction of submissions marked as plagiarised
+        STUB_AI_GENERATED_RATE — fraction of submissions marked as AI-generated
+
+    Both default to 0.0 (all original) so existing behaviour is unchanged
+    when the env vars are not set.
     """
+    submission_id = data.get("submission_id", "")
+
+    # Seed the RNG with the submission_id so results are reproducible.
+    rng = random.Random(submission_id)
+
+    is_plagiarized   = rng.random() < STUB_PLAGIARISM_RATE
+    is_ai_generated  = (not is_plagiarized) and (rng.random() < STUB_AI_GENERATED_RATE)
+
+    if is_plagiarized:
+        match_type          = "peer_match"
+        plagiarism_source   = "peer_submission"
+        similarity_score    = round(rng.uniform(0.75, 0.98), 4)
+        ai_confidence       = round(rng.uniform(0.01, 0.08), 4)
+    elif is_ai_generated:
+        match_type          = "ai_generated"
+        plagiarism_source   = ""
+        similarity_score    = round(rng.uniform(0.01, 0.15), 4)
+        ai_confidence       = round(rng.uniform(0.80, 0.99), 4)
+    else:
+        match_type          = "original"
+        plagiarism_source   = ""
+        similarity_score    = round(rng.uniform(0.01, 0.15), 4)
+        ai_confidence       = round(rng.uniform(0.01, 0.08), 4)
+
     result = {
         **data,
-        "assignment_id": data.pop("assign_id", data.get("assignment_id", "")),
+        "assignment_id":       data.pop("assign_id", data.get("assignment_id", "")),
         "similar_sources":     [],
-        "similarity_score":    round(random.uniform(0.01, 0.15), 4),
-        "is_plagiarized":      False,
-        "match_type":          "original",
-        "plagiarism_source":   "",
-        "is_ai_generated":     False,
-        "ai_detection_source": "",
-        "ai_confidence":       round(random.uniform(0.01, 0.08), 4),
+        "similarity_score":    similarity_score,
+        "is_plagiarized":      is_plagiarized,
+        "match_type":          match_type,
+        "plagiarism_source":   plagiarism_source,
+        "is_ai_generated":     is_ai_generated,
+        "ai_detection_source": "stub_ai_detector" if is_ai_generated else "",
+        "ai_confidence":       ai_confidence,
     }
     result.pop("db_record_id", None)
     return result
@@ -153,9 +201,9 @@ async def _process(message: aio_pika.IncomingMessage, channel, feedback_queue: s
         duration_ms = (time.monotonic() - t0) * 1000
         _log("INFO", "plg_result_published",
              submission_id=submission_id,
-             plagiarism_status="original",
-             is_plagiarized=False,
-             is_ai_generated=False,
+             plagiarism_status=result["match_type"],
+             is_plagiarized=result["is_plagiarized"],
+             is_ai_generated=result["is_ai_generated"],
              total_duration_ms=round(duration_ms, 2))
 
         _state["messages_processed"] += 1

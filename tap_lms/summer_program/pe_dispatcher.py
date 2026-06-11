@@ -64,25 +64,11 @@ def process_program_actions():
     """
     Main dispatcher entry point. Called every 1 minute by Frappe scheduler
     (cron `*/1 * * * *`). v4.1 §7.2 spec; architecture.md §8.1 / §8.8.
-
-    Finds all PEs where:
-      - next_action_at <= now
-      - program_status is active OR paused (paused PEs need pause_check
-        / re_engagement handlers to be reachable; B3 fix)
-      - next_action_type is a per-PE individual-timer action
-
-    Routes each PE to the appropriate handler based on next_action_type.
-
-    Renamed from `dispatch_pending_actions` (task #15, 2026-05-13). The
-    legacy name is preserved below as a thin alias for one release cycle
-    so any cron entry that wasn't yet updated keeps working through the
-    cutover.
-
-    Note: there is no batch-level partition. Collection-mode batchers (when
-    built) filter on different next_action_type values; this dispatcher and
-    those batchers are partitioned by action type, not by Batch. See
-    architecture §8.
     """
+    import time as _time
+    from tap_lms.monitoring import record_dispatcher_cycle
+    _t0 = _time.monotonic()
+
     now = now_datetime()
 
     # SELECT candidate PEs with FOR UPDATE SKIP LOCKED so multiple parallel
@@ -193,6 +179,19 @@ def process_program_actions():
         "errors": errors,
         "queue_depth": queue_depth,
     })
+
+    # SRE: structured dispatcher cycle log — feeds Cloud Monitoring dashboard
+    # and the dispatcher_errors alert policy.
+    try:
+        record_dispatcher_cycle(
+            processed=processed,
+            skipped=skipped,
+            errors=errors,
+            duration_ms=(_time.monotonic() - _t0) * 1000,
+            queue_depth=queue_depth,
+        )
+    except Exception:
+        pass
 
     return {"dispatched": processed, "skipped": skipped, "errors": errors}
 

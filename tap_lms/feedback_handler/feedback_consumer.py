@@ -188,6 +188,18 @@ class FeedbackConsumer:
 
             frappe.logger().info(f"Processing feedback for submission: {submission_id}")
 
+            # SRE: pipeline trace — step 2 (received)
+            from tap_lms.monitoring import (
+                record_feedback_result_received,
+                record_feedback_processing_complete,
+                record_feedback_processing_failed,
+                record_glific_notification,
+            )
+            record_feedback_result_received(
+                submission_id=submission_id,
+                student_id=message_data.get("student_id"),
+            )
+
             # Check if submission exists
             try:
                 self.processor.ensure_submission_exists(submission_id)
@@ -200,24 +212,35 @@ class FeedbackConsumer:
             self.processor.update_submission(message_data)
 
             # Send Glific notification (non-critical - don't fail message if this fails)
+            _glific_ok = False
+            _glific_err = None
             try:
                 self.send_glific_notification(message_data)
+                _glific_ok = True
             except Exception as glific_error:
-                frappe.logger().warning(f"Glific notification failed for {submission_id}: {str(glific_error)}")
-                # Continue processing - notification failure shouldn't fail the entire message
+                _glific_err = str(glific_error)
+                frappe.logger().warning(f"Glific notification failed for {submission_id}: {_glific_err}")
+            finally:
+                record_glific_notification(
+                    submission_id=submission_id,
+                    success=_glific_ok,
+                    error=_glific_err,
+                )
 
             # Summer Program: trigger T12 state transition (non-critical)
             try:
                 self._update_sp_state(submission_id, message_data)
             except Exception as sp_error:
                 frappe.logger().warning(f"SP state update failed for {submission_id}: {str(sp_error)}")
-                # Continue - pe_dispatcher's feedback_timeout handler is the safety net
 
             # Commit transaction
             frappe.db.commit()
 
             # Acknowledge message only after successful processing
             ch.basic_ack(delivery_tag=method.delivery_tag)
+
+            # SRE: pipeline trace — step 3 (complete, after ack)
+            record_feedback_processing_complete(submission_id=submission_id)
 
             frappe.logger().info(f"Successfully processed feedback for submission: {submission_id}")
             print(f"Successfully processed feedback for submission: {submission_id}")
@@ -229,13 +252,24 @@ class FeedbackConsumer:
             error_msg = str(e)
             frappe.logger().error(f"Error processing submission {submission_id}: {error_msg}")
 
+            # SRE: pipeline trace — failure path
+            try:
+                from tap_lms.monitoring import record_feedback_processing_failed
+                retryable = self.processor.is_retryable_error(e)
+                record_feedback_processing_failed(
+                    submission_id=submission_id or "unknown",
+                    error=error_msg,
+                    retryable=retryable,
+                )
+            except Exception:
+                pass
+
             # Determine if error is retryable
             if self.processor.is_retryable_error(e):
                 frappe.logger().warning(f"Retryable error for submission {submission_id}, will retry")
                 ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
             else:
                 frappe.logger().error(f"Non-retryable error for submission {submission_id}, rejecting message")
-                # Mark submission as failed and reject message
                 try:
                     if submission_id:
                         self.processor.mark_submission_failed(submission_id, error_msg)

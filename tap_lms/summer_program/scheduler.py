@@ -40,22 +40,46 @@ def run_daily_actions():
     Main scheduler entry point. Called daily by Frappe scheduler.
     Finds all active BatchProgramRuns and processes scheduled actions.
     """
-    active_bprs = frappe.get_all(
-        "BatchProgramRun",
-        filters={"status": BPR_ACTIVE},
-        fields=["name"],
-    )
+    import time as _time
+    from tap_lms.monitoring import record_job
+    _t0 = _time.monotonic()
+    _status = "success"
+    _error = None
+    _bpr_count = 0
 
-    for row in active_bprs:
+    try:
+        active_bprs = frappe.get_all(
+            "BatchProgramRun",
+            filters={"status": BPR_ACTIVE},
+            fields=["name"],
+        )
+        _bpr_count = len(active_bprs)
+
+        for row in active_bprs:
+            try:
+                bpr = frappe.get_doc("BatchProgramRun", row.name)
+                batch = frappe.get_doc("Batch", bpr.batch)
+                _process_bpr_actions(bpr, batch)
+            except Exception as e:
+                frappe.log_error(
+                    f"Scheduler error for BPR {row.name}: {str(e)}",
+                    "SP Scheduler",
+                )
+    except Exception as e:
+        _status = "error"
+        _error = str(e)
+        raise
+    finally:
         try:
-            bpr = frappe.get_doc("BatchProgramRun", row.name)
-            batch = frappe.get_doc("Batch", bpr.batch)
-            _process_bpr_actions(bpr, batch)
-        except Exception as e:
-            frappe.log_error(
-                f"Scheduler error for BPR {row.name}: {str(e)}",
-                "SP Scheduler",
+            record_job(
+                job_name="run_daily_actions",
+                status=_status,
+                duration_ms=(_time.monotonic() - _t0) * 1000,
+                error=_error,
+                bpr_count=_bpr_count,
             )
+        except Exception:
+            pass
 
 
 def _process_bpr_actions(bpr, batch):
