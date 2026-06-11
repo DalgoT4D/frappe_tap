@@ -3,7 +3,7 @@ set -euo pipefail
 
 # ── Changes from original ─────────────────────────────────────────────────────
 #
-# 1. podman-compose up now also starts:
+# 1. docker compose up now also starts:
 #      tap_plg_stub  — replaces tap_plg_worker + tap_plg_api in one container
 #      llm-stub      — fake OpenAI/TogetherAI/VertexAI
 #      glific-stub   — fake Glific WhatsApp API
@@ -41,7 +41,7 @@ BUSINESS_THEME_REPO="${BUSINESS_THEME_REPO:-https://github.com/Midocean-Technolo
 
 # ── Step 1: Start infrastructure + stubs ──────────────────────────────────────
 echo "Starting infrastructure and stub services..."
-podman-compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --build \
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --build \
   postgres \
   redis-cache \
   redis-queue \
@@ -73,16 +73,16 @@ _wait_for_port "tap_plg_stub" "${TAP_PLG_API_PORT:-8080}"
 
 # ── Step 2: Start Frappe LMS & RAG dev containers ─────────────────────────────
 echo "Starting Frappe LMS container..."
-podman-compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --build dev-lms
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --build dev-lms
 
 # ── FIX: TARGET 'dev-lms' EXPLICITLY INSTEAD OF THE OLD 'dev' VALUE ────────────
 echo "Aligning environment storage volume tracking permissions..."
-podman-compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T -u root dev-lms chown -R frappe:frappe /home/frappe/frappe-bench
-podman-compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T -u root dev-lms chown -R frappe:frappe /workspace/frappe_tap/tap_lms/__pycache__ 2>/dev/null || true
-podman-compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T -u root dev-lms chmod -R a+rX /workspace/frappe_tap
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T -u root dev-lms chown -R frappe:frappe /home/frappe/frappe-bench
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T -u root dev-lms chown -R frappe:frappe /workspace/frappe_tap/tap_lms/__pycache__ 2>/dev/null || true
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T -u root dev-lms chmod -R a+rX /workspace/frappe_tap
 
 # ── Step 3: Frappe bench setup (Targeting dev-lms specifically) ────────────────
-podman-compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T dev-lms bash -lc '
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T dev-lms bash -lc '
 set -euo pipefail
 
 SITE_NAME="${SITE_NAME:-tap_lms.localhost}"
@@ -96,7 +96,7 @@ if [[ ! -d /home/frappe/frappe-bench/apps/frappe ]]; then
   if [[ -n "$(find /home/frappe/frappe-bench -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
     echo "/home/frappe/frappe-bench is not empty but Frappe is missing."
     echo "If this is a broken local setup, reset it with:"
-    echo "  podman-compose --env-file env.local -f docker/local/docker-compose.local.yml down -v"
+    echo "  docker compose --env-file env.local -f docker/local/docker-compose.local.yml down -v"
     exit 1
   fi
   cd /home/frappe
@@ -230,7 +230,7 @@ echo "Setting up rag_service isolated venv..."
 # No quote conflicts with the surrounding bash single-quote block
 # The Python code itself can use any quotes freely
 
-podman-compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T dev-lms bash << 'OUTEREOF'
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T dev-lms bash << 'OUTEREOF'
 set -euo pipefail
 
 # Create isolated venv for rag_service dependencies
@@ -259,7 +259,7 @@ echo "rag_service venv bridge complete."
 # ── Step 5: Seed LLM Settings & RAG Secrets ───────────────────────────────────
 echo "Seeding LLM Settings & RAG Secrets..."
 
-podman-compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T dev-lms bash << EOF
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T dev-lms bash << EOF
 set -euo pipefail
 cd /home/frappe/frappe-bench/sites
 ../env/bin/python3 - << 'PYEOF'
@@ -295,7 +295,7 @@ EOF
 
 # ── Step 6: Create seed data ──────────────────────────────────────────────────────────
 echo "Running seed_local.py..."
-podman-compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T dev-lms bash -lc '
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T dev-lms bash -lc '
   cd /home/frappe/frappe-bench/sites && \
   ../env/bin/python3 -c "import frappe; frappe.init(\"tap_lms.localhost\"); frappe.connect(); import sys; sys.path.insert(0, \"/workspace/frappe_tap\"); import scripts.seed_local"
 '
@@ -321,15 +321,15 @@ Next steps:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 1. Start the Frappe LMS web server:
-   podman-compose --env-file env.local -f docker/local/docker-compose.local.yml \\
+   docker compose --env-file env.local -f docker/local/docker-compose.local.yml \\
      exec dev-lms bash -lc "cd /home/frappe/frappe-bench && bench start"
 
 2. Start your RAG Worker Consumer:
-   podman-compose --env-file env.local -f docker/local/docker-compose.local.yml \\
+   docker compose --env-file env.local -f docker/local/docker-compose.local.yml \\
      exec dev-lms bash -lc "cd /home/frappe/frappe-bench/sites/ && ../env/bin/python -c \"import frappe; frappe.init('tap_lms.localhost'); frappe.connect(); import rag_service.scripts.console_consumer as cc; cc.run()\""
 
 2a. Start the feedback consumer:
-    podman-compose --env-file env.local -f ./frappe_tap/docker/local/docker-compose.local.yml \\
+    docker compose --env-file env.local -f ./frappe_tap/docker/local/docker-compose.local.yml \\
     exec dev-lms bash -lc "cd /home/frappe/frappe-bench/sites/ && ../env/bin/python ../apps/tap_lms/scripts/console_consumer.py"
 
 3. Check if test API key is successfully created and associated with Administrator in Frappe bench. If not, create a test API key:
@@ -355,6 +355,6 @@ Next steps:
    curl http://localhost:${GLIFIC_STUB_PORT:-4000}/stub/reset
 
 7. Watch the full pipeline trace live:
-   podman-compose --env-file env.local -f docker/local/docker-compose.local.yml logs -f
+   docker compose --env-file env.local -f docker/local/docker-compose.local.yml logs -f
 
 EOF
