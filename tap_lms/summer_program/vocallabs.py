@@ -142,6 +142,11 @@ def initiate_parent_call(pe_name, escalation_step, retry_count=0):
         return False
 
     # ── Render status ──────────────────────────────────────
+    welcome_greeting = _resolve_welcome_greeting(pe)
+    if welcome_greeting == "None":
+        frappe.info("Skipping parent call for Dormant/Arm B student per config.")
+        return True
+
     status_text = _render_status_template(
         config.status_template or "",
         pe, student, escalation_step,
@@ -160,6 +165,7 @@ def initiate_parent_call(pe_name, escalation_step, retry_count=0):
         call_response = _call_vocallabs(
             settings=settings,
             token=token,
+            pe=pe,
             student=student,
             parent_phone=parent_phone,
             student_name=_student_display(student),
@@ -392,7 +398,8 @@ def _render_status_template(template, pe, student, step):
     Error Log then return the raw template — the call still places (the
     operator can see the literal `{foo}` and fix the template).
 
-    Note: `language` is the student's preferred language (Student.language).
+    Note: `language` prefers the active ProgramEnrollment language and falls
+    back to Student.language when ProgramEnrollment.language is empty.
     Useful for templates that branch wording, but the SPOKEN language of
     the call is determined by the Vocallabs Agent itself (the agent's
     `language` + `voice_id` config). To support multiple spoken languages
@@ -402,6 +409,7 @@ def _render_status_template(template, pe, student, step):
     if not template:
         return ""
 
+    pe_language = (pe.language or getattr(student, "language", "") or "").strip()
     ctx = {
         "student_name": _student_display(student),
         "week": str(pe.current_week or 0),
@@ -410,7 +418,8 @@ def _render_status_template(template, pe, student, step):
         "path": pe.current_path or "",
         "escalation_order": str(step.get("escalation_order", "") or ""),
         "escalation_type": step.get("escalation_type", "") or "",
-        "language": getattr(student, "language", "") or "",
+        "language": pe_language,
+        "welcome_greeting": _resolve_welcome_greeting(pe),
     }
 
     try:
@@ -437,12 +446,23 @@ def _student_display(student):
     return get_student_display_name(student)
 
 
+def _resolve_welcome_greeting(pe):
+    pe_archetype = (pe.archetype or "").strip().casefold()
+    pe_experiment_arm = (pe.experiment_arm or "").strip().casefold()
+
+    if pe_archetype == "dormant" and pe_experiment_arm == "arm_b":
+        return "None"
+    if pe_archetype == "fence_sitter" and pe_experiment_arm == "arm_b":
+        return "Vidya"
+    return "TAP Buddy"
+
+
 # ════════════════════════════════════════════════════════════
 # HTTP — Vocallabs API
 # ════════════════════════════════════════════════════════════
 
 
-def _call_vocallabs(settings, token, student, parent_phone, student_name, status_text):
+def _call_vocallabs(settings, token, pe, student, parent_phone, student_name, status_text):
     """Run the Vocallabs sequence, reusing a cached prospect_id when possible.
 
     Cache-on-Student design (task #81):
@@ -523,6 +543,7 @@ def _call_vocallabs(settings, token, student, parent_phone, student_name, status
         "Content-Type": "application/json",
     }
     parent_display = f"Parent of {student_name}" if student_name else "Parent"
+    pe_language = (pe.language or getattr(student, "language", "") or "").strip()
     # The data block consumed by the Vocallabs agent at call time. Same
     # keys whether we're inserting (addMultipleContactsToGroup) or
     # refreshing (updateContactData) — only one source of truth.
@@ -530,9 +551,11 @@ def _call_vocallabs(settings, token, student, parent_phone, student_name, status
         "contact": parent_display,
         "student_name": student_name,
         "status": status_text,
-        "language": getattr(student, "language", "") or "",
+        "language": pe_language,
+        "archetype": pe.archetype or "",
+        "experiment_arm": pe.experiment_arm or "",
     }
-    agent_id = _resolve_agent_id(settings, data_block.get("language"))
+    agent_id = _resolve_agent_id(settings, pe_language)
     if not agent_id:
         raise RuntimeError(
             "Vocallabs: no agent_id resolved for parent call; "
