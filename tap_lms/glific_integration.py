@@ -12,20 +12,26 @@ from dateutil.parser import isoparse
 _GLIFIC_SESSION = requests.Session()
 GLIFIC_TIMEOUT = 10  # seconds, connect+read combined
 
+
+def _coerce_utc_datetime(value):
+    """Normalize supported datetime representations to aware UTC datetimes."""
+    if not value:
+        return value
+    if isinstance(value, str):
+        value = isoparse(value)
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
 def get_glific_settings():
     return frappe.get_single("Glific Settings")
 
 def get_glific_auth_headers():
     settings = get_glific_settings()
     current_time = datetime.now(timezone.utc)
-    
-    # Convert token_expiry_time to datetime if it's a string
-    if settings.token_expiry_time:
-        if isinstance(settings.token_expiry_time, str):
-            settings.token_expiry_time = isoparse(settings.token_expiry_time)
-        elif settings.token_expiry_time.tzinfo is None:
-            settings.token_expiry_time = settings.token_expiry_time.replace(tzinfo=timezone.utc)
-    
+
+    settings.token_expiry_time = _coerce_utc_datetime(settings.token_expiry_time)
+
     if not settings.access_token or not settings.token_expiry_time or \
        current_time >= settings.token_expiry_time:
         # Token is expired or not set, get a new one
@@ -46,7 +52,7 @@ def get_glific_auth_headers():
             data = response.json()["data"]
 
             # Parse the token_expiry_time string to a timezone-aware datetime object
-            token_expiry_time = isoparse(data["token_expiry_time"])
+            token_expiry_time = _coerce_utc_datetime(data["token_expiry_time"])
             
             # Update the Glific Settings directly in the database
             frappe.db.set_value("Glific Settings", settings.name, {
@@ -68,6 +74,33 @@ def get_glific_auth_headers():
             "authorization": settings.access_token,
             "Content-Type": "application/json"
         }
+
+
+def _glific_post_with_401_retry(url, payload):
+    """POST to Glific and retry once on 401 after forcing token refresh."""
+    headers = get_glific_auth_headers()
+    response = _GLIFIC_SESSION.post(
+        url, json=payload, headers=headers, timeout=GLIFIC_TIMEOUT
+    )
+    if response.status_code != 401:
+        return response
+
+    settings = get_glific_settings()
+    frappe.db.set_value(
+        "Glific Settings",
+        settings.name,
+        {
+            "access_token": "",
+            "token_expiry_time": None,
+        },
+        update_modified=False,
+    )
+    frappe.db.commit()
+
+    refreshed_headers = get_glific_auth_headers()
+    return _GLIFIC_SESSION.post(
+        url, json=payload, headers=refreshed_headers, timeout=GLIFIC_TIMEOUT
+    )
 
 def create_contact(name, phone, school_name, model_name, language_id, batch_id):
     settings = get_glific_settings()
@@ -175,7 +208,6 @@ def update_contact_fields(contact_id, fields_to_update, language_id=None):
     """
     settings = get_glific_settings()
     url = f"{settings.api_url}/api"
-    headers = get_glific_auth_headers()
 
     # ── Step 1: Fetch existing contact fields ──────────────────
     fetch_payload = {
@@ -194,8 +226,7 @@ def update_contact_fields(contact_id, fields_to_update, language_id=None):
     }
 
     try:
-        fetch_response = _GLIFIC_SESSION.post(url, json=fetch_payload, headers=headers,
-                                              timeout=GLIFIC_TIMEOUT)
+        fetch_response = _glific_post_with_401_retry(url, fetch_payload)
         fetch_response.raise_for_status()
         fetch_data = fetch_response.json()
 
@@ -263,8 +294,7 @@ def update_contact_fields(contact_id, fields_to_update, language_id=None):
             },
         }
 
-        update_response = _GLIFIC_SESSION.post(url, json=update_payload, headers=headers,
-                                               timeout=GLIFIC_TIMEOUT)
+        update_response = _glific_post_with_401_retry(url, update_payload)
         update_response.raise_for_status()
         update_data = update_response.json()
 

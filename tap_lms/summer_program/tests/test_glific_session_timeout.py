@@ -19,6 +19,7 @@ version). All tests that call Glific leaf functions now also patch
 The assertions about session.post() routing and timeout kwarg remain unchanged.
 """
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch, MagicMock, call
 
 import requests
@@ -44,6 +45,95 @@ class TestGlificSharedSession(unittest.TestCase):
         """GLIFIC_TIMEOUT must be <= 15 seconds — large enough to avoid spurious
         failures on a slow connection but small enough to prevent a permanent hang."""
         self.assertLessEqual(gi.GLIFIC_TIMEOUT, 15)
+
+    def test_coerce_utc_datetime_normalizes_naive_values(self):
+        """Naive datetimes from Frappe Datetime fields must become aware UTC."""
+        naive = datetime(2026, 6, 9, 12, 0, 0)
+        normalized = gi._coerce_utc_datetime(naive)
+        self.assertEqual(normalized.tzinfo, timezone.utc)
+        self.assertEqual(normalized.hour, 12)
+
+
+class TestGlificAuthHeaders(unittest.TestCase):
+    """Regression coverage for mixed naive/aware token expiry handling."""
+
+    @patch("tap_lms.glific_integration.get_glific_settings")
+    def test_get_glific_auth_headers_accepts_naive_expiry(self, mock_settings):
+        """Stored naive expiry must not crash comparison with aware current time."""
+        mock_settings.return_value = MagicMock(
+            access_token="tok_existing",
+            token_expiry_time=datetime.now() + timedelta(minutes=5),
+        )
+
+        headers = gi.get_glific_auth_headers()
+
+        self.assertEqual(headers["authorization"], "tok_existing")
+        self.assertEqual(headers["Content-Type"], "application/json")
+
+    @patch("tap_lms.glific_integration.frappe.db.commit")
+    @patch("tap_lms.glific_integration.frappe.db.set_value")
+    @patch("tap_lms.glific_integration.get_glific_settings")
+    @patch("tap_lms.glific_integration._GLIFIC_SESSION")
+    def test_glific_post_with_401_retry_refreshes_token_once(
+        self, mock_session, mock_settings, mock_set_value, mock_commit
+    ):
+        """401 from Glific must clear cached token and retry exactly once."""
+        mock_settings.return_value = MagicMock(name="Glific Settings")
+        mock_session.post.side_effect = [
+            MagicMock(status_code=401),
+            MagicMock(status_code=200),
+        ]
+
+        with patch(
+            "tap_lms.glific_integration.get_glific_auth_headers",
+            side_effect=[
+                {"authorization": "tok_old", "Content-Type": "application/json"},
+                {"authorization": "tok_new", "Content-Type": "application/json"},
+            ],
+        ):
+            response = gi._glific_post_with_401_retry(
+                "https://api.glific.example/api",
+                {"query": "query { ping }"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(mock_session.post.call_count, 2)
+        mock_set_value.assert_called_once_with(
+            "Glific Settings",
+            mock_settings.return_value.name,
+            {"access_token": "", "token_expiry_time": None},
+            update_modified=False,
+        )
+        mock_commit.assert_called_once()
+
+    @patch("tap_lms.glific_integration._glific_post_with_401_retry")
+    @patch("tap_lms.glific_integration.get_glific_settings")
+    def test_update_contact_fields_uses_401_retry_helper(
+        self, mock_settings, mock_post_with_retry
+    ):
+        """Fetch and update legs must both route through the 401 retry helper."""
+        mock_settings.return_value = MagicMock(api_url="https://api.glific.example")
+        mock_post_with_retry.side_effect = [
+            MagicMock(
+                raise_for_status=MagicMock(),
+                json=MagicMock(return_value={
+                    "data": {"contact": {"contact": {
+                        "id": "13325", "name": "X", "fields": "{}",
+                    }}}
+                }),
+            ),
+            MagicMock(
+                raise_for_status=MagicMock(),
+                json=MagicMock(return_value={
+                    "data": {"updateContact": {"contact": {"id": "13325", "fields": "{}"}}}
+                }),
+            ),
+        ]
+
+        ok = gi.update_contact_fields("13325", {"course_level": "X"})
+
+        self.assertTrue(ok)
+        self.assertEqual(mock_post_with_retry.call_count, 2)
 
 
 class TestGlificTimeoutRaisesPromptly(unittest.TestCase):

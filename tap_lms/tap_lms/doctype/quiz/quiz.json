@@ -11,6 +11,7 @@
   "quiz_name",
   "description",
   "difficulty_tier",
+  "quiz_type",
   "questions",
   "passing_score",
   "time_limit",
@@ -30,6 +31,12 @@
    "fieldname": "description",
    "fieldtype": "Text Editor",
    "label": "Description"
+  },
+  {
+   "fieldname": "quiz_type",
+   "fieldtype": "Select",
+   "label": "Quiz Type",
+   "options": "Main\nPlio"
   },
   {
    "fieldname": "questions",

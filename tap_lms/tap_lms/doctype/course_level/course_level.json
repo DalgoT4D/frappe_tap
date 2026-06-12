@@ -9,6 +9,7 @@
  "engine": "InnoDB",
  "field_order": [
   "name1",
+  "program",
   "vertical",
   "level",
   "stage",
@@ -26,6 +27,13 @@
    "fieldname": "name1",
    "fieldtype": "Data",
    "label": "Name"
+  },
+  {
+   "fieldname": "program",
+   "fieldtype": "Link",
+   "label": "Program",
+   "options": "Program",
+   "reqd": 1
   },
   {
    "fieldname": "vertical",
@@ -92,7 +100,7 @@
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2025-09-10 00:12:55.560514",
+ "modified": "2026-05-16 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Tap Lms",
  "name": "Course Level",
