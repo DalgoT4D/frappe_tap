@@ -658,53 +658,80 @@ class TestWeeklySweep(FrappeTestCase):
                 frappe.delete_doc("BatchProgramRun", bpr, force=True)
 
     def test_weekly_sweep_phase1_demotes_behind_students(self):
+        # Phase 1 now delegates to the shared SET-BASED _bulk_demote_batch;
+        # let it run the real UPDATE (Glific bulk move stubbed) and assert the
+        # behind PE actually flipped to normal_escalation.
         _make_bpr(self.batch)
         behind = _make_pe(self.batch, current_week=1)
         with patch.object(frappe.db, "commit"), patch.object(frappe.db, "rollback"), \
              patch(f"{SWEEP_MIG}._get_escalation_steps_for_pe", return_value=_mk_steps()), \
-             patch(f"{SWEEP_MIG}.transition") as m_tr, \
-             patch(f"{SCHED}._bulk_move_to_escalation",
+             patch(f"{SWEEP_MIG}._bulk_move_to_escalation",
                    return_value={"removed_from_main": 1, "added_to_escalation": 1, "errors": []}), \
              _patch_phase2_glific()["create"], _patch_phase2_glific()["bulk"], \
              _patch_phase2_glific()["flow"]:
             res = self._run_sweep()
         self.assertEqual(res["phase1_demoted"], 1)
-        called_pe_names = [c.args[0].name for c in m_tr.call_args_list]
-        self.assertIn(behind, called_pe_names)
+        self.assertEqual(
+            frappe.db.get_value("ProgramEnrollment", behind, "resolved_flow_state"),
+            STATE_NORMAL_ESCALATION,
+        )
 
     def test_weekly_sweep_phase1_uses_archetype_config_for_escalation_type(self):
         _make_bpr(self.batch)
-        _make_pe(self.batch, current_week=1)
+        behind = _make_pe(self.batch, current_week=1)
         with patch.object(frappe.db, "commit"), patch.object(frappe.db, "rollback"), \
              patch(f"{SWEEP_MIG}._get_escalation_steps_for_pe",
                    return_value=_mk_steps(etype="parent_call", hours=48)), \
-             patch(f"{SWEEP_MIG}.transition") as m_tr, \
-             patch(f"{SCHED}._bulk_move_to_escalation",
+             patch(f"{SWEEP_MIG}._bulk_move_to_escalation",
                    return_value={"removed_from_main": 1, "added_to_escalation": 1, "errors": []}), \
              _patch_phase2_glific()["create"], _patch_phase2_glific()["bulk"], \
              _patch_phase2_glific()["flow"]:
             self._run_sweep()
-        args, kwargs = m_tr.call_args
-        self.assertEqual(args[2], "weekly_content_sweep")     # trigger_source
-        self.assertEqual(args[3]["current_escalation_type"], "parent_call")
-        self.assertTrue(kwargs["skip_glific"])
+        self.assertEqual(
+            frappe.db.get_value("ProgramEnrollment", behind, "current_escalation_type"),
+            "parent_call",
+        )
 
-    def test_sweep_phase_1_uses_skip_glific_and_bulk_pattern(self):
-        _make_bpr(self.batch)
+    def test_sweep_phase1_delegates_to_bulk_demote_batch(self):
+        # The unification: Phase 1 calls the SAME _bulk_demote_batch the
+        # one-time migration uses, once per active BPR, with (batch, cal, bpr).
+        bpr = _make_bpr(self.batch)
         _make_pe(self.batch, current_week=1, glific_id="gid-sweep-1")
         with patch.object(frappe.db, "commit"), patch.object(frappe.db, "rollback"), \
-             patch(f"{SWEEP_MIG}._get_escalation_steps_for_pe", return_value=_mk_steps()), \
-             patch(f"{SWEEP_MIG}.transition") as m_tr, \
-             patch(f"{SCHED}._bulk_move_to_escalation",
-                   return_value={"removed_from_main": 1, "added_to_escalation": 1, "errors": []}) as m_bulk, \
+             patch(f"{SCHED}._bulk_demote_batch",
+                   return_value={"candidates": 1, "combos": [], "demoted": 1,
+                                 "no_config_pes": 0,
+                                 "bulk_move": {"removed_from_main": 1,
+                                               "added_to_escalation": 1, "errors": []},
+                                 "errors": []}) as m_bulk, \
              _patch_phase2_glific()["create"], _patch_phase2_glific()["bulk"], \
              _patch_phase2_glific()["flow"]:
-            self._run_sweep()
-        # transition used with skip_glific=True (no per-PE Glific) ...
-        self.assertTrue(m_tr.call_args.kwargs["skip_glific"])
-        # ... and the bulk collection move was done once, with the glific id.
+            res = self._run_sweep()
         m_bulk.assert_called_once()
-        self.assertEqual(m_bulk.call_args.args[1], ["gid-sweep-1"])
+        args, kwargs = m_bulk.call_args
+        self.assertEqual(args[0], self.batch)      # batch_name
+        self.assertEqual(args[1], 2)               # calendar_week (fixture)
+        self.assertEqual(args[2], bpr)             # bpr_name
+        self.assertFalse(kwargs.get("dry_run", False))
+        self.assertEqual(res["phase1_demoted"], 1)
+        self.assertEqual(res["phase1_added_to_escalation"], 1)
+
+    def test_sweep_phase1_isolates_per_bpr_failure(self):
+        # A crash in one BPR's demotion must bump phase1_failed, not abort the
+        # rest of the run — Phase 2 still proceeds for that BPR.
+        _make_bpr(self.batch)
+        _make_pe(self.batch, current_week=1)   # behind (Phase 1)
+        _make_pe(self.batch, current_week=2)   # current-week (Phase 2)
+        with patch.object(frappe.db, "commit"), patch.object(frappe.db, "rollback"), \
+             patch(f"{SCHED}._bulk_demote_batch", side_effect=RuntimeError("boom")), \
+             patch(f"{SCHED}.create_or_get_collection",
+                   return_value={"id": "777", "label": "x"}) as m_create, \
+             patch(f"{SCHED}.add_contacts_to_group_bulk", return_value=True), \
+             patch(f"{SCHED}.start_group_flow", return_value=True):
+            res = self._run_sweep()
+        self.assertEqual(res["phase1_failed"], 1)
+        self.assertEqual(res["phase1_demoted"], 0)
+        m_create.assert_called_once()          # Phase 2 still ran for the BPR
 
     def test_weekly_sweep_phase2_builds_temp_sweep_group(self):
         _make_bpr(self.batch)
@@ -848,12 +875,13 @@ class TestMigrationThenSweep(FrappeTestCase):
             STATE_NORMAL_ESCALATION,
         )
 
+        # Let the real SET-BASED _bulk_demote_batch run (Glific bulk move
+        # stubbed in sweep_migration). It should find 0 behind candidates.
         with patch.object(frappe.db, "commit"), patch.object(frappe.db, "rollback"), \
              patch(f"{SCHED}._active_bprs_for_sweep",
                    side_effect=lambda: _active_bprs_in([self.batch])), \
              patch(f"{SWEEP_MIG}._get_escalation_steps_for_pe", return_value=_mk_steps()), \
-             patch(f"{SWEEP_MIG}.transition") as m_tr, \
-             patch(f"{SCHED}._bulk_move_to_escalation",
+             patch(f"{SWEEP_MIG}._bulk_move_to_escalation",
                    return_value={"removed_from_main": 0, "added_to_escalation": 0, "errors": []}), \
              patch(f"{SCHED}.create_or_get_collection",
                    return_value={"id": "777", "label": "x"}), \
@@ -862,4 +890,3 @@ class TestMigrationThenSweep(FrappeTestCase):
             sweep = scheduler.weekly_content_sweep()
 
         self.assertEqual(sweep["phase1_demoted"], 0)
-        m_tr.assert_not_called()

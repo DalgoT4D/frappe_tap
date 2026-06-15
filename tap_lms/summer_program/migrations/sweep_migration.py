@@ -265,6 +265,13 @@ def migrate_behind_students_to_escalation(
 ):
     """One-time migration: demote behind students to `normal_escalation`.
 
+    ⚠️ SUPERSEDED for large batches — this is the PER-PE loop variant, which
+    crawled at ~1 PE/min on the 62K backlog under live DB contention (L-082).
+    Use `migrate_behind_students_to_escalation_bulk` (set-based, seconds) for
+    anything beyond a small/limited run. This per-PE version is kept only
+    because it produces a real per-PE ProgramEventLog row per transition (full
+    audit), which the bulk path trades away.
+
     Behind = `normal_content_delivery` with `current_week < calendar_week`
     and `weekly_video_done = 0` for the given batch.
 
@@ -543,72 +550,46 @@ def _resolve_combo_escalation(batch_name, combo):
     return (escalation_type, hours)
 
 
-@frappe.whitelist()
-def migrate_behind_students_to_escalation_bulk(
-    batch_name,
-    dry_run=True,
-    i_know_this_is_destructive=False,
-):
-    """SET-BASED one-time backlog demotion — the fast alternative to the per-PE
-    `migrate_behind_students_to_escalation`.
+def _bulk_demote_batch(batch_name, calendar_week, bpr_name, dry_run=False):
+    """SET-BASED demotion of all behind PEs in ONE batch — the single shared
+    demotion mechanism (L-074), used by BOTH the one-time whitelisted migration
+    AND the weekly sweep's Phase 1.
 
-    Same target population (behind = normal_content_delivery, current_week <
-    calendar_week, weekly_video_done = 0) and same outcome (normal_escalation
-    with step-1 escalation params from ArchetypeConfig), but the state change
-    is done as ONE SQL UPDATE per distinct (arm, archetype, path) combo
-    (~8 statements) instead of 62K per-row Python transitions. Then the SAME
-    bulk Glific collection move (`_bulk_move_to_escalation`) runs.
+    Behind = normal_content_delivery, current_week < calendar_week,
+    weekly_video_done = 0. The state change is ONE SQL UPDATE per distinct
+    (arm, archetype, path) combo (~8 statements) — NOT a per-row Python loop
+    (which hung at ~1 PE/min on 62K under live contention; see L-082).
+    Escalation params (escalation_type, hours) are resolved ONCE per combo from
+    ArchetypeConfig (same `_get_escalation_steps_for_pe` the dispatcher uses).
+    `next_action_at` gets ±30min jitter (L-013). Then the SAME chunked bulk
+    Glific collection move (`_bulk_move_to_escalation`) runs.
 
-    Trade-offs vs the per-PE version (all deliberate for a one-time op):
+    Trade-offs (deliberate, same posture as L-081):
       - Bypasses `transition()` → no per-PE save hooks / no per-PE
-        ProgramEventLog row from THIS step. The resolved_flow_state change is
-        the visible outcome, a summary lands in the Error Log, and each PE
-        gets a real per-PE audit row from its NEXT dispatcher-driven step
-        (T4 escalation step 2) within hours. (L-014 caution taken knowingly,
-        same posture as the 730/858 one-time scripts.)
-      - Contact-field sync skipped (same as the per-PE version; catches up on
-        next organic transition). Routing works via collection membership,
-        which IS moved in bulk here. See L-081.
-      - `next_action_at` gets ±jitter so the dispatcher doesn't fire all the
-        next escalation steps in the same minute (L-013 thundering herd).
+        ProgramEventLog row from THIS step. resolved_flow_state is the visible
+        outcome; each PE gets a real per-PE audit row from its NEXT
+        dispatcher-driven escalation step within hours.
+      - Contact-field sync skipped (routing works via the collection membership
+        moved in bulk here).
+
+    Commits internally (before the Glific move, so PE state is durable even if
+    Glific fails). On `dry_run` does NO writes — only reports per-combo counts
+    + resolved escalation_type.
 
     Args:
-        batch_name: Batch doc name (e.g. 'BT00000019').
-        dry_run: If True (default), report per-combo counts + resolved
-                 escalation_type WITHOUT writing.
-        i_know_this_is_destructive: Must be True for a non-dry-run.
+        batch_name: Batch doc name.
+        calendar_week: Batch.current_calendar_week (passed in so callers that
+                       already loaded the batch don't re-fetch).
+        bpr_name: active BPR name for the batch (for the Glific collection IDs);
+                  may be None — then PEs are demoted but the bulk move is
+                  skipped + flagged.
+        dry_run: preview only.
 
     Returns:
-        dict summary (combos, demoted, no_config_pes, bulk_move, errors, …).
+        dict: {candidates, combos, demoted, no_config_pes, bulk_move, errors}.
     """
-    frappe.only_for(["TAP Admin", "System Manager"])
-
-    dry_run = _coerce_bool(dry_run)
-    destructive_ok = _coerce_bool(i_know_this_is_destructive)
-
-    if not dry_run and not destructive_ok:
-        raise frappe.ValidationError(
-            "Refusing to run a non-dry-run bulk migration without "
-            "i_know_this_is_destructive=True. Pass dry_run=True to preview."
-        )
-
-    batch = frappe.get_doc("Batch", batch_name)
-    calendar_week = batch.current_calendar_week
-    if not calendar_week:
-        raise frappe.ValidationError(
-            f"Batch {batch_name} has no current_calendar_week set."
-        )
-
-    bpr_name = frappe.db.get_value(
-        "BatchProgramRun", {"batch": batch_name, "status": BPR_ACTIVE}, "name"
-    )
-
     combos = _behind_combos(batch_name, calendar_week)
-    summary = {
-        "batch": batch_name,
-        "bpr": bpr_name,
-        "calendar_week": calendar_week,
-        "dry_run": dry_run,
+    result = {
         "candidates": sum(c["n"] for c in combos),
         "combos": [],
         "demoted": 0,
@@ -636,23 +617,22 @@ def migrate_behind_students_to_escalation_bulk(
 
         if etype is None:
             # No ArchetypeConfig escalation_steps for this combo — leave these
-            # PEs untouched; the SP team fixes the config. (Same posture as the
-            # per-PE version's no_config.)
-            summary["no_config_pes"] += combo["n"]
+            # PEs untouched; the SP team fixes the config.
+            result["no_config_pes"] += combo["n"]
             _record_error(
-                summary,
+                result,
                 f"no escalation_steps in ArchetypeConfig for "
                 f"(arm={combo['experiment_arm']}, archetype={combo['archetype']}, "
                 f"path={combo['current_path']}) — {combo['n']} PEs left in "
                 f"normal_content_delivery",
             )
-            summary["combos"].append(combo_report)
+            result["combos"].append(combo_report)
             continue
 
         if dry_run:
             combo_report["demoted"] = combo["n"]  # would-demote count
-            summary["demoted"] += combo["n"]
-            summary["combos"].append(combo_report)
+            result["demoted"] += combo["n"]
+            result["combos"].append(combo_report)
             continue
 
         # One set-based UPDATE for the whole combo. RETURNING collects exactly
@@ -701,13 +681,13 @@ def migrate_behind_students_to_escalation_bulk(
         )
         n_changed = len(rows)
         combo_report["demoted"] = n_changed
-        summary["demoted"] += n_changed
+        result["demoted"] += n_changed
         changed_glific_ids.extend(
             r["glific_id"] for r in rows if r.get("glific_id")
         )
-        summary["combos"].append(combo_report)
+        result["combos"].append(combo_report)
         frappe.logger().info(
-            f"migrate_behind_students_to_escalation_bulk: combo "
+            f"_bulk_demote_batch: batch={batch_name} combo "
             f"(arm={combo['experiment_arm']}, archetype={combo['archetype']}, "
             f"path={combo['current_path']}) → {n_changed} demoted, "
             f"escalation_type={etype}"
@@ -716,25 +696,82 @@ def migrate_behind_students_to_escalation_bulk(
     if not dry_run:
         frappe.db.commit()  # persist all combo UPDATEs before the Glific move
 
-        # Bulk Glific collection move (shared with the per-PE migration).
         if changed_glific_ids:
             if bpr_name:
-                summary["bulk_move"] = _bulk_move_to_escalation(
+                result["bulk_move"] = _bulk_move_to_escalation(
                     bpr_name, changed_glific_ids
                 )
-                room = max(0, 50 - len(summary["errors"]))
-                summary["errors"].extend(summary["bulk_move"]["errors"][:room])
+                room = max(0, 50 - len(result["errors"]))
+                result["errors"].extend(result["bulk_move"]["errors"][:room])
             else:
                 _record_error(
-                    summary,
+                    result,
                     f"batch {batch_name}: no active BPR — {len(changed_glific_ids)} "
                     f"PEs demoted but NOT moved on Glific; re-run the bulk move "
                     f"once a BPR is active.",
                 )
 
+    return result
+
+
+@frappe.whitelist()
+def migrate_behind_students_to_escalation_bulk(
+    batch_name,
+    dry_run=True,
+    i_know_this_is_destructive=False,
+):
+    """SET-BASED one-time backlog demotion (operator-run).
+
+    Thin wrapper over the shared `_bulk_demote_batch` — adds the role guard,
+    destructive-flag guard, batch/calendar_week/BPR resolution, a coarse audit
+    summary to the Error Log, and the summary envelope. The actual demotion
+    logic lives in `_bulk_demote_batch` so the one-time migration and the
+    weekly sweep's Phase 1 share ONE implementation (L-074).
+
+    Args:
+        batch_name: Batch doc name (e.g. 'BT00000019').
+        dry_run: If True (default), preview without writing.
+        i_know_this_is_destructive: Must be True for a non-dry-run.
+
+    Returns:
+        dict summary (batch, bpr, calendar_week, dry_run, candidates, combos,
+        demoted, no_config_pes, bulk_move, errors).
+    """
+    frappe.only_for(["TAP Admin", "System Manager"])
+
+    dry_run = _coerce_bool(dry_run)
+    destructive_ok = _coerce_bool(i_know_this_is_destructive)
+
+    if not dry_run and not destructive_ok:
+        raise frappe.ValidationError(
+            "Refusing to run a non-dry-run bulk migration without "
+            "i_know_this_is_destructive=True. Pass dry_run=True to preview."
+        )
+
+    batch = frappe.get_doc("Batch", batch_name)
+    calendar_week = batch.current_calendar_week
+    if not calendar_week:
+        raise frappe.ValidationError(
+            f"Batch {batch_name} has no current_calendar_week set."
+        )
+
+    bpr_name = frappe.db.get_value(
+        "BatchProgramRun", {"batch": batch_name, "status": BPR_ACTIVE}, "name"
+    )
+
+    core = _bulk_demote_batch(batch_name, calendar_week, bpr_name, dry_run=dry_run)
+    summary = {
+        "batch": batch_name,
+        "bpr": bpr_name,
+        "calendar_week": calendar_week,
+        "dry_run": dry_run,
+        **core,
+    }
+
+    if not dry_run:
         # Coarse audit: one Error Log summary (per-PE audit rows arrive from
         # each PE's next dispatcher-driven escalation step). L-080: log AFTER
-        # the commit so the record survives.
+        # the commit (inside _bulk_demote_batch) so the record survives.
         try:
             frappe.log_error(
                 f"bulk demotion: batch={batch_name} demoted={summary['demoted']} "
@@ -744,9 +781,7 @@ def migrate_behind_students_to_escalation_bulk(
             )
             frappe.db.commit()
         except Exception:
-            frappe.logger().error(
-                f"bulk demotion summary log failed: {summary}"
-            )
+            frappe.logger().error(f"bulk demotion summary log failed: {summary}")
 
     frappe.logger().info(
         f"migrate_behind_students_to_escalation_bulk DONE: batch={batch_name} "

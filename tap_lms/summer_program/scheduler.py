@@ -38,14 +38,10 @@ from tap_lms.summer_program.glific_extensions import (
     add_contacts_to_group_bulk,
     create_or_get_collection,
 )
-# CR-027: shared per-candidate demotion routine (also used by the one-time
-# backlog migration). Imported at module level so tests can patch it as
-# `scheduler._demote_behind_pe` and so the sweep mirrors the migration exactly.
-from tap_lms.summer_program.migrations.sweep_migration import (
-    _demote_behind_pe,
-    _bulk_move_to_escalation,
-    find_behind_candidates,
-)
+# CR-027: shared SET-BASED demotion routine — the SINGLE demotion mechanism
+# used by BOTH the one-time backlog migration and this weekly sweep's Phase 1
+# (L-074 anti-drift; L-082 — set-based, can't hang like the old per-PE loop).
+from tap_lms.summer_program.migrations.sweep_migration import _bulk_demote_batch
 
 
 def run_daily_actions():
@@ -379,14 +375,13 @@ def _sweep_phase1_demote_behind(active_bprs, summary):
     """Phase 1 — demote behind students (per active BPR) to normal_escalation.
 
     "Behind" = normal_content_delivery, current_week < calendar_week,
-    weekly_video_done = 0. Uses the SAME shared routines as the one-time
-    backlog migration: `_demote_behind_pe` (transition with skip_glific=True,
-    escalation params from ArchetypeConfig) per candidate, then ONE
-    `_bulk_move_to_escalation` per BPR — NO per-PE Glific jobs. See
-    sweep_migration module docstring + L-081 for the scale rationale.
+    weekly_video_done = 0. Delegates to the SAME SET-BASED helper as the
+    one-time backlog migration (`_bulk_demote_batch`): ~8 combo-targeted SQL
+    UPDATEs + one bulk Glific move per BPR. ONE demotion mechanism (L-074),
+    and it cannot hang the way the old per-PE loop did at scale (L-082).
 
-    Per-row commit so a later failure keeps prior work; per-row rollback on
-    failure so a poisoned txn (L-030) doesn't cascade into the next row.
+    Per-BPR try/except so one batch's failure doesn't abort the rest; on
+    failure rollback the batch's txn so a poisoned txn (L-030) doesn't cascade.
     """
     for bpr in active_bprs:
         batch_name = bpr["batch"]
@@ -403,49 +398,34 @@ def _sweep_phase1_demote_behind(active_bprs, summary):
             )
             continue
 
-        candidates = find_behind_candidates(batch_name, calendar_week)
-        transitioned_glific_ids = []
-        for candidate in candidates:
-            pe_name = candidate["name"]
+        try:
+            res = _bulk_demote_batch(
+                batch_name, calendar_week, bpr["name"], dry_run=False
+            )
+        except Exception as e:
+            summary["phase1_failed"] += 1
+            frappe.db.rollback()
+            if len(summary["errors"]) < 50:
+                summary["errors"].append(f"phase1 batch {batch_name}: {e}")
             try:
-                pe_doc = frappe.get_doc("ProgramEnrollment", pe_name)
-                status, detail, glific_id = _demote_behind_pe(
-                    pe_doc, trigger_source="weekly_content_sweep"
+                frappe.log_error(
+                    f"weekly_content_sweep phase1: batch {batch_name} failed: {e}",
+                    "CR-027 Weekly Sweep",
                 )
-                if status == "no_config":
-                    summary["phase1_no_config"] += 1
-                    if len(summary["errors"]) < 50:
-                        summary["errors"].append(detail)
-                    frappe.db.rollback()
-                else:
-                    summary["phase1_demoted"] += 1
-                    if glific_id:
-                        transitioned_glific_ids.append(glific_id)
-                    frappe.db.commit()  # per-row commit
-            except Exception as e:
-                summary["phase1_failed"] += 1
-                frappe.db.rollback()
-                if len(summary["errors"]) < 50:
-                    summary["errors"].append(f"phase1 {pe_name}: {e}")
-                try:
-                    frappe.log_error(
-                        f"weekly_content_sweep phase1: PE {pe_name} failed: {e}",
-                        "CR-027 Weekly Sweep",
-                    )
-                except Exception:
-                    frappe.logger().error(
-                        f"weekly_content_sweep phase1 double-fault on {pe_name}: {e}"
-                    )
+            except Exception:
+                frappe.logger().error(
+                    f"weekly_content_sweep phase1 double-fault on {batch_name}: {e}"
+                )
+            continue
 
-        # Bulk Glific collection move for this BPR's transitioned PEs (replaces
-        # the per-PE maintain_collections that skip_glific=True bypassed).
-        if transitioned_glific_ids:
-            move = _bulk_move_to_escalation(bpr["name"], transitioned_glific_ids)
-            summary["phase1_removed_from_main"] += move["removed_from_main"]
-            summary["phase1_added_to_escalation"] += move["added_to_escalation"]
-            for err in move["errors"][:10]:
-                if len(summary["errors"]) < 50:
-                    summary["errors"].append(err)
+        summary["phase1_demoted"] += res["demoted"]
+        summary["phase1_no_config"] += res["no_config_pes"]
+        if res["bulk_move"]:
+            summary["phase1_removed_from_main"] += res["bulk_move"]["removed_from_main"]
+            summary["phase1_added_to_escalation"] += res["bulk_move"]["added_to_escalation"]
+        for err in res["errors"][:10]:
+            if len(summary["errors"]) < 50:
+                summary["errors"].append(err)
 
 
 def _sweep_phase2_deliver_current_week(active_bprs, summary):
@@ -583,11 +563,12 @@ def weekly_content_sweep():
     Monday 00:00 bumps Batch.current_calendar_week).
 
     Phase 1: demote behind students (normal_content_delivery, wk < calendar_week,
-             video_done = 0) to normal_escalation via `_demote_behind_pe`
-             (transition(..., skip_glific=True) — NOT t2_start_escalation), with
-             escalation_type resolved per-PE via _get_escalation_steps_for_pe —
-             same logic as the dispatcher. Per-BPR bulk Glific collection move
-             (`_bulk_move_to_escalation`) replaces the per-PE maintain_collections.
+             video_done = 0) to normal_escalation via the SHARED SET-BASED
+             `_bulk_demote_batch` (the same helper the one-time migration uses,
+             L-074): ~8 combo-targeted SQL UPDATEs + one bulk Glific collection
+             move per BPR. escalation_type resolved per-combo from ArchetypeConfig.
+             Set-based so it can't hang at scale the way the old per-PE loop did
+             (L-082).
 
     Phase 2: for each active BPR, deliver this week's content to current-week
              candidates (wk == calendar_week, video_done = 0) via a temp Glific
