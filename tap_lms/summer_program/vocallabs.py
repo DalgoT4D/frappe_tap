@@ -144,7 +144,7 @@ def initiate_parent_call(pe_name, escalation_step, retry_count=0):
     # ── Render status ──────────────────────────────────────
     welcome_greeting = _resolve_welcome_greeting(pe)
     if welcome_greeting == "None":
-        frappe.info("Skipping parent call for Dormant/Arm B student per config.")
+        frappe.logger().info("Skipping parent call for Dormant/Arm B student per config.")
         return True
 
     status_text = _render_status_template(

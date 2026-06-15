@@ -89,7 +89,7 @@ def _make_pe(batch_name, student_name, suffix):
     pe.current_path = PATH_CORE
     pe.current_week = 1
     pe.current_tier = "Basic"
-    pe.archetype = "Submitter"
+    pe.archetype = "submitter"
     pe.insert(ignore_permissions=True)
     return pe.name
 
@@ -221,7 +221,7 @@ class TestVocallabsHappyPath(FrappeTestCase):
         self.assertIn("contact", prospect["data"])
         self.assertIn("student_name", prospect["data"])
         self.assertEqual(prospect["data"]["language"], "Hindi")
-        self.assertEqual(prospect["data"]["archetype"], "Submitter")
+        self.assertEqual(prospect["data"]["archetype"], "submitter")
         self.assertEqual(prospect["data"]["experiment_arm"], "arm_a")
         self.assertIn("week 1", prospect["data"]["status"])
         self.assertIn("Step 2", prospect["data"]["status"])
@@ -272,7 +272,7 @@ class TestVocallabsHappyPath(FrappeTestCase):
         self.assertTrue(ok)
         add_payload = captured_calls[1][1]
         self.assertEqual(add_payload["prospects"][0]["data"]["language"], "Hindi")
-        self.assertEqual(add_payload["prospects"][0]["data"]["archetype"], "Submitter")
+        self.assertEqual(add_payload["prospects"][0]["data"]["archetype"], "submitter")
         self.assertEqual(add_payload["prospects"][0]["data"]["experiment_arm"], "arm_a")
         init_payload = captured_calls[2][1]
         self.assertEqual(init_payload["agentId"], "agent-hindi")
@@ -826,7 +826,7 @@ class TestVocallabsProspectIdCache(FrappeTestCase):
         self.assertIn("student_name", update_payload["data"])
         self.assertIn("status", update_payload["data"])
         self.assertEqual(update_payload["data"]["language"], "Hindi")
-        self.assertEqual(update_payload["data"]["archetype"], "Submitter")
+        self.assertEqual(update_payload["data"]["archetype"], "submitter")
         self.assertEqual(update_payload["data"]["experiment_arm"], "arm_a")
         # The rendered status_text reflects THIS call's variables (week 1,
         # step 4) — proves the data is being freshly rendered against the

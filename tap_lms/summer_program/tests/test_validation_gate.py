@@ -93,7 +93,7 @@ class TestComputeSubmissionPoints(FrappeTestCase):
                       else "ASN-001" if args[:1] == ("Submission",) and args[2:3] == ("assign_id",)
                       else None)
             )
-            points = _compute_submission_points(pe, "SUB-001", result_status="Success")
+            points = _compute_submission_points(pe, "SUB-001", result_status="Success - Original")
 
         self.assertEqual(points, 25)
 
@@ -136,7 +136,7 @@ class TestComputeSubmissionPoints(FrappeTestCase):
                       else "ASN-001" if args[:1] == ("Submission",) and args[2:3] == ("assign_id",)
                       else None)
             )
-            points = _compute_submission_points(pe, "SUB-001", result_status="Success")
+            points = _compute_submission_points(pe, "SUB-001", result_status="Success - Original")
 
         self.assertEqual(points, 25)
 
@@ -183,9 +183,11 @@ class TestComputeSubmissionPoints(FrappeTestCase):
 
         self.assertEqual(points, 0)
 
-    def test_escalation_uses_escalation_step_points_regardless_of_validity(self):
-        """sent_count >= 1 → EscalationStep.points_awarded, independent of
-        validation flag and result_status. Escalation is its own tier system.
+    def test_escalation_lax_mode_uses_escalation_step_points(self):
+        """sent_count >= 1, LAX mode → EscalationStep.points_awarded
+        regardless of result_status. In lax mode (per-archetype, per-week
+        via WeekRule), late + Failed/Flagged still earns the escalation
+        tier reward because the AI verdict has no power.
 
         This test patches `_escalation_points` itself so it exercises only
         the dispatch in `_compute_submission_points`, NOT the indexing logic
@@ -207,13 +209,57 @@ class TestComputeSubmissionPoints(FrappeTestCase):
             {"points_awarded": 5},
         ]
 
-        with patch("tap_lms.summer_program.feedback_consumer_hook._escalation_points",
+        with patch("tap_lms.summer_program.feedback_consumer_hook._get_week_rule_for_pe",
+                   return_value={"submission_validation_enabled": 0}), \
+             patch("tap_lms.summer_program.feedback_consumer_hook._escalation_points",
                    return_value=fake_steps[1]["points_awarded"]) as mock_esc:
             points = _compute_submission_points(pe, "SUB-001", result_status="Failed")
 
         # sent_count=2 → step index 1 (0-indexed) → step 2's reward → 15 points
+        # Lax mode → AI verdict ignored, escalation tier wins
         self.assertEqual(points, 15)
         mock_esc.assert_called_once()
+
+    def test_escalation_strict_mode_failed_returns_zero(self):
+        """sent_count >= 1, STRICT mode, result_status="Failed" → 0 points.
+        The 2026-06-15 spec update: the AI verdict overrides the escalation
+        tier reward. Pre-update, the late branch ran first and shielded
+        late + Failed from the strict-mode gate; that's been reversed.
+        """
+        from tap_lms.summer_program.feedback_consumer_hook import (
+            _compute_submission_points,
+        )
+        pe = _fake_pe(current_escalation_step=2, current_week=3)
+
+        with patch("tap_lms.summer_program.feedback_consumer_hook._get_week_rule_for_pe",
+                   return_value={"submission_validation_enabled": 1}), \
+             patch("tap_lms.summer_program.feedback_consumer_hook._escalation_points") as mock_esc:
+            points_failed = _compute_submission_points(pe, "SUB-001", result_status="Failed")
+            points_flagged = _compute_submission_points(pe, "SUB-001", result_status="Success - Flagged")
+
+        self.assertEqual(points_failed, 0,
+                         "Strict + late + Failed must return 0 (AI verdict overrides tier)")
+        self.assertEqual(points_flagged, 0,
+                         "Strict + late + Flagged must return 0 (AI verdict overrides tier)")
+        mock_esc.assert_not_called()
+
+    def test_escalation_strict_mode_success_uses_escalation_step_points(self):
+        """sent_count >= 1, STRICT mode, result_status="Success - Original" → tier reward.
+        Strict mode only zeroes Failed/Flagged — Success still earns the
+        normal late-submission tier reward.
+        """
+        from tap_lms.summer_program.feedback_consumer_hook import (
+            _compute_submission_points,
+        )
+        pe = _fake_pe(current_escalation_step=2, current_week=3)
+
+        with patch("tap_lms.summer_program.feedback_consumer_hook._get_week_rule_for_pe",
+                   return_value={"submission_validation_enabled": 1}), \
+             patch("tap_lms.summer_program.feedback_consumer_hook._escalation_points",
+                   return_value=15):
+            points = _compute_submission_points(pe, "SUB-001", result_status="Success - Original")
+
+        self.assertEqual(points, 15)
 
     def test_missing_assign_id_returns_zero_with_warning(self):
         """If Submission.assign_id is empty/None, log a warning and award 0
@@ -231,7 +277,7 @@ class TestComputeSubmissionPoints(FrappeTestCase):
                 else None  # assign_id returns None
             )
             mock_frappe.logger.return_value = MagicMock()
-            points = _compute_submission_points(pe, "SUB-001", result_status="Success")
+            points = _compute_submission_points(pe, "SUB-001", result_status="Success - Original")
 
         self.assertEqual(points, 0)
         mock_frappe.logger().warning.assert_called()
@@ -264,12 +310,25 @@ class TestComputeSubmissionPoints(FrappeTestCase):
 # ════════════════════════════════════════════════════════════
 
 class TestRoutingGate(FrappeTestCase):
-    """Pin the t6b-vs-t12 routing decision in `on_feedback_ready`. The gate is:
-    `submission_validation_enabled == 1` AND `result_status in (Failed, Flagged)`
-    → t6b. Anything else → t12."""
+    """Pin the t6b-vs-t12 routing decision in `on_feedback_ready`.
+
+    The routing gate is keyed on `Submission.submission_validity` (NOT
+    `result_status`). The contract is:
+        `submission_validation_enabled == 1` AND
+        `submission_validity == "Invalid"` → t6b (route to Remedial).
+    Anything else (lax mode, or strict mode with validity != "Invalid") → t12.
+
+    `Submission.result_status` is a separate field that governs the *points*
+    award in `_compute_submission_points` (Failed/Flagged → 0). Test helpers
+    derive `submission_validity` from `result_status` for ergonomic test names:
+    Failed/Flagged ⇒ Invalid; Success ⇒ Valid.
+    """
 
     def _run_hook(self, result_status, validation_enabled):
         from tap_lms.summer_program import feedback_consumer_hook
+        # Map test's result_status to submission_validity per the contract above.
+        validity = ("Invalid" if result_status in ("Failed", "Success - Flagged")
+                    else "Valid")
         with patch.object(feedback_consumer_hook, "frappe") as mock_frappe, \
              patch.object(feedback_consumer_hook, "_get_week_rule_for_pe",
                           return_value={"submission_validation_enabled":
@@ -286,8 +345,9 @@ class TestRoutingGate(FrappeTestCase):
                 "STU-001" if args[:1] == ("Submission",) and args[2:3] == ("student_id",)
                 else (1 if args[:1] == ("Submission",) and args[2:3] == ("week",)
                       else (result_status if args[:1] == ("Submission",) and args[2:3] == ("result_status",)
-                            else ("PE-001" if args[:1] == ("ProgramEnrollment",)
-                                  else None)))
+                            else (validity if args[:1] == ("Submission",) and args[2:3] == ("submission_validity",)
+                                  else ("PE-001" if args[:1] == ("ProgramEnrollment",)
+                                        else None))))
             )
 
             pe_mock = MagicMock()
@@ -320,7 +380,7 @@ class TestRoutingGate(FrappeTestCase):
 
     def test_strict_mode_success_routes_to_feedback_ready(self):
         result, t6b_called, t12_called = self._run_hook(
-            result_status="Success", validation_enabled=True,
+            result_status="Success - Original", validation_enabled=True,
         )
         self.assertFalse(t6b_called)
         self.assertTrue(t12_called, "Strict + Success must call t12")
@@ -376,7 +436,7 @@ class TestAtomicAwardEndToEnd(FrappeTestCase):
             mock_frappe.db.get_value.side_effect = lambda *args, **kwargs: (
                 "STU-001" if args[:1] == ("Submission",) and args[2:3] == ("student_id",)
                 else (1 if args[:1] == ("Submission",) and args[2:3] == ("week",)
-                      else ("Success" if args[:1] == ("Submission",) and args[2:3] == ("result_status",)
+                      else ("Success - Original" if args[:1] == ("Submission",) and args[2:3] == ("result_status",)
                             else ("PE-001" if args[:1] == ("ProgramEnrollment",)
                                   else None)))
             )

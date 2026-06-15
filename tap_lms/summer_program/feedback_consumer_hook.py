@@ -41,19 +41,47 @@ weekly_submission_done are still bumped there because those apply to every
 submission regardless of validity — user spec 2026-05-19).
 
 Award logic (`_compute_submission_points`):
-  - sent_count >= 1 (late submission, escalation fired):
+  - result_status == "Pending":
+      → 0 (defensive — the hook should never fire while AI is still
+        processing; if it does, treat as no-verdict and award nothing)
+  - Validation ON, result_status in ("Failed", "Success - Flagged"):
+      → 0 (the AI verdict overrides every other branch, including the
+        escalation-tier reward for late submissions). "Failed" is a
+        phantom — no production writer sets it, but the check is kept
+        defensively in case future writers / manual ops fixes set it.
+  - Otherwise, sent_count >= 1 (late submission, escalation fired):
       → EscalationStep[sent_count].points_awarded (decreasing-tier reward)
-  - sent_count == 0, validation OFF (W1-2 by spec):
-      → Assignment.points_per_item (full award, no validity check)
-  - sent_count == 0, validation ON, AI says valid:
-      → Assignment.points_per_item (full award)
-  - sent_count == 0, validation ON, AI says Failed / Success - Flagged:
-      → 0 (and route to Remedial via t6b)
+  - Otherwise (on-time + valid = "Success - Original", OR lax mode):
+      → Assignment.points_per_item
 
-The `submission_validation_enabled` flag on WeekRule is the single gate
-that controls BOTH (a) whether failed/flagged submissions route to Remedial
-AND (b) whether points are gated by validity. AI validation itself runs
-unconditionally — the flag only controls how its result is interpreted.
+Routing logic (in `on_feedback_ready`):
+  - Validation ON AND submission_validity == "Invalid":
+      → t6b_failed_feedback_to_remedial (Remedial Week N)
+  - Otherwise:
+      → t12_feedback_ready
+
+The `submission_validation_enabled` flag (set per archetype × arm × week
+via the WeekRule child rows of ArchetypeConfig — operator-owned, NOT
+hardcoded per week) is the single gate that controls BOTH (a) whether
+the AI verdict zeroes points AND (b) whether Invalid submissions route
+to Remedial. AI validation itself always runs and writes its verdict to
+`Submission.result_status` and `Submission.submission_validity`; the flag
+only controls whether those signals affect points / routing.
+
+`Submission.result_status` is a Select field with options:
+  - "Pending"           (default on insert, before AI runs)
+  - "Success - Original" (AI: not plagiarized, not AI-generated)
+  - "Success - Flagged" (AI: plagiarized OR AI-generated; ALSO written
+                         synchronously by save_submission's duplicate-
+                         submission stock-feedback path)
+  - "Failed"            (Select option exists but NO production writer
+                         sets it — kept in the gate as defensive guard)
+
+`result_status` drives points and ONLY points. `Submission.submission_validity`
+("Valid" / "Invalid" = artifact correctness) drives routing and ONLY routing.
+The two signals are independent: an Invalid + Success-Original submission
+still earns points; a Valid + Success-Flagged submission earns 0 in strict
+mode but stays on Core (no Remedial routing).
 """
 import frappe
 
@@ -117,10 +145,12 @@ def on_feedback_ready(submission_name, student_id=None):
             return {"status": "skipped", "reason": "week_mismatch",
                     "sub_week": sub_week, "pe_week": pe.current_week}
 
-        # CR-004: branch on AI verdict from the Submission record.
-        # CR-007: gate the Remedial branch on WeekRule.submission_validation_enabled
-        # so weeks 1-2 (validation OFF by spec) don't accidentally route students
-        # to Remedial on the first AI-flagged submission.
+        # CR-004: branch on the AI validation signal from Submission.
+        # CR-007: gate the Remedial branch on the archetype's
+        # submission_validation_enabled flag (per archetype × arm × week,
+        # operator-owned via the ArchetypeConfig.week_rules child rows).
+        # When the flag is OFF for the (archetype, arm, week) tuple, even
+        # Invalid submissions stay on Core — the AI signal is informational.
         #
         # NOTE: Do NOT commit here — let the caller (FeedbackConsumer.process_message)
         # handle the commit so that submission update + state transition are atomic.
@@ -148,19 +178,18 @@ def on_feedback_ready(submission_name, student_id=None):
         if validity_status == "Invalid" or validity_status == "invalid":
             week_rule = _get_week_rule_for_pe(pe, sub_week or pe.current_week)
             validation_enabled = bool((week_rule or {}).get("submission_validation_enabled"))
-            validation_enabled = True
             if validation_enabled:
                 t6b_failed_feedback_to_remedial(pe, trigger_source="microservice")
                 _sync_contact_fields(pe)
                 return {"status": "transitioned", "pe": pe_name, "branch": "remedial",
                         "points_awarded": points}
-            # else: lax mode (W1-2 or per-archetype override) — student keeps
-            # points_per_item and stays on Core; fall through to feedback_ready.
+            # else: lax mode for this (archetype, arm, week) — student keeps
+            # full points and stays on Core; fall through to feedback_ready.
 
         # Default branch — pass / unset / lax-mode-failed → feedback_ready as before.
         # Note: CR-004 aligns this call's trigger_source from "feedback_consumer" to "microservice"
         # for analytics consistency with the new t6b branch.
-        t13_feedback_delivered(pe, trigger_source="microservice")
+        t12_feedback_ready(pe, trigger_source="microservice")
         _sync_contact_fields(pe)
         return {"status": "transitioned", "pe": pe_name, "branch": "feedback_ready",
                 "points_awarded": points}
@@ -205,13 +234,37 @@ def on_feedback_ready(submission_name, student_id=None):
 # ════════════════════════════════════════════════════════════
 
 def _compute_submission_points(pe, submission_name, result_status):
-    """Determine the submission's point award per CR-007.
+    """Determine the submission's point award per CR-007 + 2026-06-15 spec.
 
-    Branches:
-      - sent_count >= 1: late submission → EscalationStep[sent_count].points_awarded
-      - sent_count == 0, validation OFF: Assignment.points_per_item
-      - sent_count == 0, validation ON, AI valid: Assignment.points_per_item
-      - sent_count == 0, validation ON, AI Failed/Flagged: 0 (routes to Remedial)
+    Branches, evaluated in order:
+      0. result_status == "Pending":
+         → 0 points. Defensive — the hook contract is that
+         FeedbackConsumer writes the AI verdict (Success - Original /
+         Success - Flagged / Failed) BEFORE calling on_feedback_ready,
+         so Pending should never reach here. If it does (timing race,
+         operator replay, etc.), we have no verdict to act on — return
+         0 rather than silently awarding full points.
+      1. Strict mode AND result_status in ("Failed", "Success - Flagged"):
+         → 0 points. This gate is the top-most NON-DEFAULT branch — the
+         AI verdict overrides everything below, including the escalation-
+         tier reward for late submissions (2026-06-15 update — pre-update,
+         the late branch ran first and shielded late + Failed from this
+         gate). "Failed" is a phantom Select option (no production writer
+         emits it) but is kept here as a defensive guard against future
+         writers and manual fixes.
+      2. sent_count >= 1 (late submission, escalation fired):
+         → EscalationStep[sent_count].points_awarded.
+      3. On-time + valid (Success - Original, or lax mode at any tier):
+         → Assignment.points_per_item.
+
+    This helper only decides POINTS, keyed on `Submission.result_status`.
+    Remedial routing is a separate gate in `on_feedback_ready` keyed on
+    `Submission.submission_validity == "Invalid"`. See architecture.md §9.3.
+
+    The strict/lax mode is read from `WeekRule.submission_validation_enabled`,
+    a child row of `ArchetypeConfig.week_rules` keyed by (archetype, arm,
+    week). It is operator-owned per archetype — nothing in code hardcodes
+    which weeks are lax.
 
     Returns: integer point award, always >= 0.
 
@@ -220,22 +273,26 @@ def _compute_submission_points(pe, submission_name, result_status):
     So between save_submission and this hook firing, the value preserves
     submission-time semantics. Safe to use as the "was this on-time?" proxy.
     """
-    sent_count = pe.current_escalation_step or 0
+    # Branch 0 — defensive: no AI verdict yet, award nothing.
+    if result_status == "Pending":
+        return 0
 
-    # Late submission — escalation tier governs reward, independent of validation
-    if sent_count >= 1:
-        return _escalation_points(pe, sent_count)
-
-    # On-time path: look up validation gate + per-item award
     sub_week = pe.current_week or frappe.db.get_value("Submission", submission_name, "week")
     week_rule = _get_week_rule_for_pe(pe, sub_week)
     validation_enabled = bool((week_rule or {}).get("submission_validation_enabled"))
 
-    # Strict mode: failed/flagged → 0 points
+    # Branch 1 — strict mode + AI says invalid → 0 points (overrides escalation tier).
+    # "Failed" is dead schema today (no production writer) but kept defensively.
     if validation_enabled and result_status in ("Failed", "Success - Flagged"):
         return 0
 
-    # Lax mode OR strict-mode-valid → award points_per_item
+    sent_count = pe.current_escalation_step or 0
+
+    # Branch 2 — late submission, escalation fired → tier reward
+    if sent_count >= 1:
+        return _escalation_points(pe, sent_count)
+
+    # Branch 3 — on-time + valid ("Success - Original" or lax mode) → full per-item award
     assign_id = frappe.db.get_value("Submission", submission_name, "assign_id")
     assign_id = normalize_unicode_surrogates(assign_id)
     if not assign_id:
