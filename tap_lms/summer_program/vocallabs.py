@@ -94,8 +94,8 @@ def initiate_parent_call(pe_name, escalation_step, retry_count=0):
         pe = frappe.get_doc("ProgramEnrollment", pe_name)
     except frappe.DoesNotExistError:
         frappe.log_error(
-            f"Vocallabs: PE {pe_name} not found; skipping parent call.",
-            VOCALLABS_DLQ_LOG_TITLE,
+            message=f"Vocallabs: PE {pe_name} not found; skipping parent call.",
+            title=VOCALLABS_DLQ_LOG_TITLE,
         )
         return False
 
@@ -103,17 +103,17 @@ def initiate_parent_call(pe_name, escalation_step, retry_count=0):
     settings = _get_voice_agent_settings()
     if not settings:
         frappe.log_error(
-            f"Vocallabs: VoiceAgentSettings singleton missing for PE {pe_name}; skipping.",
-            "SP Vocallabs Config",
+            message=f"Vocallabs: VoiceAgentSettings singleton missing for PE {pe_name}; skipping.",
+            title="SP Vocallabs Config",
         )
         return False
 
     if not getattr(settings, "enabled", 0):
         # Feature flag off — log + skip; this is NOT an error and NOT retried.
         frappe.log_error(
-            f"Vocallabs disabled (VoiceAgentSettings.enabled=0); "
+            message=f"Vocallabs disabled (VoiceAgentSettings.enabled=0); "
             f"skipping parent call for PE {pe_name}.",
-            "SP Vocallabs Skipped",
+            title="SP Vocallabs Skipped",
         )
         return False
 
@@ -122,11 +122,11 @@ def initiate_parent_call(pe_name, escalation_step, retry_count=0):
     if not config:
         # Per CR-003 §E3: skip + warn. Config issue, not a runtime failure.
         frappe.log_error(
-            f"Vocallabs: no ParentCallConfig resolved for PE {pe_name} "
+            message=f"Vocallabs: no ParentCallConfig resolved for PE {pe_name} "
             f"(week={pe.current_week}); neither per-LU content nor "
             f"VoiceAgentSettings.default_parent_call_config is set. "
             f"Skipping parent call; the cohort is NOT blocked.",
-            "SP Vocallabs Config",
+            title="SP Vocallabs Config",
         )
         return False
 
@@ -135,9 +135,9 @@ def initiate_parent_call(pe_name, escalation_step, retry_count=0):
     parent_phone = (getattr(student, "phone", "") or "").strip()
     if not parent_phone:
         frappe.log_error(
-            f"Vocallabs: Student {pe.student} has no phone; "
+            message=f"Vocallabs: Student {pe.student} has no phone; "
             f"cannot place parent call for PE {pe_name}.",
-            "SP Vocallabs Config",
+            title="SP Vocallabs Config",
         )
         return False
 
@@ -205,8 +205,8 @@ def initiate_parent_call(pe_name, escalation_step, retry_count=0):
         # Narrow exception per L-007. Logging failure shouldn't kill the
         # success path; surface to Error Log so ops can backfill the funnel.
         frappe.log_error(
-            f"Vocallabs: succeeded but event_log insert failed for PE {pe_name}: {log_err}",
-            "SP Vocallabs Log",
+            message=f"Vocallabs: succeeded but event_log insert failed for PE {pe_name}: {log_err}",
+            title="SP Vocallabs Log",
         )
 
     return True
@@ -226,8 +226,8 @@ def _get_voice_agent_settings():
         return frappe.get_single("VoiceAgentSettings")
     except Exception as e:
         frappe.log_error(
-            f"Vocallabs: failed to load VoiceAgentSettings: {e}",
-            "SP Vocallabs Config",
+            message=f"Vocallabs: failed to load VoiceAgentSettings: {e}",
+            title="SP Vocallabs Config",
         )
         return None
 
@@ -426,16 +426,16 @@ def _render_status_template(template, pe, student, step):
         return template.format(**ctx)
     except KeyError as e:
         frappe.log_error(
-            f"Vocallabs: status_template references undocumented variable "
+            message=f"Vocallabs: status_template references undocumented variable "
             f"{e}; PE={pe.name}. Supported vars: {_TEMPLATE_VARS}. "
             f"Returning raw template.",
-            "SP Vocallabs Template",
+            title="SP Vocallabs Template",
         )
         return template
     except Exception as e:
         frappe.log_error(
-            f"Vocallabs: status_template render failed: {e}; PE={pe.name}.",
-            "SP Vocallabs Template",
+            message=f"Vocallabs: status_template render failed: {e}; PE={pe.name}.",
+            title="SP Vocallabs Template",
         )
         return template
 
@@ -554,6 +554,7 @@ def _call_vocallabs(settings, token, pe, student, parent_phone, student_name, st
         "language": pe_language,
         "archetype": pe.archetype or "",
         "experiment_arm": pe.experiment_arm or "",
+        "welcome_greeting": _resolve_welcome_greeting(pe),
     }
     agent_id = _resolve_agent_id(settings, pe_language)
     if not agent_id:
@@ -776,10 +777,10 @@ def _lookup_prospect_id_by_phone(service_url, auth_headers, client_id,
                 # Shape unrecognized on the first response — log + bail.
                 # Don't keep paginating against a misunderstood endpoint.
                 frappe.log_error(
-                    f"Vocallabs: lookup-by-phone unrecognized getContacts "
+                    message=f"Vocallabs: lookup-by-phone unrecognized getContacts "
                     f"response shape at offset={offset}; "
                     f"response={_safe_summary(response)}",
-                    VOCALLABS_LOOKUP_LOG_TITLE,
+                    title=VOCALLABS_LOOKUP_LOG_TITLE,
                 )
                 return None
             if not contacts:
@@ -815,22 +816,22 @@ def _lookup_prospect_id_by_phone(service_url, auth_headers, client_id,
                 break
     except Exception as e:
         frappe.log_error(
-            f"Vocallabs: lookup-by-phone pagination failed at page "
+            message=f"Vocallabs: lookup-by-phone pagination failed at page "
             f"{pages_scanned} (offset={pages_scanned * VOCALLABS_LOOKUP_PAGE_SIZE}) "
             f"for phone={phone}: {e}. Returning None — caller will raise "
             f"PermanentVocallabsError so the dispatcher keeps moving.",
-            VOCALLABS_LOOKUP_LOG_TITLE,
+            title=VOCALLABS_LOOKUP_LOG_TITLE,
         )
         return None
 
     # Scanned all available pages without a match.
     frappe.log_error(
-        f"Vocallabs: phone {phone} not found in getContacts after "
+        message=f"Vocallabs: phone {phone} not found in getContacts after "
         f"{pages_scanned} pages ({contacts_scanned} contacts scanned). "
         f"Either the phone really isn't on Vocallabs (response-shape bug?), "
         f"or it's beyond the {VOCALLABS_LOOKUP_MAX_PAGES}-page cap. Operator "
         f"may need to backfill Student.vocallabs_prospect_id manually.",
-        VOCALLABS_LOOKUP_LOG_TITLE,
+        title=VOCALLABS_LOOKUP_LOG_TITLE,
     )
     return None
 
@@ -890,31 +891,24 @@ def _extract_contacts_list(response):
 
 
 def _http_get(url, params, headers):
-    """GET equivalent of _http_post. Tries the Frappe helper first
-    (centralized outbound HTTP audit), falls back to raw requests with the
-    same 10s timeout.
+    """GET equivalent of _http_post. Uses requests directly with a 10s
+    timeout. (make_get_request rejects a `params` kwarg on this Frappe
+    version, raising TypeError; the previous helper-first version caught
+    that and re-raised as RuntimeError, never reaching the working
+    requests fallback — so we bypass the helper entirely.)
     """
-    try:
-        from frappe.integrations.utils import make_get_request
-        return make_get_request(url, params=params, headers=headers)
-    except ImportError:
-        pass
-    except Exception as e:
-        raise RuntimeError(f"Vocallabs HTTP GET error (Frappe helper): {e}")
-
     try:
         import requests
     except ImportError:
-        raise RuntimeError(
-            "Vocallabs: requests library not available and "
-            "frappe.integrations.utils.make_get_request not importable."
+        raise RuntimeError("Vocallabs: requests library not available.")
+    try:
+        response = requests.get(
+            url, params=params, headers=headers,
+            timeout=VOCALLABS_HTTP_TIMEOUT_SECONDS,
         )
-
-    response = requests.get(
-        url, params=params, headers=headers,
-        timeout=VOCALLABS_HTTP_TIMEOUT_SECONDS,
-    )
-    response.raise_for_status()
+        response.raise_for_status()
+    except requests.RequestException as e:
+        raise RuntimeError(f"Vocallabs HTTP GET error: {e}")
     try:
         return response.json()
     except ValueError:
@@ -922,7 +916,6 @@ def _http_get(url, params, headers):
             f"Vocallabs: non-JSON response body from {url}: "
             f"{response.text[:500]!r}"
         )
-
 
 def _refresh_contact_data_best_effort(service_url, auth_headers, prospect_id, data_block):
     """POST /b2b/vocallabs/updateContactData to refresh the prospect's data
@@ -962,9 +955,9 @@ def _refresh_contact_data_best_effort(service_url, auth_headers, prospect_id, da
         # record may be stale (from a prior week / step), but that's better
         # than not calling the parent at all.
         frappe.log_error(
-            f"Vocallabs: updateContactData failed for prospect={prospect_id}: {e}. "
+            message=f"Vocallabs: updateContactData failed for prospect={prospect_id}: {e}. "
             f"Call will proceed with stale data on prospect record.",
-            "SP Vocallabs UpdateData",
+            title="SP Vocallabs UpdateData",
         )
 
 
@@ -996,10 +989,10 @@ def _store_prospect_id(student, prospect_id):
             pass
     except Exception as e:
         frappe.log_error(
-            f"Vocallabs: failed to cache prospect_id={prospect_id} on "
+            message=f"Vocallabs: failed to cache prospect_id={prospect_id} on "
             f"Student {student.name}: {e}. Call still placed; next call "
             f"will re-add to Vocallabs and likely hit duplicate-prospect.",
-            "SP Vocallabs Cache",
+            title="SP Vocallabs Cache",
         )
 
 
