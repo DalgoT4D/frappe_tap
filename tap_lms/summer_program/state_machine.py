@@ -674,10 +674,19 @@ def t6b_failed_feedback_to_remedial(pe, week_rule=None, trigger_source="microser
     """T6b: submitted_awaiting_feedback → week_completed.
 
     CR-004. Fires when an AI-graded submission comes back with
-    Submission.result_status == 'failed'. Routes the student into the
-    remedial content track for the SAME week. Does NOT clawback points
-    awarded by T7/T9 — the submission counted; only the LEARNING
-    outcome failed.
+    `Submission.submission_validity == "Invalid"` AND
+    `WeekRule.submission_validation_enabled == 1` (current contract per
+    `feedback_consumer_hook.on_feedback_ready` and architecture.md §9.3).
+    Routes the student into the remedial content track for the SAME week.
+    Does NOT clawback points awarded by T7/T9 — the submission counted;
+    only the LEARNING outcome failed.
+
+    Note: CR-004 originally specified branching on
+    `Submission.result_status == 'failed'`; the routing input was later
+    switched to `submission_validity` to separate the AI-scoring signal
+    (`result_status` → points) from the validation-gate signal
+    (`submission_validity` → routing). `result_status` still governs the
+    POINT award via `_compute_submission_points` (Failed/Flagged → 0).
 
     Differences vs T6:
     - Does NOT reset current_escalation_step / current_escalation_type
