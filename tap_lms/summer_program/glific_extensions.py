@@ -264,3 +264,158 @@ def create_or_get_collection(label, description=""):
 
     frappe.logger().error(f"Failed to create_or_get_collection: {label}")
     return None
+
+
+def bulk_add_to_group_with_circuit_breaker(
+    contact_ids,
+    group_id,
+    *,
+    chunk_size=None,
+    max_consecutive_failures=3,
+    op_label="bulk_add",
+):
+    """Chunked bulk-add to a Glific group with progress log + circuit breaker.
+
+    Shared helper (L-074 anti-drift) used by:
+      - activate_bpr's _bulk_populate_kind_keyed_collections (BR-002 fix path)
+      - migrations/main_collection_backfill.backfill_main_collection (CR-029
+        Phase 1 — operator backfill for already-activated BPRs that missed
+        the bulk-populate)
+      - TODO(CR-029-followup): the add-half of CR-027's
+        sweep_migration._bulk_move_to_escalation
+
+    Each chunk is its own try/except — a failure does not abort the whole run.
+    But N (= max_consecutive_failures) consecutive failures trip the breaker
+    and skip the rest, on the assumption that the Glific API is in a sustained
+    bad state (token expired despite L-078 retry, network partition, quota
+    exhaustion) where continuing burns tokens for no result. A successful
+    chunk resets the consecutive counter, so a sporadic mid-run failure does
+    not trip the breaker.
+
+    Args:
+        contact_ids: list of Glific contact ID strings. Empty list returns a
+            zero-summary without touching Glific.
+        group_id: Glific group ID string. Missing/empty group_id returns an
+            error in the summary without attempting any add.
+        chunk_size: int (default constants.COLLECTION_BATCH_SIZE = 500). This
+            is the same chunk size every other SP bulk caller uses, so the
+            default keeps cross-helper behavior aligned.
+        max_consecutive_failures: int (default 3). After this many back-to-back
+            False/exception results from add_contacts_to_group_bulk, the loop
+            aborts; remaining chunks are reported as `skipped_after_trip`.
+        op_label: short label used in log messages so an operator scanning
+            the Error Log can tell which caller produced a given failure
+            (e.g. "activate_bpr.main", "backfill.main").
+
+    Returns dict (always — never raises):
+        chunks_attempted    int — chunks the loop actually sent to Glific
+        chunks_failed       int — chunks where add_contacts_to_group_bulk
+                                  returned False or raised
+        added               int — total contacts in the successful chunks
+        errors              list[str] — capped at 50 sample messages
+        circuit_tripped     bool — True if the loop aborted on consecutive
+                                   failures
+        skipped_after_trip  int — contacts in chunks not attempted because
+                                  the breaker tripped (0 otherwise)
+    """
+    from tap_lms.summer_program.constants import COLLECTION_BATCH_SIZE
+
+    summary = {
+        "chunks_attempted": 0,
+        "chunks_failed": 0,
+        "added": 0,
+        "errors": [],
+        "circuit_tripped": False,
+        "skipped_after_trip": 0,
+    }
+
+    if not contact_ids:
+        return summary
+
+    if not group_id:
+        summary["errors"].append(
+            f"{op_label}: missing group_id; no contacts added"
+        )
+        return summary
+
+    if chunk_size is None:
+        chunk_size = COLLECTION_BATCH_SIZE
+
+    total = len(contact_ids)
+    consecutive_failures = 0
+
+    for start in range(0, total, chunk_size):
+        chunk = contact_ids[start:start + chunk_size]
+
+        if summary["circuit_tripped"]:
+            summary["skipped_after_trip"] += len(chunk)
+            continue
+
+        summary["chunks_attempted"] += 1
+        chunk_ok = False
+        try:
+            chunk_ok = bool(add_contacts_to_group_bulk(chunk, group_id))
+        except Exception as e:
+            # add_contacts_to_group_bulk catches its own exceptions and
+            # returns False; this except is defense-in-depth for any future
+            # refactor that lets one escape. Log loudly + treat as failure.
+            try:
+                frappe.log_error(
+                    message=(
+                        f"{op_label}: group={group_id} chunk_start={start} "
+                        f"chunk_size={len(chunk)}: unexpected exception {e}"
+                    ),
+                    title="SP bulk_add_with_circuit_breaker Error",
+                )
+            except Exception:
+                frappe.logger().error(
+                    f"{op_label}: chunk@{start} unexpected exception "
+                    f"(double-fault): {e}"
+                )
+
+        if chunk_ok:
+            summary["added"] += len(chunk)
+            consecutive_failures = 0
+            frappe.logger().info(
+                f"{op_label}: chunk@{start}/{total} OK (+{len(chunk)} added, "
+                f"total_added={summary['added']}, group={group_id})"
+            )
+        else:
+            summary["chunks_failed"] += 1
+            consecutive_failures += 1
+            if len(summary["errors"]) < 50:
+                summary["errors"].append(
+                    f"{op_label}: group={group_id} chunk_start={start} "
+                    f"chunk_size={len(chunk)} failed"
+                )
+            frappe.logger().info(
+                f"{op_label}: chunk@{start}/{total} FAILED "
+                f"(consecutive_failures={consecutive_failures}/"
+                f"{max_consecutive_failures}, group={group_id})"
+            )
+            if consecutive_failures >= max_consecutive_failures:
+                summary["circuit_tripped"] = True
+                try:
+                    frappe.log_error(
+                        message=(
+                            f"{op_label}: circuit breaker tripped after "
+                            f"{consecutive_failures} consecutive chunk failures; "
+                            f"group={group_id} attempted={summary['chunks_attempted']} "
+                            f"added={summary['added']} (remaining chunks will be "
+                            f"counted as skipped_after_trip)"
+                        ),
+                        title="SP bulk_add_with_circuit_breaker Circuit Tripped",
+                    )
+                except Exception:
+                    frappe.logger().error(
+                        f"{op_label}: circuit tripped log failed (double-fault)"
+                    )
+
+    frappe.logger().info(
+        f"{op_label} done: group={group_id} total={total} "
+        f"chunks_attempted={summary['chunks_attempted']} "
+        f"chunks_failed={summary['chunks_failed']} "
+        f"added={summary['added']} circuit_tripped={summary['circuit_tripped']} "
+        f"skipped_after_trip={summary['skipped_after_trip']}"
+    )
+    return summary

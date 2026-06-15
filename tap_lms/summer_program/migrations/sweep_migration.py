@@ -164,6 +164,12 @@ def _bulk_move_to_escalation(bpr_name, glific_ids):
     enqueued. Returns a dict with per-op counts + a sample of errors. Each
     chunk failure is logged but does not abort the rest (partial progress is
     better than none; a re-run is safe because group membership is idempotent).
+
+    TODO(CR-029-followup): the add half (Phase B2 below) is a candidate for
+    `bulk_add_to_group_with_circuit_breaker` (glific_extensions, CR-029 helper).
+    The remove half would need a parallel `bulk_remove_from_group_with_circuit_breaker`
+    before the full refactor lands. Deferred to avoid touching this in-flight
+    CR-027 / CR-028 code path during the CR-029 backfill ship.
     """
     result = {"removed_from_main": 0, "added_to_escalation": 0, "errors": []}
     if not glific_ids:
@@ -244,16 +250,12 @@ def find_behind_candidates(batch_name, calendar_week, limit=None):
     return frappe.db.sql(sql, params, as_dict=True)
 
 
-def _coerce_bool(value):
-    """Coerce a whitelisted-method argument to bool.
-
-    Whitelisted methods called over HTTP receive strings, where the literal
-    string "False" / "0" is truthy in Python. Treat the usual falsey spellings
-    as False; everything else follows normal Python truthiness.
-    """
-    if isinstance(value, str):
-        return value.strip().lower() not in ("", "0", "false", "no", "none")
-    return bool(value)
+# CR-029 review (L-074): the prior inline `_coerce_bool` here was copy-pasted
+# into main_collection_backfill.py — extracted to the package-level
+# `coerce_bool` so a third migration module cannot copy it a third time.
+# Local alias preserved so existing call sites in this file (and any external
+# importer of sweep_migration._coerce_bool) don't break.
+from tap_lms.summer_program.migrations import coerce_bool as _coerce_bool
 
 
 @frappe.whitelist()
