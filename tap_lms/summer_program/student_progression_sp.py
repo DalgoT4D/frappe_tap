@@ -1798,7 +1798,14 @@ def _get_archetype_config(batch_name, arm, archetype, path):
         ArchetypeConfig document or None
     """
     cache_key = f"archetype_config:{batch_name}:{arm}:{archetype}:{path}"
-    cached = frappe.cache().get_value(cache_key)
+    # `expires=True` is load-bearing (2026-06-15 fix). set_value below uses
+    # `expires_in_sec=3600` which writes to Redis only, not `frappe.local.cache`.
+    # Without `expires=True` here, a prior cache-miss get_value pollutes local.cache
+    # with `None`, and every subsequent get_value reads that stale `None` instead
+    # of falling through to Redis — so the "1 hour cache" comment at line 1844 was
+    # silently doing 0 caching, and the dispatcher hit the DB every tick per PE.
+    # See frappe/utils/redis_wrapper.py:79-85 for the local.cache write logic.
+    cached = frappe.cache().get_value(cache_key, expires=True)
     if cached:
         return cached
 

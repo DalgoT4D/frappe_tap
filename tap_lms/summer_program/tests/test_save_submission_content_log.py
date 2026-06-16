@@ -16,6 +16,12 @@ def _import_save_submission_with_stubs():
     frappe_utils.today = MagicMock(return_value="2026-05-12")
     frappe_utils.getdate = MagicMock(side_effect=lambda value: value)
     frappe_utils.cint = lambda value: int(value or 0)
+    # `tap_lms.summer_program.utils` (transitive import from save_submission)
+    # imports get_datetime alongside now_datetime; missing this entry made
+    # the stub-import path raise ImportError when CR-024's jitter helper
+    # was added. Returning the input verbatim is fine for tests that don't
+    # exercise the jitter path.
+    frappe_utils.get_datetime = MagicMock(side_effect=lambda value: value)
 
     state_machine = types.ModuleType("tap_lms.summer_program.state_machine")
     state_machine.get_active_pe = MagicMock()
@@ -257,11 +263,21 @@ class TestGetSubmissionFeedback(unittest.TestCase):
 
             response = save_submission.get_submission_feedback("SUB-001")
 
+        # L-077 (2026-06-15): get_submission_feedback now routes its except
+        # branch through safe_sp_api_error_response (api-standard-glific shape:
+        # success=false, status=error, user_message). Legacy assertion was
+        # {"error": "An error occurred while checking submission feedback"}.
+        # Note: safe_sp_api_error_response lives in tap_lms.summer_program.utils
+        # so its frappe.log_error call doesn't hit mock_frappe.log_error — the
+        # log assertion is dropped; the shape check is the load-bearing one.
         self.assertEqual(
             response,
-            {"error": "An error occurred while checking submission feedback"},
+            {
+                "success": False,
+                "status": "error",
+                "user_message": "Something went wrong. Please try again shortly.",
+            },
         )
-        mock_frappe.log_error.assert_called_once()
 
 
 class TestReadyToReceiveFeedback(unittest.TestCase):

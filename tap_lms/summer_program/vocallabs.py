@@ -235,17 +235,26 @@ def _get_voice_agent_settings():
 def _get_auth_token(settings):
     """Return a cached or freshly-minted Vocallabs auth token.
 
-    Cache: `frappe.cache().get_value(VOCALLABS_TOKEN_CACHE_KEY)`, TTL =
-    `settings.auth_token_cache_ttl` (default `VOCALLABS_DEFAULT_TOKEN_TTL`
-    = 3600s if unset). The cache is keyed without per-tenant scoping
-    because we have one Vocallabs account per Frappe site.
+    Cache: `frappe.cache().get_value(VOCALLABS_TOKEN_CACHE_KEY, expires=True)`,
+    TTL = `settings.auth_token_cache_ttl` (default `VOCALLABS_DEFAULT_TOKEN_TTL`
+    = 3600s if unset). The cache is keyed without per-tenant scoping because
+    we have one Vocallabs account per Frappe site.
+
+    `expires=True` on the get_value call is load-bearing (2026-06-15 fix):
+    `frappe.cache().set_value(..., expires_in_sec=ttl)` writes ONLY to Redis,
+    not to `frappe.local.cache`. Without `expires=True`, a prior cache-miss
+    `get_value` writes `None` into `frappe.local.cache`, and every subsequent
+    `get_value` reads the stale `None` from local before checking Redis — so
+    every call ended up hitting `/createAuthToken`, defeating the cache
+    entirely. `expires=True` tells Frappe "don't pollute local.cache; trust
+    Redis as the source of truth" (see `frappe/utils/redis_wrapper.py:79-85`).
 
     Edge case E5 (cache stampede): with concurrent workers all seeing a
     missing token, multiple createAuthToken calls may fire. Vocallabs
     returns the same token regardless; the last-writer-wins for the
     cache key is fine. A single-flight lock is filed as a follow-up.
     """
-    cached = frappe.cache().get_value(VOCALLABS_TOKEN_CACHE_KEY)
+    cached = frappe.cache().get_value(VOCALLABS_TOKEN_CACHE_KEY, expires=True)
     if cached:
         return cached
 
