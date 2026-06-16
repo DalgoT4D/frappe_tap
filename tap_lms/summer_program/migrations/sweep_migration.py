@@ -50,7 +50,6 @@ from frappe.utils import add_to_date, now_datetime
 from tap_lms.summer_program.constants import (
     ACTION_ESCALATION,
     BPR_ACTIVE,
-    COLLECTION_BATCH_SIZE,
     LABEL_CONTENT_DELIVERED,
     PROGRAM_ACTIVE,
     STATE_NORMAL_CONTENT,
@@ -58,10 +57,6 @@ from tap_lms.summer_program.constants import (
 )
 from tap_lms.summer_program.pe_dispatcher import _get_escalation_steps_for_pe
 from tap_lms.summer_program.state_machine import transition
-from tap_lms.summer_program.glific_extensions import (
-    add_contacts_to_group_bulk,
-    remove_contacts_from_group_bulk,
-)
 
 
 # Default escalation_type when an ArchetypeConfig step somehow has none — the
@@ -165,42 +160,52 @@ def _bulk_move_to_escalation(bpr_name, glific_ids):
     chunk failure is logged but does not abort the rest (partial progress is
     better than none; a re-run is safe because group membership is idempotent).
 
-    TODO(CR-029-followup): the add half (Phase B2 below) is a candidate for
-    `bulk_add_to_group_with_circuit_breaker` (glific_extensions, CR-029 helper).
-    The remove half would need a parallel `bulk_remove_from_group_with_circuit_breaker`
-    before the full refactor lands. Deferred to avoid touching this in-flight
-    CR-027 / CR-028 code path during the CR-029 backfill ship.
+    M-1 (2026-06-15): both halves now go through the shared circuit-breaker
+    helpers (`bulk_remove_from_group_with_circuit_breaker` for Phase B1,
+    `bulk_add_to_group_with_circuit_breaker` for Phase B2) so a sustained
+    Glific 401/500 cascade trips the breaker instead of burning the rest of
+    the run. The TODO from the CR-029 ship is closed.
     """
-    result = {"removed_from_main": 0, "added_to_escalation": 0, "errors": []}
+    from tap_lms.summer_program.glific_extensions import (
+        bulk_add_to_group_with_circuit_breaker,
+        bulk_remove_from_group_with_circuit_breaker,
+    )
+
+    result = {
+        "removed_from_main": 0,
+        "added_to_escalation": 0,
+        "errors": [],
+        "remove_circuit_tripped": False,
+        "add_circuit_tripped": False,
+    }
     if not glific_ids:
         return result
 
     main_group_id, escalation_group_id = _resolve_collection_group_ids(bpr_name)
 
-    # Phase B1 — remove from main.
+    # Phase B1 — remove from main (with circuit breaker).
     if main_group_id:
-        for i in range(0, len(glific_ids), COLLECTION_BATCH_SIZE):
-            chunk = glific_ids[i:i + COLLECTION_BATCH_SIZE]
-            if remove_contacts_from_group_bulk(chunk, main_group_id):
-                result["removed_from_main"] += len(chunk)
-            elif len(result["errors"]) < 50:
-                result["errors"].append(
-                    f"BPR {bpr_name}: remove chunk @{i} from main {main_group_id} failed"
-                )
+        remove_summary = bulk_remove_from_group_with_circuit_breaker(
+            glific_ids, main_group_id,
+            op_label=f"sweep_migration.remove[BPR={bpr_name}]",
+        )
+        result["removed_from_main"] = remove_summary["removed"]
+        result["remove_circuit_tripped"] = remove_summary["circuit_tripped"]
+        for err in remove_summary["errors"][:50 - len(result["errors"])]:
+            result["errors"].append(f"BPR {bpr_name}: {err}")
     else:
         result["errors"].append(f"BPR {bpr_name}: no active 'main' PGCollection")
 
-    # Phase B2 — add to escalation.
+    # Phase B2 — add to escalation (with circuit breaker).
     if escalation_group_id:
-        for i in range(0, len(glific_ids), COLLECTION_BATCH_SIZE):
-            chunk = glific_ids[i:i + COLLECTION_BATCH_SIZE]
-            if add_contacts_to_group_bulk(chunk, escalation_group_id):
-                result["added_to_escalation"] += len(chunk)
-            elif len(result["errors"]) < 50:
-                result["errors"].append(
-                    f"BPR {bpr_name}: add chunk @{i} to escalation "
-                    f"{escalation_group_id} failed"
-                )
+        add_summary = bulk_add_to_group_with_circuit_breaker(
+            glific_ids, escalation_group_id,
+            op_label=f"sweep_migration.add[BPR={bpr_name}]",
+        )
+        result["added_to_escalation"] = add_summary["added"]
+        result["add_circuit_tripped"] = add_summary["circuit_tripped"]
+        for err in add_summary["errors"][:50 - len(result["errors"])]:
+            result["errors"].append(f"BPR {bpr_name}: {err}")
     else:
         result["errors"].append(f"BPR {bpr_name}: no active 'escalation' PGCollection")
 
@@ -208,6 +213,8 @@ def _bulk_move_to_escalation(bpr_name, glific_ids):
         f"_bulk_move_to_escalation: BPR={bpr_name} "
         f"removed_from_main={result['removed_from_main']} "
         f"added_to_escalation={result['added_to_escalation']} "
+        f"remove_tripped={result['remove_circuit_tripped']} "
+        f"add_tripped={result['add_circuit_tripped']} "
         f"errors={len(result['errors'])}"
     )
     return result

@@ -490,18 +490,14 @@ def ready_to_receive_feedback(submission_id, **_glific_kwargs):
         }
 
     except Exception as e:
-        frappe.db.rollback()
-        frappe.log_error(
-            f"ready_to_receive_feedback failed for submission_id={submission_id}: "
-            f"{type(e).__name__}: {e}",
-            "SP Ready To Receive Feedback",
+        # M-2 (2026-06-15): unify with safe_sp_api_error_response so this
+        # Glific-facing whitelisted endpoint follows the same L-077 pattern
+        # as every other SP endpoint (rollback-first, length-capped log,
+        # flat-map response, double-fault defense around log_error itself).
+        return safe_sp_api_error_response(
+            e, "ready_to_receive_feedback",
+            extras={"submission_id": submission_id},
         )
-        return {
-            "success": False,
-            "status": "internal_error",
-            "message": "Could not mark feedback as ready.",
-            "error_detail": f"{type(e).__name__}: {e}",
-        }
 
 
 def _build_feedback_flow_message(submission):
@@ -1008,8 +1004,16 @@ def process_submission_async(
 
     except Exception as e:
         frappe.db.rollback()
-        frappe.logger("submission").error(
-            f"Error in background processing for submission {submission_id}: {str(e)}"
+        # H-4 (2026-06-15): upgrade from file-logger to frappe.log_error so
+        # the failure is operator-visible in tabError Log (L-056). The
+        # original pattern logged ONLY to the file logger, marked the
+        # submission status=Failed, and returned normally — RQ recorded the
+        # job as `finished`, no DLQ entry, no queue-depth alarm; students
+        # silently stuck. CR-026 (2026-06-09) was the most recent incident
+        # caused by this pattern.
+        frappe.log_error(
+            f"Error in background processing for submission {submission_id}: {str(e)}",
+            "SP process_submission_async",
         )
 
         try:
@@ -1019,9 +1023,14 @@ def process_submission_async(
             submission.save(ignore_permissions=True)
             frappe.db.commit()
         except Exception as log_error:
-            frappe.logger("submission").error(
-                f"Failed to update submission {submission_id} after background error: {str(log_error)}"
+            frappe.log_error(
+                f"Failed to update submission {submission_id} after background error: {str(log_error)}",
+                "SP process_submission_async",
             )
+
+        # H-4: re-raise so RQ marks the job as failed and the DLQ logic
+        # engages. Without this, RQ thinks the job succeeded.
+        raise
 
 
 def enqueue_submission(submission_id, pe_context=None, retry_count=0):

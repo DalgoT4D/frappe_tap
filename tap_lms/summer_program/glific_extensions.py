@@ -419,3 +419,132 @@ def bulk_add_to_group_with_circuit_breaker(
         f"skipped_after_trip={summary['skipped_after_trip']}"
     )
     return summary
+
+
+def bulk_remove_from_group_with_circuit_breaker(
+    contact_ids,
+    group_id,
+    *,
+    chunk_size=None,
+    max_consecutive_failures=3,
+    op_label="bulk_remove",
+):
+    """Chunked bulk-remove from a Glific group with progress log + circuit breaker.
+
+    Mirror of `bulk_add_to_group_with_circuit_breaker` for the remove half
+    (CR-029-followup / M-1 — completes the L-074 anti-drift refactor that
+    started in CR-029). Shared by:
+      - migrations/sweep_migration._bulk_move_to_escalation (Phase B1
+        — remove from main before adding to escalation)
+      - any future caller that needs a defended remove
+
+    Behavior identical to the add variant: per-chunk try/except, consecutive-
+    failure circuit breaker (default 3), zero-summary on empty input or
+    missing group_id, never raises.
+
+    Returns dict (always — never raises):
+        chunks_attempted    int
+        chunks_failed       int
+        removed             int — total contacts in the successful chunks
+        errors              list[str] — capped at 50 sample messages
+        circuit_tripped     bool
+        skipped_after_trip  int
+    """
+    from tap_lms.summer_program.constants import COLLECTION_BATCH_SIZE
+
+    summary = {
+        "chunks_attempted": 0,
+        "chunks_failed": 0,
+        "removed": 0,
+        "errors": [],
+        "circuit_tripped": False,
+        "skipped_after_trip": 0,
+    }
+
+    if not contact_ids:
+        return summary
+
+    if not group_id:
+        summary["errors"].append(
+            f"{op_label}: missing group_id; no contacts removed"
+        )
+        return summary
+
+    if chunk_size is None:
+        chunk_size = COLLECTION_BATCH_SIZE
+
+    total = len(contact_ids)
+    consecutive_failures = 0
+
+    for start in range(0, total, chunk_size):
+        chunk = contact_ids[start:start + chunk_size]
+
+        if summary["circuit_tripped"]:
+            summary["skipped_after_trip"] += len(chunk)
+            continue
+
+        summary["chunks_attempted"] += 1
+        chunk_ok = False
+        try:
+            chunk_ok = bool(remove_contacts_from_group_bulk(chunk, group_id))
+        except Exception as e:
+            try:
+                frappe.log_error(
+                    message=(
+                        f"{op_label}: group={group_id} chunk_start={start} "
+                        f"chunk_size={len(chunk)}: unexpected exception {e}"
+                    ),
+                    title="SP bulk_remove_with_circuit_breaker Error",
+                )
+            except Exception:
+                frappe.logger().error(
+                    f"{op_label}: chunk@{start} unexpected exception "
+                    f"(double-fault): {e}"
+                )
+
+        if chunk_ok:
+            summary["removed"] += len(chunk)
+            consecutive_failures = 0
+            frappe.logger().info(
+                f"{op_label}: chunk@{start}/{total} OK (-{len(chunk)} removed, "
+                f"total_removed={summary['removed']}, group={group_id})"
+            )
+        else:
+            summary["chunks_failed"] += 1
+            consecutive_failures += 1
+            if len(summary["errors"]) < 50:
+                summary["errors"].append(
+                    f"{op_label}: group={group_id} chunk_start={start} "
+                    f"chunk_size={len(chunk)} failed"
+                )
+            frappe.logger().info(
+                f"{op_label}: chunk@{start}/{total} FAILED "
+                f"(consecutive_failures={consecutive_failures}/"
+                f"{max_consecutive_failures}, group={group_id})"
+            )
+            if consecutive_failures >= max_consecutive_failures:
+                summary["circuit_tripped"] = True
+                try:
+                    frappe.log_error(
+                        message=(
+                            f"{op_label}: circuit breaker tripped after "
+                            f"{consecutive_failures} consecutive chunk failures; "
+                            f"group={group_id} attempted={summary['chunks_attempted']} "
+                            f"removed={summary['removed']} (remaining chunks will be "
+                            f"counted as skipped_after_trip)"
+                        ),
+                        title="SP bulk_remove_with_circuit_breaker Circuit Tripped",
+                    )
+                except Exception:
+                    frappe.logger().error(
+                        f"{op_label}: circuit tripped log failed (double-fault)"
+                    )
+
+    frappe.logger().info(
+        f"{op_label} done: group={group_id} total={total} "
+        f"chunks_attempted={summary['chunks_attempted']} "
+        f"chunks_failed={summary['chunks_failed']} "
+        f"removed={summary['removed']} circuit_tripped={summary['circuit_tripped']} "
+        f"skipped_after_trip={summary['skipped_after_trip']}"
+    )
+    return summary

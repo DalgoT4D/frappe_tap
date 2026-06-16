@@ -156,6 +156,14 @@ def _group_write_job(
         if pg_collection_name:
             _bump_member_count(pg_collection_name, action)
 
+        # H-1 (2026-06-15): success-path log (L-035) so operators can
+        # answer "did contact X actually get added/removed?" without
+        # querying Glific or inferring from member_count.
+        frappe.logger("sp_collection").info(
+            f"collection_write: pe={pe_name} action={action} "
+            f"group={glific_group_id} contact={contact_id}"
+        )
+
     except Exception as e:
         retry_count = (retry_count or 0) + 1
         if retry_count <= GLIFIC_SYNC_MAX_RETRIES:

@@ -253,7 +253,12 @@ class FeedbackProcessor:
             "ai_confidence": ai_confidence * 100,
             # Feedback fields
             "grade": grade,
-            "submission_validity": feedback_data.get("submission_validity", ""),
+            # H-3 (2026-06-15): normalize at ingress so the routing-gate check
+            # in feedback_consumer_hook.on_feedback_ready can use a single
+            # case-sensitive comparison (== "Invalid") instead of defensive
+            # title/lower dual-check. AI sources have been observed writing
+            # both "Invalid" and "invalid"; canonicalize here.
+            "submission_validity": (feedback_data.get("submission_validity") or "").strip().capitalize(),
             "overall_feedback": feedback_data.get("overall_feedback", ""),
             "overall_feedback_translated": overall_feedback_translated,
             "translation_language": translation_language,

@@ -554,7 +554,11 @@ def t2_start_escalation(pe, step_number=1, escalation_type="",
         "current_escalation_step": step_number,
         "current_escalation_type": escalation_type,
         "journey_label": LABEL_CONTENT_DELIVERED,
-        "next_action_at": add_to_date(now_datetime(), hours=float(next_hours)),
+        # B-1 (2026-06-15): `or 24` honors the docstring's promised default
+        # so operator-replay / one-off-admin calls without next_hours don't
+        # crash with TypeError: float() argument must be a string or a real
+        # number, not 'NoneType'.
+        "next_action_at": add_to_date(now_datetime(), hours=float(next_hours or 24)),
         "next_action_type": ACTION_ESCALATION,
     })
 
@@ -772,7 +776,9 @@ def t8_start_remedial_escalation(pe, step_number=1, escalation_type="",
     return transition(pe, STATE_REMEDIAL_ESCALATION, trigger_source, {
         "current_escalation_step": step_number,
         "current_escalation_type": escalation_type or "",
-        "next_action_at": add_to_date(now_datetime(), hours=float(next_hours)),
+        # B-1 (2026-06-15): same fix as t2_start_escalation — honor the
+        # documented next_hours=None → 24h fallback.
+        "next_action_at": add_to_date(now_datetime(), hours=float(next_hours or 24)),
         "next_action_type": ACTION_ESCALATION,
     })
 

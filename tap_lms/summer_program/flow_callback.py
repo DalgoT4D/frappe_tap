@@ -140,9 +140,25 @@ def update_flow_status(student_id, status, flow_name, metadata=None,
         })
         return
 
-    # Track the flow delivery
+    # Track the flow delivery.
+    # M-4 (2026-06-15): persist via set_value (bypasses save+hooks per L-039,
+    # which is what we want here — these are diagnostic fields with no
+    # downstream contact-field sync). Pre-fix, the in-memory assignments
+    # were clobbered by downstream pe.reload() calls in every handler, so
+    # the fields were never persisted despite operators reading them for
+    # debugging.
+    triggered_at = now_datetime()
+    frappe.db.set_value(
+        "ProgramEnrollment",
+        pe.name,
+        {
+            "last_flow_triggered": flow_name,
+            "last_flow_triggered_at": triggered_at,
+        },
+        update_modified=False,
+    )
     pe.last_flow_triggered = flow_name
-    pe.last_flow_triggered_at = now_datetime()
+    pe.last_flow_triggered_at = triggered_at
 
     # Log the callback
     log_event(pe, "flow_completed", old_value=flow_name, new_value=status,

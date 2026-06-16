@@ -390,6 +390,15 @@ def check_auto_activate():
                     f"(start_date={row.start_date}, seeded={result.get('seeded_count', 0)})"
                 )
         except Exception as e:
+            # H-2 (2026-06-15): rollback-before-log so a poisoned txn from
+            # a partial activate_bpr write doesn't make frappe.log_error
+            # itself raise InFailedSqlTransaction (L-030 / L-077). Without
+            # this, the log line silently disappears and the next iteration
+            # runs on a still-poisoned connection.
+            try:
+                frappe.db.rollback()
+            except Exception:
+                pass
             frappe.log_error(
                 f"Auto-activate error for BPR {row.bpr_name}: {str(e)}",
                 "SP Auto Activate",

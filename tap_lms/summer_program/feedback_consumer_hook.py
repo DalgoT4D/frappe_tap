@@ -90,12 +90,16 @@ from tap_lms.summer_program.utils import normalize_unicode_surrogates
 
 def on_feedback_ready(submission_name, student_id=None):
     """
-    Called by FeedbackConsumer after AI feedback is saved to Submission
-    and the Glific notification is sent.
+    Called by FeedbackConsumer.process_message() AFTER update_submission()
+    commits the AI verdict to Submission AND BEFORE send_glific_notification()
+    starts the feedback flow. Ordering matters: this hook bumps point
+    columns and syncs the contact field state to Glific, so the in-flow
+    feedback message reads the post-award values, not stale ones. See the
+    module docstring for the design rationale.
 
     Awards submission points (CR-007) then triggers the appropriate state
-    transition: T6b (Remedial) when validation is enabled and AI flagged
-    the submission, otherwise T12 (feedback_ready).
+    transition: T6b (Remedial) when validation is enabled and the AI
+    flagged the submission as Invalid, otherwise T12 (feedback_ready).
 
     Args:
         submission_name: Submission document name (e.g., "SUB-00123")
@@ -175,7 +179,12 @@ def on_feedback_ready(submission_name, student_id=None):
 
         # CR-007: gate Remedial routing on submission_validation_enabled.
         # AI validation always runs; only its routing consequence is gated.
-        if validity_status == "Invalid" or validity_status == "invalid":
+        # H-3 (2026-06-15): single canonical comparison — feedback_processor
+        # now normalizes submission_validity at ingress (.strip().capitalize()),
+        # so "invalid"/"INVALID"/" Invalid " all land as "Invalid". Pre-fix the
+        # check tested both cases defensively and the "invalid" branch had no
+        # CI coverage (L-084 mock blindness).
+        if validity_status == "Invalid":
             week_rule = _get_week_rule_for_pe(pe, sub_week or pe.current_week)
             validation_enabled = bool((week_rule or {}).get("submission_validation_enabled"))
             if validation_enabled:

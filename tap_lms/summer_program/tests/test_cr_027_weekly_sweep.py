@@ -45,6 +45,11 @@ from tap_lms.summer_program.constants import (
 
 SWEEP_MIG = "tap_lms.summer_program.migrations.sweep_migration"
 SCHED = "tap_lms.summer_program.scheduler"
+# M-1 (2026-06-15): _bulk_move_to_escalation now delegates to the shared
+# circuit-breaker helpers in glific_extensions, which internally call the
+# underlying bulk helpers. Tests that previously patched the bulk helpers
+# at the sweep_migration module level now patch them at their home module.
+GLIFIC_EXT = "tap_lms.summer_program.glific_extensions"
 SM = "tap_lms.summer_program.state_machine"
 GE = "tap_lms.summer_program.glific_extensions"
 
@@ -398,8 +403,8 @@ class TestSweepMigration(FrappeTestCase):
         _make_pe(self.batch, current_week=1, glific_id="gid-B")
         with patch(f"{SWEEP_MIG}._get_escalation_steps_for_pe", return_value=_mk_steps()), \
              patch(f"{SWEEP_MIG}.transition"), \
-             patch(f"{SWEEP_MIG}.remove_contacts_from_group_bulk", return_value=True) as m_rm, \
-             patch(f"{SWEEP_MIG}.add_contacts_to_group_bulk", return_value=True) as m_add, \
+             patch(f"{GLIFIC_EXT}.remove_contacts_from_group_bulk", return_value=True) as m_rm, \
+             patch(f"{GLIFIC_EXT}.add_contacts_to_group_bulk", return_value=True) as m_add, \
              patch.object(frappe.db, "commit"), patch.object(frappe.db, "rollback"):
             res = self._migrate(dry_run=False, i_know_this_is_destructive=True)
         # Both glific ids flow through to the bulk helpers.
@@ -413,8 +418,8 @@ class TestSweepMigration(FrappeTestCase):
         _make_pe(self.batch, current_week=1, glific_id="gid-A")
         with patch(f"{SWEEP_MIG}._get_escalation_steps_for_pe", return_value=_mk_steps()), \
              patch(f"{SWEEP_MIG}.transition"), \
-             patch(f"{SWEEP_MIG}.remove_contacts_from_group_bulk", return_value=True) as m_rm, \
-             patch(f"{SWEEP_MIG}.add_contacts_to_group_bulk", return_value=True), \
+             patch(f"{GLIFIC_EXT}.remove_contacts_from_group_bulk", return_value=True) as m_rm, \
+             patch(f"{GLIFIC_EXT}.add_contacts_to_group_bulk", return_value=True), \
              patch.object(frappe.db, "commit"), patch.object(frappe.db, "rollback"):
             self._migrate(dry_run=False, i_know_this_is_destructive=True)
         m_rm.assert_called_once_with(["gid-A"], "MAIN1")
@@ -424,8 +429,8 @@ class TestSweepMigration(FrappeTestCase):
         _make_pe(self.batch, current_week=1, glific_id="gid-A")
         with patch(f"{SWEEP_MIG}._get_escalation_steps_for_pe", return_value=_mk_steps()), \
              patch(f"{SWEEP_MIG}.transition"), \
-             patch(f"{SWEEP_MIG}.remove_contacts_from_group_bulk", return_value=True), \
-             patch(f"{SWEEP_MIG}.add_contacts_to_group_bulk", return_value=True) as m_add, \
+             patch(f"{GLIFIC_EXT}.remove_contacts_from_group_bulk", return_value=True), \
+             patch(f"{GLIFIC_EXT}.add_contacts_to_group_bulk", return_value=True) as m_add, \
              patch.object(frappe.db, "commit"), patch.object(frappe.db, "rollback"):
             self._migrate(dry_run=False, i_know_this_is_destructive=True)
         m_add.assert_called_once_with(["gid-A"], "ESC1")
@@ -438,8 +443,8 @@ class TestSweepMigration(FrappeTestCase):
         _make_pe(self.batch, current_week=1, glific_id="gid-A")  # NO BPR created
         with patch(f"{SWEEP_MIG}._get_escalation_steps_for_pe", return_value=_mk_steps()), \
              patch(f"{SWEEP_MIG}.transition"), \
-             patch(f"{SWEEP_MIG}.remove_contacts_from_group_bulk", return_value=True) as m_rm, \
-             patch(f"{SWEEP_MIG}.add_contacts_to_group_bulk", return_value=True) as m_add, \
+             patch(f"{GLIFIC_EXT}.remove_contacts_from_group_bulk", return_value=True) as m_rm, \
+             patch(f"{GLIFIC_EXT}.add_contacts_to_group_bulk", return_value=True) as m_add, \
              patch.object(frappe.db, "commit"), patch.object(frappe.db, "rollback"):
             res = self._migrate(dry_run=False, i_know_this_is_destructive=True)
         self.assertEqual(res["processed"], 1)
@@ -864,8 +869,8 @@ class TestMigrationThenSweep(FrappeTestCase):
              patch(f"{SWEEP_MIG}._get_escalation_steps_for_pe", return_value=_mk_steps()), \
              patch(f"{SM}._enqueue_contact_field_sync"), \
              patch(f"{SM}.maintain_collections"), \
-             patch(f"{SWEEP_MIG}.remove_contacts_from_group_bulk", return_value=True), \
-             patch(f"{SWEEP_MIG}.add_contacts_to_group_bulk", return_value=True):
+             patch(f"{GLIFIC_EXT}.remove_contacts_from_group_bulk", return_value=True), \
+             patch(f"{GLIFIC_EXT}.add_contacts_to_group_bulk", return_value=True):
             mig = sweep_migration.migrate_behind_students_to_escalation(
                 self.batch, dry_run=False, i_know_this_is_destructive=True)
 
