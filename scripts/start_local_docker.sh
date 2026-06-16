@@ -4,7 +4,7 @@ set -euo pipefail
 # ── Changes from original ─────────────────────────────────────────────────────
 #
 # 1. docker compose up now also starts:
-#      tap_plg_stub  — replaces tap_plg_worker + tap_plg_api in one container
+#      tap_plg_worker + tap_plg_api + tap_plg_postgres — real ML service
 #      llm-stub      — fake OpenAI/TogetherAI/VertexAI
 #      glific-stub   — fake Glific WhatsApp API
 #
@@ -39,19 +39,21 @@ POSTGRES_USER="${POSTGRES_USER:-postgres}"
 POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-postgres}"
 BUSINESS_THEME_REPO="${BUSINESS_THEME_REPO:-https://github.com/Midocean-Technologies/business_theme_v14.git}"
 
-# ── Step 1: Start infrastructure + stubs ──────────────────────────────────────
-echo "Starting infrastructure and stub services..."
+# ── Step 1: Start infrastructure + services ──────────────────────────────────
+echo "Starting infrastructure and services..."
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --build \
   postgres \
   redis-cache \
   redis-queue \
   rabbitmq \
-  tap_plg_stub \
+  tap_plg_postgres \
+  tap_plg_worker \
+  tap_plg_api \
   llm-stub \
   glific-stub
 
-# Wait for stubs to be accepting connections before starting the dev container.
-echo "Waiting for stub services to be ready..."
+# Wait for services to be ready before starting the dev container.
+echo "Waiting for services to be ready..."
 
 _wait_for_port() {
   local name=$1
@@ -69,7 +71,7 @@ _wait_for_port() {
 
 _wait_for_port "glific-stub"  "${GLIFIC_STUB_PORT:-4000}"
 _wait_for_port "llm-stub"     "${LLM_STUB_PORT:-8001}"
-_wait_for_port "tap_plg_stub" "${TAP_PLG_API_PORT:-8080}"
+_wait_for_port "tap_plg_api"  "${TAP_PLG_API_PORT:-8080}"
 
 # ── Step 2: Start Frappe LMS & RAG dev containers ─────────────────────────────
 echo "Starting Frappe LMS container..."
@@ -299,16 +301,20 @@ docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T dev-lms bash -l
   cd /home/frappe/frappe-bench/sites && \
   ../env/bin/python3 -c "import frappe; frappe.init(\"tap_lms.localhost\"); frappe.connect(); import sys; sys.path.insert(0, \"/workspace/frappe_tap\"); import scripts.seed_local"
 '
+
+echo "Initializing Plagiarism Database..."
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T tap_plg_postgres psql -U postgres -d plagiarism_db < "$ROOT_DIR/../tap_plg/database/init.sql"
 cat <<EOF
 
-# Note: tap_plg_stub was started in Step 1 & 2 — no extra step needed.
+# Note: Infrastructure (postgres, rabbitmq, etc.) and the Plagiarism Service
+# (tap_plg_worker/api) were started in Step 1.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Local TAP LMS testbed is ready.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   Frappe LMS Service (tap_lms)    →  http://${SITE_NAME}:${WEB_PORT:-8000}
-  tap_plg stub (consumer + API)   →  http://localhost:${TAP_PLG_API_PORT:-8080}
+  tap_plg API (Real ML Service)   →  http://localhost:${TAP_PLG_API_PORT:-8080}
   RabbitMQ management UI          →  http://localhost:15672  (guest / guest)
   LLM stub                        →  http://localhost:${LLM_STUB_PORT:-8001}
   Glific stub                     →  http://localhost:${GLIFIC_STUB_PORT:-4000}
@@ -324,13 +330,22 @@ Next steps:
    docker compose --env-file env.local -f docker/local/docker-compose.local.yml \\
      exec dev-lms bash -lc "cd /home/frappe/frappe-bench && bench start"
 
-2. Start your RAG Worker Consumer:
+2. Start your RAG Worker Consumer (Feedback Generator):
    docker compose --env-file env.local -f docker/local/docker-compose.local.yml \\
      exec dev-lms bash -lc "cd /home/frappe/frappe-bench/sites/ && ../env/bin/python -c \"import frappe; frappe.init('tap_lms.localhost'); frappe.connect(); import rag_service.scripts.console_consumer as cc; cc.run()\""
 
-2a. Start the feedback consumer:
+2a. Start the LMS Submission consumer (Updates state):
     docker compose --env-file env.local -f ./frappe_tap/docker/local/docker-compose.local.yml \\
     exec dev-lms bash -lc "cd /home/frappe/frappe-bench/sites/ && ../env/bin/python ../apps/tap_lms/scripts/console_consumer.py"
+
+2b. Watch Plagiarism Worker logs (ML model loading takes 1-2 mins):
+    docker compose --env-file env.local -f docker/local/docker-compose.local.yml \\
+    logs -f tap_plg_worker
+
+2c. Development (Hot Reloading):
+    - Changes in 'tap_plg/api/' are auto-reloaded by uvicorn.
+    - Changes in 'tap_plg/app.py' or 'tap_plg/plag_checker/' require a manual restart:
+      docker compose -f docker/local/docker-compose.local.yml restart tap_plg_worker
 
 3. Check if test API key is successfully created and associated with Administrator in Frappe bench. If not, create a test API key:
    Frappe desk → API Key → New → key: local-test-key-001 → Save
@@ -345,13 +360,17 @@ Next steps:
     }'
 
 5. Verify the pipeline:
-   # tap_plg_stub processed the submission
-   curl http://localhost:${TAP_PLG_API_PORT:-8080}/stub/stats | python3 -m json.tool
+   # 1. Check tap_plg API health
+   curl http://localhost:${TAP_PLG_API_PORT:-8080}/health
 
-   # Glific stub received the WhatsApp trigger
+   # 2. Check if plagiarism results were generated for the student
+   # (Wait for the worker to finish processing)
+   curl http://localhost:${TAP_PLG_API_PORT:-8080}/api/v1/results/LOCAL_GLIFIC_001 | python3 -m json.tool
+
+   # 3. Glific stub received the WhatsApp trigger
    curl http://localhost:${GLIFIC_STUB_PORT:-4000}/stub/flow-calls | python3 -m json.tool
 
-6. Reset stub state between test runs:
+6. Reset stub state (LLM/Glific) between test runs:
    curl http://localhost:${GLIFIC_STUB_PORT:-4000}/stub/reset
 
 7. Watch the full pipeline trace live:

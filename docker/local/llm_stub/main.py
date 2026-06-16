@@ -76,11 +76,11 @@ _QUALITIES = ["good", "strong", "impressive", "solid", "creative"]
 _TECHNIQUES = ["colour", "composition", "line work", "shading", "texture"]
 
 _RUBRIC_SKILLS = [
-    "Creativity and Originality",
+    "Content Knowledge",
+    "Creativity",
     "Technical Skill",
     "Composition",
     "Use of Colour",
-    "Effort and Completeness",
 ]
 
 
@@ -107,7 +107,7 @@ def _random_feedback(submission_id: str) -> Dict[str, Any]:
 
     rubric_evaluations = [
         {
-            "skill": skill,
+            "Skill": skill,
             "grade_value": rng.randint(2, 4),
             "observation": f"Student demonstrated {rng.choice(_QUALITIES)} ability in {skill.lower()}.",
         }
@@ -156,6 +156,7 @@ def _wrap_as_openai_response(content: str, model: str = "stub-gpt-4") -> Dict[st
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
+
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "llm-stub"}
@@ -191,17 +192,24 @@ async def completions(request: Request):
     await _simulate_latency()
     feedback = _random_feedback(submission_id)
     content = json.dumps(feedback, ensure_ascii=False)
-    return JSONResponse(content={
-        "id": f"cmpl-stub-{uuid.uuid4().hex[:12]}",
-        "object": "text_completion",
-        "created": int(time.time()),
-        "model": body.get("model", "stub-gpt-4"),
-        "choices": [{"text": content, "index": 0, "finish_reason": "stop"}],
-        "usage": {"prompt_tokens": 900, "completion_tokens": 300, "total_tokens": 1200},
-    })
+    return JSONResponse(
+        content={
+            "id": f"cmpl-stub-{uuid.uuid4().hex[:12]}",
+            "object": "text_completion",
+            "created": int(time.time()),
+            "model": body.get("model", "stub-gpt-4"),
+            "choices": [{"text": content, "index": 0, "finish_reason": "stop"}],
+            "usage": {
+                "prompt_tokens": 900,
+                "completion_tokens": 300,
+                "total_tokens": 1200,
+            },
+        }
+    )
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def _extract_submission_id(body: Dict) -> str:
     """
@@ -215,6 +223,7 @@ def _extract_submission_id(body: Dict) -> str:
             if isinstance(content, str) and "submission_id" in content.lower():
                 # Simple extraction — look for "SUB-" prefix pattern
                 import re
+
                 match = re.search(r"SUB-[\w-]+", content, re.IGNORECASE)
                 if match:
                     return match.group(0)
@@ -222,6 +231,7 @@ def _extract_submission_id(body: Dict) -> str:
                 for part in content:
                     if isinstance(part, dict) and "submission_id" in str(part).lower():
                         import re
+
                         match = re.search(r"SUB-[\w-]+", str(part), re.IGNORECASE)
                         if match:
                             return match.group(0)
@@ -233,10 +243,12 @@ def _extract_submission_id(body: Dict) -> str:
 async def _simulate_latency():
     """Simulate realistic LLM response latency."""
     import asyncio
+
     delay = random.uniform(0.5, 2.0)
     await asyncio.sleep(delay)
 
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8001, log_level="info")

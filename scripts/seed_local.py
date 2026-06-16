@@ -162,6 +162,18 @@ for state, path, label in PE_STATES:
         pe_ids[state] = existing_pe
         print(f"  ProgramEnrollment already exists: {existing_pe}  [{state}]")
 
+# ── 5.5. Skills (for feedback processing) ──────────────────
+SKILLS = ["Content Knowledge", "Creativity"]
+for skill_name in SKILLS:
+    if not frappe.db.exists("Skill", skill_name):
+        doc = frappe.new_doc("Skill")
+        doc.skill_name = skill_name
+        doc.insert(ignore_permissions=True)
+        frappe.db.commit()
+        print(f"✓ Skill created: {skill_name}")
+    else:
+        print(f"  Skill already exists: {skill_name}")
+
 # ── 6. Prompt Templates (rag_service) ───────────────────────
 print("\nSeeding Prompt Templates...")
 

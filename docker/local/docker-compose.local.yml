@@ -2,24 +2,14 @@ name: tap_lms_local
 
 # ── Changes from the original docker-compose.yml ─────────────────────────────
 #
-# Added 3 new services:
-#   tap_plg_stub  — replaces BOTH tap_plg_worker + tap_plg_api in one container
-#                   (consumer + /health endpoint in one process, no CLIP/DB needed)
+# Added/Updated services:
+#   tap_plg_worker + tap_plg_api + tap_plg_postgres — real ML service
 #   llm-stub      — fake OpenAI/TogetherAI/VertexAI (no real LLM calls)
 #   glific-stub   — fake Glific GraphQL API (no real WhatsApp messages)
 #
-# Changed in existing services:
-#   dev — added GLIFIC_API_URL and APP_ENV environment variables
-#         added glific-stub to depends_on
-#
-# Removed vs full production setup:
-#   tap_plg_postgres — not needed in stub mode (no FAISS/vector storage)
-#   tap_plg_worker   — merged into tap_plg_stub
-#   tap_plg_api      — merged into tap_plg_stub
-#
-# Container count: 8 total (down from 11)
-#   dev, postgres, redis-cache, redis-queue, rabbitmq,
-#   tap_plg_stub, llm-stub, glific-stub
+# Container count: 10 total
+#   dev-lms, postgres, redis-cache, redis-queue, rabbitmq,
+#   tap_plg_postgres, tap_plg_worker, tap_plg_api, llm-stub, glific-stub
 
 services:
     # ── Frappe dev container (tap_lms) ──────────────────────────
@@ -33,7 +23,7 @@ services:
         command: sleep infinity
         depends_on:
             postgres:
-                condition: service_healthy
+                condition: service_started
             redis-cache:
                 condition: service_started
             redis-queue:
@@ -42,7 +32,7 @@ services:
                 condition: service_started
             glific-stub:
                 condition: service_started
-            tap_plg_stub:
+            tap_plg_api:
                 condition: service_started
             llm-stub:
                 condition: service_started
@@ -52,7 +42,7 @@ services:
             SHELL: /bin/bash
             GLIFIC_API_URL: http://glific-stub:4000
             APP_ENV: dev
-            STUB_MODE: "1"
+            STUB_MODE: "0"
         ports:
             - "${WEB_PORT:-8000}:8000"
             - "${SOCKETIO_PORT:-9000}:9000"
@@ -105,23 +95,30 @@ services:
             RABBITMQ_DEFAULT_USER: guest
             RABBITMQ_DEFAULT_PASS: guest
 
-    # ── tap_plg stub ───────────────────────────────────────────────────────────
-    # Single container replacing tap_plg_worker + tap_plg_api + tap_plg_postgres.
-    # Runs two things in one process:
-    #   1. RabbitMQ consumer — consumes from SUBMISSION_QUEUE, publishes to
-    #      FEEDBACK_QUEUE with an "original" result (no real ML processing)
-    #   2. FastAPI server    — serves /health on port 8080
-    #
-    # No CLIP model, no FAISS, no PostgreSQL needed.
-    # Builds in ~30 seconds. Image is ~80 MB.
-    #
-    # Health check: curl http://localhost:8080/health
-    # Stats:        curl http://localhost:8080/stub/stats
-    tap_plg_stub:
+    # ── tap_plg PostgreSQL (pgvector) ──────────────────────────────────────────
+    tap_plg_postgres:
+        image: pgvector/pgvector:pg16
+        container_name: tap_lms_plg_postgres
+        environment:
+            POSTGRES_DB: plagiarism_db
+            POSTGRES_USER: postgres
+            POSTGRES_PASSWORD: postgres
+        healthcheck:
+            test: ["CMD-SHELL", "pg_isready -U postgres -d plagiarism_db"]
+            interval: 5s
+            timeout: 5s
+            retries: 20
+        ports:
+            - "5433:5432"
+        volumes:
+            - tap_plg_postgres_data:/var/lib/postgresql/data
+
+    # ── tap_plg worker (Real ML Service) ──────────────────────────────────────
+    tap_plg_worker:
         build:
-            context: ./tap_plg_stub
-            dockerfile: Dockerfile.stub
-        container_name: tap_lms_plg_stub
+            context: ../../../tap_plg
+            dockerfile: Dockerfile
+        container_name: tap_lms_plg_worker
         environment:
             RABBITMQ_HOST: rabbitmq
             RABBITMQ_PORT: 5672
@@ -129,19 +126,69 @@ services:
             RABBITMQ_PASS: guest
             RABBITMQ_VHOST: /
             SUBMISSION_QUEUE: "${RABBITMQ_SUBMISSION_QUEUE:-submission_queue}"
-            FEEDBACK_QUEUE: "${RABBITMQ_PLAGIARISM_RESULTS_QUEUE:-plagiarism_queue}"
-            TAP_PLG_API_PORT: 8080
-            STUB_PROCESSING_DELAY_MS: "${STUB_PROCESSING_DELAY_MS:-500}"
+            FEEDBACK_QUEUE: "${RABBITMQ_PLAGIARISM_RESULTS_QUEUE:-plagiarism_feedback}"
+            POSTGRES_HOST: tap_plg_postgres
+            POSTGRES_PORT: 5432
+            POSTGRES_DB: plagiarism_db
+            POSTGRES_USER: postgres
+            POSTGRES_PASSWORD: postgres
+            CLIP_MODEL: "${CLIP_MODEL:-ViT-B/32}"
+            CLIP_PRETRAINED: "${CLIP_PRETRAINED:-openai}"
+            USE_PGVECTOR: "true"
+            MOCK_GLIFIC: "true"
             APP_ENV: dev
             LOG_LEVEL: INFO
-        ports:
-            - "${TAP_PLG_API_PORT:-8080}:8080"
+            # Ensure all ML libraries use the persistent cache volume
+            HF_HOME: /root/.cache/huggingface
+            TORCH_HOME: /root/.cache/torch
+            XDG_CACHE_HOME: /root/.cache
+            HF_HUB_DISABLE_SYMLINKS: "1"
         depends_on:
             rabbitmq:
                 condition: service_started
+            tap_plg_postgres:
+                condition: service_started
+        volumes:
+            - ../../../tap_plg:/app:cached,z
+            - tap_plg_model_cache:/root/.cache:z
+        restart: on-failure
+
+    # ── tap_plg API ────────────────────────────────────────────────────────────
+    tap_plg_api:
+        build:
+            context: ../../../tap_plg
+            dockerfile: Dockerfile.api
+        container_name: tap_lms_plg_api
+        command:
+            [
+                "uvicorn",
+                "api.api:app",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                "8000",
+                "--reload",
+            ]
+        environment:
+            RABBITMQ_HOST: rabbitmq
+            RABBITMQ_PORT: 5672
+            RABBITMQ_USER: guest
+            RABBITMQ_PASS: guest
+            RABBITMQ_VHOST: /
+            SUBMISSION_QUEUE: "${RABBITMQ_SUBMISSION_QUEUE:-submission_queue}"
+            FEEDBACK_QUEUE: "${RABBITMQ_PLAGIARISM_RESULTS_QUEUE:-plagiarism_feedback}"
+            APP_ENV: dev
+            LOG_LEVEL: INFO
+        ports:
+            - "${TAP_PLG_API_PORT:-8080}:8000"
+        depends_on:
+            rabbitmq:
+                condition: service_started
+        volumes:
+            - ../../../tap_plg:/app:cached,z
         healthcheck:
             test:
-                ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+                ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
             interval: 10s
             timeout: 5s
             retries: 5
@@ -157,8 +204,20 @@ services:
             context: ./llm_stub
             dockerfile: Dockerfile
         container_name: tap_lms_llm_stub
+        command:
+            [
+                "uvicorn",
+                "main:app",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                "8001",
+                "--reload",
+            ]
         ports:
             - "${LLM_STUB_PORT:-8001}:8001"
+        volumes:
+            - ./llm_stub:/app:z
         healthcheck:
             test:
                 ["CMD-SHELL", "curl -f http://localhost:8001/health || exit 1"]
@@ -191,3 +250,5 @@ services:
 volumes:
     bench-data:
     postgres-data:
+    tap_plg_postgres_data:
+    tap_plg_model_cache:
