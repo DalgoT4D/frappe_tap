@@ -90,8 +90,17 @@ def award_activity_points(scl):
     Steps (per CR-002 v2 §"New module — activity_points.py" + CR-003
     follow-up 2026-05-13):
       1. Filter (handled by caller `handle_content_log`).
-      2. Idempotency: skip if scl.points_awarded > 0.
-      3. Resolve award: VideoClass.points → pts. Return on 0/null (E11).
+      2. Idempotency: skip if scl.points_awarded > 0. CAVEAT (E1, 2026-06-17):
+         points_awarded is Int default 0, so a 0-point video (CR-009) writes 0
+         and this `> 0` gate does NOT protect it against a re-fired after_insert
+         hook (rare). Harm is low (double Glific enqueue / a duplicate
+         escalation PEL row; weekly_video_done + grace re-writes are idempotent),
+         and the complete_content path is separately protected by
+         `_activity_points_handled_upstream`. A proper fix needs a distinct
+         processed-marker, not the points value — tracked as a follow-up.
+      3. Resolve award: VideoClass.points → pts (0 if zero/missing). E11 is
+         RETIRED (CR-009, 2026-05-23): a 0-point video does NOT early-return —
+         it awards 0 but still flips weekly_video_done + arms grace/escalation.
       4. Resolve active PE for scl.student. Return if none.
       5a. If this is the week's first VideoClass (pre-UPDATE
           `pe.weekly_video_done == 0`), log a `grace_window_entered`
@@ -137,9 +146,13 @@ def award_video_completion_points(
         return 0
 
     # CR-009 (2026-05-23): zero-point videos still trigger the engagement
-    # pipeline. The point bump is a no-op, but weekly_video_done/grace/escalation
-    # must still update.
-    pts = _resolve_video_points(video_id) or 10
+    # pipeline. The point bump is a no-op (award 0), but weekly_video_done /
+    # grace / escalation must still update (the unconditional weekly_video_done=1
+    # + grace-arm in the UPDATE below handle that). The previous `or 10` here was
+    # a stale CR-002-v2 leftover that silently awarded 10 for a 0/missing-points
+    # video (and for the lookup-fail path) — directly contradicting the no-op
+    # intent. Removed: a 0-point video awards 0. (E1 fix, 2026-06-17.)
+    pts = _resolve_video_points(video_id)
 
     pe = get_active_pe(student_id)
     if not pe:
