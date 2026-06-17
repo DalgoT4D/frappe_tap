@@ -6,13 +6,16 @@ Covers:
   - voice_note step fires SP_Escalation Glific flow
   - parent_call step enqueues Vocallabs job, SKIPS SP_Escalation
   - escalation_order + escalation_type pushed to Glific BEFORE flow trigger
-  - Step exhaustion routes to T5 (grace, had activity) / T6 (remedial,
-    no activity) / T11 (remedial path → grace)
+  - Step exhaustion routes to T5 (grace) regardless of submission_count
+    (CR-006: T6 removed; remedial reserved for failed-feedback via T6b)
+  - Remedial-side exhaustion routes to T11 (grace)
 """
 import frappe
 from frappe.tests.utils import FrappeTestCase
 from frappe.utils import add_to_date, now_datetime
 from unittest.mock import patch, MagicMock
+
+from tap_lms.summer_program.tests.factories import make_batch
 
 from tap_lms.summer_program.constants import (
     ACTION_ESCALATION,
@@ -29,20 +32,9 @@ from tap_lms.summer_program.constants import (
 
 
 def _ensure_batch():
-    name = frappe.get_value("Batch", {"name1": "EscBranchBatch"}, "name")
-    if name:
-        return name
-    batch = frappe.new_doc("Batch")
-    batch.name1 = "EscBranchBatch"
-    batch.start_date = "2026-01-01"
-    batch.end_date = "2026-04-30"
-    batch.batch_id = "EBR01"
-    batch.program_type = "Summer"
-    batch.total_weeks = 12
-    batch.current_calendar_week = 1
-    batch.grace_window_days = 14
-    batch.insert(ignore_permissions=True)
-    return batch.name
+    # Delegates to the shared factory (L-037) so this fixture inherits future
+    # mandatory-field additions instead of breaking with MandatoryError.
+    return make_batch(label="EscBranchBatch", batch_id="EBR01")
 
 
 def _ensure_student(suffix):
@@ -70,7 +62,7 @@ def _make_pe(batch_name, student_name, suffix, **kwargs):
     pe.current_path = PATH_CORE
     pe.current_week = 1
     pe.current_tier = "Basic"
-    pe.archetype = "Submitter"
+    pe.archetype = "submitter"
     pe.current_escalation_step = kwargs.get("current_escalation_step", 0)
     pe.submission_count = kwargs.get("submission_count", 0)
     pe.insert(ignore_permissions=True)
@@ -129,6 +121,43 @@ class TestEscalationBranching(FrappeTestCase):
             if "vocallabs" in str(c).lower()
         ]
         self.assertEqual(len(vocallabs_calls), 0)
+
+    def test_noncontiguous_escalation_order_does_not_crash(self):
+        """BR-007: if no configured step has escalation_order == next_step
+        (non-contiguous orders, e.g. [1, 3] with next_step=2), handle_escalation
+        previously left step_config=None and crashed on `step_config.get(...)`
+        with `'NoneType' object has no attribute 'get'` — which rolled back the
+        atomic claim and made the PE a poison row retried every tick. It must
+        now fall back to the positionally-Nth step and transition cleanly."""
+        from tap_lms.summer_program import pe_dispatcher
+
+        s = _ensure_student("99")
+        pe_name = _make_pe(
+            self.batch_name, s, "99",
+            resolved_flow_state=STATE_NORMAL_ESCALATION,
+            current_escalation_step=1,   # next_step = 2 → matches no order in [1,3]
+        )
+
+        with _patch_escalation_steps([_step(1, "help_note_a"), _step(3, "voice_note")]), \
+             patch.object(pe_dispatcher, "_get_flow_id", return_value="flow-esc"), \
+             patch.object(pe_dispatcher, "_trigger_flow") as fake_trigger, \
+             patch.object(frappe, "enqueue"), \
+             patch("tap_lms.summer_program.state_machine._enqueue_contact_field_sync"), \
+             patch("tap_lms.summer_program.state_machine.maintain_collections"):
+            row = frappe._dict({
+                "name": pe_name,
+                "next_action_type": ACTION_ESCALATION,
+                "batch": self.batch_name,
+                "journey_label": LABEL_CONTENT_DELIVERED,
+            })
+            pe_dispatcher.handle_escalation(row)   # must NOT raise
+
+        # Transitioned (not stuck) and fired the flow using the fallback step.
+        self.assertEqual(fake_trigger.call_count, 1)
+        self.assertEqual(
+            frappe.db.get_value("ProgramEnrollment", pe_name, "current_escalation_step"),
+            2,
+        )
 
     def test_voice_note_step_fires_glific_flow(self):
         """escalation_type='voice_note' → SP_Escalation flow triggered."""
@@ -330,8 +359,7 @@ class TestEscalationBranching(FrappeTestCase):
              patch.object(pe_dispatcher, "_get_flow_id", return_value="flow-esc"), \
              patch.object(pe_dispatcher, "_trigger_flow"), \
              patch("tap_lms.summer_program.state_machine._enqueue_contact_field_sync"), \
-             patch("tap_lms.summer_program.state_machine.t5_escalation_to_grace") as fake_t5, \
-             patch("tap_lms.summer_program.state_machine.t6_escalation_to_remedial") as fake_t6:
+             patch("tap_lms.summer_program.state_machine.t5_escalation_to_grace") as fake_t5:
             row = frappe._dict({
                 "name": pe_name,
                 "next_action_type": ACTION_ESCALATION,
@@ -341,4 +369,129 @@ class TestEscalationBranching(FrappeTestCase):
             pe_dispatcher.handle_escalation(row)
 
         self.assertEqual(fake_t5.call_count, 1)
-        self.assertEqual(fake_t6.call_count, 0)
+
+    def test_escalation_exhaustion_zero_submissions_routes_to_grace(self):
+        """CR-006: escalation exhaustion with submission_count=0 routes to T5
+        (grace), not T6 (remedial). Pre-CR-006 this went to remedial; post-CR-006
+        it goes to grace.
+        """
+        from tap_lms.summer_program import pe_dispatcher
+
+        s = _ensure_student("08")
+        pe_name = _make_pe(
+            self.batch_name, s, "08",
+            resolved_flow_state=STATE_NORMAL_ESCALATION,
+            current_escalation_step=3,  # last step already fired
+            submission_count=0,  # never submitted
+        )
+
+        with _patch_escalation_steps([
+            _step(1, "help_note_a", hours=24),
+            _step(2, "help_note_b", hours=48),
+            _step(3, "voice_note", hours=72),
+        ]), \
+             patch.object(pe_dispatcher, "_get_flow_id", return_value="flow-esc"), \
+             patch.object(pe_dispatcher, "_trigger_flow"), \
+             patch("tap_lms.summer_program.state_machine._enqueue_contact_field_sync"), \
+             patch("tap_lms.summer_program.state_machine.t5_escalation_to_grace") as fake_t5:
+            row = frappe._dict({
+                "name": pe_name,
+                "next_action_type": ACTION_ESCALATION,
+                "batch": self.batch_name,
+                "journey_label": LABEL_CONTENT_DELIVERED,
+            })
+            pe_dispatcher.handle_escalation(row)
+
+        # CR-006: T5 fires for zero-submission exhaustion (was T6 pre-CR-006).
+        self.assertEqual(fake_t5.call_count, 1)
+
+    def test_remedial_side_exhaustion_routes_to_grace_t11(self):
+        """CR-006 regression: remedial-side exhaustion still routes to T11
+        (grace). Unchanged by CR-006 but tested defensively to ensure the
+        dispatcher's exhaustion routing change didn't break the remedial branch.
+        """
+        from tap_lms.summer_program import pe_dispatcher
+        from tap_lms.summer_program.constants import STATE_REMEDIAL_ESCALATION
+
+        s = _ensure_student("09")
+        pe_name = _make_pe(
+            self.batch_name, s, "09",
+            resolved_flow_state=STATE_REMEDIAL_ESCALATION,
+            current_escalation_step=2,
+            submission_count=0,
+        )
+
+        with _patch_escalation_steps([
+            _step(1, "help_note_a"),
+            _step(2, "help_note_b"),
+        ]), \
+             patch.object(pe_dispatcher, "_get_flow_id", return_value="flow-esc"), \
+             patch.object(pe_dispatcher, "_trigger_flow"), \
+             patch("tap_lms.summer_program.state_machine._enqueue_contact_field_sync"), \
+             patch("tap_lms.summer_program.state_machine.t11_remedial_to_grace") as fake_t11:
+            row = frappe._dict({
+                "name": pe_name,
+                "next_action_type": ACTION_ESCALATION,
+                "batch": self.batch_name,
+                "journey_label": LABEL_CONTENT_DELIVERED,
+            })
+            pe_dispatcher.handle_escalation(row)
+
+        self.assertEqual(fake_t11.call_count, 1)
+
+    def test_escalation_exhaustion_with_submissions_routes_to_grace(self):
+        """CR-006: escalation exhaustion with submission_count>0 routes to T5
+        (grace) — unchanged from pre-CR-006. Documented as a regression guard
+        alongside the zero-submission test so both branches are explicit.
+        """
+        from tap_lms.summer_program import pe_dispatcher
+
+        s = _ensure_student("10")
+        pe_name = _make_pe(
+            self.batch_name, s, "10",
+            resolved_flow_state=STATE_NORMAL_ESCALATION,
+            current_escalation_step=2,
+            submission_count=2,  # had activity
+        )
+
+        with _patch_escalation_steps([
+            _step(1, "help_note_a"),
+            _step(2, "help_note_b"),
+        ]), \
+             patch.object(pe_dispatcher, "_get_flow_id", return_value="flow-esc"), \
+             patch.object(pe_dispatcher, "_trigger_flow"), \
+             patch("tap_lms.summer_program.state_machine._enqueue_contact_field_sync"), \
+             patch("tap_lms.summer_program.state_machine.t5_escalation_to_grace") as fake_t5:
+            row = frappe._dict({
+                "name": pe_name,
+                "next_action_type": ACTION_ESCALATION,
+                "batch": self.batch_name,
+                "journey_label": LABEL_CONTENT_DELIVERED,
+            })
+            pe_dispatcher.handle_escalation(row)
+
+        self.assertEqual(fake_t5.call_count, 1)
+
+
+class TestFlowTriggerAsync(FrappeTestCase):
+    """BR-007: `_trigger_flow` must ENQUEUE the Glific call, not run it inline,
+    so the dispatcher tick doesn't block on a per-PE HTTP round-trip."""
+
+    def test_trigger_flow_enqueues_not_inline(self):
+        from tap_lms.summer_program import pe_dispatcher
+        with patch.object(frappe, "enqueue") as fake_enqueue, \
+             patch("tap_lms.glific_integration.start_contact_flow") as fake_glific:
+            pe_dispatcher._trigger_flow("flow-1", "glific-1", "PE-1", "escalation")
+        fake_glific.assert_not_called()          # NOT called inline (no blocking HTTP)
+        fake_enqueue.assert_called_once()
+        self.assertEqual(
+            fake_enqueue.call_args.args[0],
+            "tap_lms.summer_program.pe_dispatcher._trigger_flow_job",
+        )
+        self.assertTrue(fake_enqueue.call_args.kwargs.get("enqueue_after_commit"))
+
+    def test_trigger_flow_job_calls_glific(self):
+        from tap_lms.summer_program import pe_dispatcher
+        with patch("tap_lms.glific_integration.start_contact_flow") as fake_glific:
+            pe_dispatcher._trigger_flow_job("flow-1", "glific-1", "PE-1", "escalation")
+        fake_glific.assert_called_once()

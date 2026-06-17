@@ -11,3 +11,4 @@ Postman/
 !.env.example
 env.local
 *.bak
+scripts/private/*

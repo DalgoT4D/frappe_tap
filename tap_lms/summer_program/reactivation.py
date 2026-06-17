@@ -20,19 +20,23 @@ from frappe import _
 from tap_lms.summer_program.constants import (
     STATE_PAUSED_BINGE,
     PAUSED_STATES, TERMINAL_STATES,
-    PROGRAM_PAUSED, PATH_CORE, PATH_REMEDIAL,
+    PROGRAM_PAUSED, PATH_CORE, PATH_REMEDIAL,STATE_PROGRAM_PAUSED
 )
 from tap_lms.summer_program.state_machine import (
     get_active_pe,
-    t21_binge_resume,
+    t21_binge_resume,t21_a_resume_paused
 )
 from tap_lms.summer_program.event_log import log_event
+from tap_lms.summer_program.utils import sp_safe_endpoint
 
 
 @frappe.whitelist(allow_guest=False)
-def reactivate_student(student_id):
+@sp_safe_endpoint("reactivate_student")
+def reactivate_student(student_id, **_glific_kwargs):
     """
     API A5: reactivate_student
+
+    `**_glific_kwargs` absorbs Glific-injected fields per task #89 — ignored.
 
     Resumes a paused student. Called by SP_Incoming_Router when a paused
     student sends any WhatsApp message.
@@ -97,7 +101,7 @@ def reactivate_student(student_id):
             log_event(pe, "resume", trigger_source="glific_flow",
                       details={"reactivation_type": "binge_eligible"})
 
-            frappe.db.commit()
+            # Removed mid-handler commit per L-017 — Frappe commits at request-end.
             frappe.local.response.update({
                 "success": True,
                 "status": "reactivated",
@@ -116,6 +120,21 @@ def reactivate_student(student_id):
                 "resolved_flow_state": pe.resolved_flow_state,
             })
             return
+    elif pe.resolved_flow_state == STATE_PROGRAM_PAUSED:
+        t21_a_resume_paused(pe, "glific_flow")
+
+        log_event(pe, "resume", trigger_source="glific_flow",
+                    details={"reactivation_type": "program resumed from reactivation"})
+
+        # Removed mid-handler commit per L-017 — Frappe commits at request-end.
+        frappe.local.response.update({
+            "success": True,
+            "status": "reactivated",
+            "resolved_flow_state": pe.resolved_flow_state,
+            "current_week": pe.current_week,
+        })
+        return
+
 
     frappe.local.response.update({
         "success": False,

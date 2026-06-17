@@ -14,41 +14,50 @@
   "default_contact_group_id",
   "agent_id",
   "default_parent_call_config",
-  "auth_token_cache_ttl"
+  "auth_token_cache_ttl",
+  "agents_section",
+  "agents"
  ],
  "fields": [
   {
    "default": "0",
+   "description": "Master feature flag. When unchecked, no Vocallabs call is placed for any student regardless of agent configuration below.",
    "fieldname": "enabled",
    "fieldtype": "Check",
    "label": "Enabled"
   },
   {
+   "description": "Vocallabs API base URL (e.g. https://api.vocallabs.ai). Trailing slash optional — stripped at use site.",
    "fieldname": "service_url",
    "fieldtype": "Data",
    "label": "Service URL"
   },
   {
+   "description": "Vocallabs OAuth client ID (used by createAuthToken).",
    "fieldname": "client_id",
    "fieldtype": "Data",
    "label": "Client ID"
   },
   {
+   "description": "Vocallabs OAuth client secret. Stored encrypted; access via `settings.get_password(\"client_secret\")`.",
    "fieldname": "client_secret",
    "fieldtype": "Password",
    "label": "Client Secret"
   },
   {
+   "description": "Default Vocallabs prospect group ID. Used when adding new prospects via addMultipleContactsToGroup.",
    "fieldname": "default_contact_group_id",
    "fieldtype": "Data",
    "label": "Default Contact Group ID"
   },
   {
+   "description": "Fallback Vocallabs agent UUID. Used when (a) the student's language has no enabled row in the Agents table below, or (b) the student has no language set. If this is also empty AND no enabled mapping matches, the parent call is skipped with a logged warning (not retried). Per-language overrides live in the Agents child table.",
    "fieldname": "agent_id",
    "fieldtype": "Data",
-   "label": "Agent Id"
+   "label": "Fallback Agent ID"
   },
   {
+   "description": "Default ParentCallConfig used by the parent-call resolver when no per-LearningUnit override exists. Per-language scripts are routed via LU lineage (each language has its own LU that points to a language-specific ParentCallConfig via UnitContentItem) — there is NO language field on ParentCallConfig itself. This fallback fires when neither the LU override nor a more specific path resolves a config.",
    "fieldname": "default_parent_call_config",
    "fieldtype": "Link",
    "label": "Default Parent Call Config",
@@ -56,15 +65,28 @@
   },
   {
    "default": "3600",
+   "description": "Bearer-token cache TTL in seconds. The Vocallabs token is fetched once via createAuthToken and reused across calls until this TTL expires. Default 3600 (1 hour). Lower for testing if tokens behave oddly; raise to reduce auth calls in steady state.",
    "fieldname": "auth_token_cache_ttl",
    "fieldtype": "Int",
-   "label": "Auth Token Cache Ttl"
+   "label": "Auth Token Cache TTL"
+  },
+  {
+   "fieldname": "agents_section",
+   "fieldtype": "Section Break",
+   "label": "Per-Language Agents"
+  },
+  {
+   "description": "Per-language Vocallabs agent assignments. Resolver picks the first enabled row whose language matches the student's `Student.language`; falls back to the Fallback Agent ID above if no row matches. Add one row per language you want to serve with a distinct agent. Controller validates that at most ONE enabled row exists per language (disabled rows may stage new agent_ids before cutover).",
+   "fieldname": "agents",
+   "fieldtype": "Table",
+   "label": "Agents",
+   "options": "VoiceAgentMapping"
   }
  ],
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2026-05-13 15:47:48.367284",
+ "modified": "2026-05-28 19:00:00.000000",
  "modified_by": "Administrator",
  "module": "TAP LMS",
  "name": "VoiceAgentSettings",

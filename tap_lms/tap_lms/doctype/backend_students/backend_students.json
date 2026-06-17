@@ -17,6 +17,7 @@
   "processing_status",
   "student_id",
   "glific_id",
+  "glific_sync_status",
   "processing_notes",
   "batch_skeyword",
   "archetype",
@@ -90,6 +91,13 @@
    "fieldname": "glific_id",
    "fieldtype": "Data",
    "label": "Glific Id"
+  },
+  {
+   "default": "pending",
+   "fieldname": "glific_sync_status",
+   "fieldtype": "Select",
+   "label": "Glific Sync Status",
+   "options": "pending\nsynced\nfailed"
   },
   {
    "fieldname": "processing_notes",

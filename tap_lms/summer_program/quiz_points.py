@@ -13,15 +13,12 @@ Per-question award rule (CR-002 v2 §"Per-question quiz scoring"):
 
 The per-question award is **independent of attempt-level pass/fail**.
 
-Cumulative vs weekly split (CR-002 v2 §E4):
+Cumulative vs weekly split:
 
-  - `total_quiz_points`, `total_points`: apply DELTA vs the previous-latest
-    attempt for the same (student, quiz) pair. Two attempts in the same
-    week with earned 5 then 8 result in cumulative +3 (latest-score
-    semantics).
-  - `weekly_quiz_points`: ALWAYS adds the new attempt's full earned
-    (effort, not latest). Two attempts in the same week with earned 5
+  - `weekly_quiz_points`: adds the new attempt's full earned score using the
+    existing effort semantics. Two attempts in the same week with earned 5
     then 8 add weekly +5 +8 = +13.
+  - `total_quiz_points`, `total_points`: roll up once during week advance.
 
 Idempotency: `attempt.points_earned > 0` is the write-once anchor (P-005).
 The audit field is written FIRST, before the PE bump, so a crash between
@@ -37,7 +34,12 @@ from tap_lms.summer_program.state_machine import (
     get_active_pe,
 )
 from tap_lms.summer_program.event_log import log_event
-from tap_lms.summer_program.utils import glific_response, resolve_student
+from tap_lms.summer_program.utils import (
+    glific_response,
+    normalize_unicode_surrogates,
+    resolve_student,
+    sp_safe_endpoint,
+)
 
 
 # ════════════════════════════════════════════════════════════
@@ -86,23 +88,26 @@ def award_quiz_points(attempt):
     if not pe:
         return
 
-    # ── Cumulative-vs-weekly split (E4) ──────────────────────
-    prior_points = _previous_latest_points(attempt.student, attempt.quiz, attempt.name)
-    delta = earned - prior_points
-
     # ── Atomic UPDATE on PE (P-002 / L-011) ─────────────────
-    # Cumulative columns apply the delta (latest-score semantics).
     # Weekly column always adds the full new earned (effort semantics).
     # COALESCE is race-safe vs T19's reset of weekly_quiz_points (E5).
+    #
+    # CR-011 (2026-05-25): switched to **eager** totals. Pre-CR-011 the
+    # per-event handler only bumped weekly_quiz_points and let T14 roll
+    # weekly→total at week advance, which left mid-week state incoherent
+    # (a student saw weekly_quiz_points=3 but total_quiz_points=0 and
+    # total_points=0 on Glific). Now total_quiz_points and total_points
+    # are bumped in the SAME atomic UPDATE so the invariant
+    # `stream_sum == total_points` holds at ALL TIMES, not just post-T14.
     frappe.db.sql(
         """
         UPDATE "tabProgramEnrollment"
-           SET total_quiz_points  = COALESCE(total_quiz_points, 0)  + %s,
-               total_points       = COALESCE(total_points, 0)       + %s,
-               weekly_quiz_points = COALESCE(weekly_quiz_points, 0) + %s
+           SET weekly_quiz_points = COALESCE(weekly_quiz_points, 0) + %s,
+               total_quiz_points  = COALESCE(total_quiz_points,  0) + %s,
+               total_points       = COALESCE(total_points,       0) + %s
          WHERE name = %s
         """,
-        (delta, delta, earned, pe.name),
+        (earned, earned, earned, pe.name),
     )
 
     # ── Push contact fields ─────────────────────────────────
@@ -119,20 +124,38 @@ def award_quiz_points(attempt):
             "attempt": attempt.name,
             "quiz": attempt.quiz,
             "earned": earned,
-            "prior_points": prior_points,
-            "delta_applied": delta,
         },
     )
 
 
 @frappe.whitelist(allow_guest=False)
+@sp_safe_endpoint("award_bonus_quiz_points")
 @glific_response
-def award_bonus_quiz_points(student_id, points):
-    """Award independent bonus quiz points to the student's active PE.
+def award_bonus_quiz_points(student_id, points, **_glific_kwargs):
+    """Award bonus points (independent of regular quiz attempts) to the
+    student's active PE.
 
-    Bonus quiz points are intentionally independent: they update only
-    ProgramEnrollment.bonus_quiz_points and the matching Glific contact field.
-    They do not change total_points, total_quiz_points, or weekly_quiz_points.
+    Use case: Glific flow runs an independent bonus activity. When the
+    student completes it, the Glific webhook calls this endpoint with the
+    point value. Bonus points are tracked in a dedicated column
+    (`bonus_quiz_points`) so the bonus stream is distinguishable from
+    regular per-question quiz points, AND they contribute to `total_points`
+    so leaderboards / dashboards see the student's true cumulative score.
+
+    Updates (atomically, in one statement):
+      - `bonus_quiz_points` += points (the dedicated bonus stream column)
+      - `total_points`      += points (CR-011 invariant — task #92, 2026-05-25)
+
+    Does NOT update:
+      - `weekly_quiz_points` / `total_quiz_points` — bonus is independent
+        of regular quiz attempts (which go through `award_quiz_points`).
+      - `weekly_*` — bonus is a lifetime counter, not subject to T14 reset.
+
+    Invariant preserved (task #85, CR-011):
+        total_activity + total_quiz + total_submission + bonus_quiz_points
+        == total_points
+
+    `**_glific_kwargs` absorbs Glific-injected fields per task #89 — ignored.
     """
     student_id = resolve_student(student_id)
     if not student_id:
@@ -147,13 +170,21 @@ def award_bonus_quiz_points(student_id, points):
         return {"success": False}
 
     old_bonus_points = int(pe.bonus_quiz_points or 0)
+    # Task #92 (2026-05-25): bonus_quiz_points AND total_points both bumped
+    # in the same atomic UPDATE. Pre-fix, only bonus_quiz_points was updated,
+    # which broke the CR-011 invariant (stream_sum == total_points) by
+    # exactly the awarded value — Glific would show inflated bonus but
+    # stale total_points until the next regular event happened to land.
+    # COALESCE is race-safe vs concurrent quiz / activity / submission
+    # updates that also touch total_points (per L-011).
     frappe.db.sql(
         """
         UPDATE "tabProgramEnrollment"
-           SET bonus_quiz_points = COALESCE(bonus_quiz_points, 0) + %s
+           SET bonus_quiz_points = COALESCE(bonus_quiz_points, 0) + %s,
+               total_points      = COALESCE(total_points,      0) + %s
          WHERE name = %s
         """,
-        (parsed_points, pe.name),
+        (parsed_points, parsed_points, pe.name),
     )
 
     pe.reload()
@@ -188,7 +219,8 @@ def compute_quiz_points(attempt):
     """
     earned = 0
     for ans in (attempt.answers or []):
-        q = frappe.get_cached_doc("QuizQuestion", ans.question)
+        question = normalize_unicode_surrogates(ans.question)
+        q = frappe.get_cached_doc("QuizQuestion", question)
         if ans.is_correct:
             earned += int(q.points or 0)
         else:

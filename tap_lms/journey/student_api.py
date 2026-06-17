@@ -3,9 +3,21 @@ import json
 from frappe import _
 import traceback
 
+# Task #1 (2026-05-28): journey APIs deprecated pre-launch. All 7
+# whitelisted endpoints in this file return a deprecation envelope.
+# Replacements vary per endpoint — see the _REPLACEMENT_HINT map in
+# tap_lms/journey/_deprecation.py. Original bodies preserved as
+# `_DEPRECATED_*_original` helpers for one release cycle.
+from tap_lms.journey._deprecation import journey_deprecated_response
+
 
 @frappe.whitelist(allow_guest=False)
-def get_profile(student_id=None, phone=None, glific_id=None):
+def get_profile(**_kw):
+    """[DEPRECATED 2026-05-28] Use Frappe REST `GET /api/resource/Student/<id>` or summer_program/program_enrollment_api.get_student_state."""
+    return journey_deprecated_response("get_profile", _kw)
+
+
+def _DEPRECATED_get_profile_original(student_id=None, phone=None, glific_id=None):
     """
     Get student profile details
     
@@ -84,7 +96,12 @@ def get_profile(student_id=None, phone=None, glific_id=None):
 
 
 @frappe.whitelist(allow_guest=False)
-def search(query=None, offset=0, limit=20):
+def search(**_kw):
+    """[DEPRECATED 2026-05-28] Use Frappe REST API: `GET /api/method/frappe.client.get_list?doctype=Student&filters=...`."""
+    return journey_deprecated_response("search", _kw)
+
+
+def _DEPRECATED_search_original(query=None, offset=0, limit=20):
     """
     Search for students by name, phone, or glific ID
     
@@ -404,7 +421,12 @@ def get_stage_details(stage_id):
 
 
 @frappe.whitelist(allow_guest=False)
-def get_student_glific_groups(student_id=None, phone=None, glific_id=None):
+def get_student_glific_groups(**_kw):
+    """[DEPRECATED 2026-05-28] No SP equivalent — group membership is maintained by summer_program/collection_membership and the 5 PGCollection rows per BPR are the source of truth."""
+    return journey_deprecated_response("get_student_glific_groups", _kw)
+
+
+def _DEPRECATED_get_student_glific_groups_original(student_id=None, phone=None, glific_id=None):
     """
     Get Glific contact groups associated with a student
     
@@ -656,7 +678,12 @@ def get_student_glific_groups(student_id=None, phone=None, glific_id=None):
 
 
 @frappe.whitelist(allow_guest=False)
-def get_student_minimal_details(glific_id=None, phone=None, name=None):
+def get_student_minimal_details(**_kw):
+    """[DEPRECATED 2026-05-28] Use summer_program/program_enrollment_api.get_student_state for flat-map SP-state response."""
+    return journey_deprecated_response("get_student_minimal_details", _kw)
+
+
+def _DEPRECATED_get_student_minimal_details_original(glific_id=None, phone=None, name=None):
     """
     Get student minimal details by Glific ID, with optional phone and name for disambiguation
 
@@ -1308,7 +1335,12 @@ def get_current_academic_year_api():
         return None
 
 @frappe.whitelist(allow_guest=False)
-def update_student_fields(student_id=None, glific_id=None, phone=None, name=None, updates=None):
+def update_student_fields(**_kw):
+    """[DEPRECATED 2026-05-28] Use summer_program/dev_tools.update_student_state for QA-driven state changes, or the canonical state-machine transitions for production."""
+    return journey_deprecated_response("update_student_fields", _kw)
+
+
+def _DEPRECATED_update_student_fields_original(student_id=None, glific_id=None, phone=None, name=None, updates=None):
     """
     Update specific fields for a student and their latest enrollment
     
@@ -1646,7 +1678,12 @@ def update_student_fields(student_id=None, glific_id=None, phone=None, name=None
 
 
 @frappe.whitelist(allow_guest=False)
-def get_siblings(phone, glific_id=None):
+def get_siblings(**_kw):
+    """[DEPRECATED 2026-05-28] No SP equivalent — sibling handling is now upstream in PE enrollment per SP design."""
+    return journey_deprecated_response("get_siblings", _kw)
+
+
+def _DEPRECATED_get_siblings_original(phone, glific_id=None):
     """
     Check for siblings (students with same phone number)
     
@@ -1794,7 +1831,12 @@ def get_siblings(phone, glific_id=None):
 
 
 @frappe.whitelist(allow_guest=False)
-def check_student(phone):
+def check_student(**_kw):
+    """[DEPRECATED 2026-05-28] Use GET `/api/resource/Student?filters=[[\"phone\",\"=\",\"<phone>\"]]`."""
+    return journey_deprecated_response("check_student", _kw)
+
+
+def _DEPRECATED_check_student_original(phone):
     """
     Check if a student exists in the system and identify siblings.
     

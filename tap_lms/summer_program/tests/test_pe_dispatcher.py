@@ -11,19 +11,23 @@ the bug classes the prior code review (CR-2026-05-10) flagged:
   simulates a parallel worker by manipulating journey_label between SELECT
   and dispatch and asserts the second pass is a no-op (P-001).
 - B3: WHERE filter `program_status = 'active'` excluded paused PEs and made
-  pause_check / re_engagement handlers unreachable. Test enrols a paused
-  PE with `next_action_type = pause_check` and asserts the dispatcher picks
-  it up.
-- #52 (counter race): handle_feedback_timeout, handle_re_engagement, and
-  t25_delivery_failure must use COALESCE-update SQL to be race-tolerant.
-  Test calls the handler twice in sequence and asserts the counter equals
-  exactly 2 (no read-then-write loss).
+  the pause_check handler unreachable. Test enrols a paused PE with
+  `next_action_type = pause_check` and asserts the dispatcher picks it up.
+  (Pre-CR-003 also covered the now-retired handle_re_engagement; that handler
+  is gone — see task #51 / CR-003.)
+- #52 (counter race): handle_feedback_timeout and t25_delivery_failure must
+  use COALESCE-update SQL to be race-tolerant. Test calls the handler twice
+  in sequence and asserts the counter equals exactly 2 (no read-then-write
+  loss). Pre-CR-003 this also covered handle_re_engagement which has been
+  retired (task #51).
 
 Glific is mocked via unittest.mock.patch so we never hit the network.
 No frappe.db.commit() in tests — the runner relies on transaction rollback
 for isolation (lesson L-017).
 """
 import frappe
+
+from tap_lms.summer_program.tests.factories import make_batch
 from datetime import timedelta
 from unittest.mock import patch
 from frappe.tests.utils import FrappeTestCase
@@ -52,8 +56,9 @@ from tap_lms.summer_program.constants import (
     STATE_WEEK_COMPLETED,
     VALIDATION_PASSED,
 )
-# CR-003: ACTION_GRACE_REMINDER and ACTION_RE_ENGAGEMENT removed from the
-# constants module. The tests that exercised handle_grace_reminder /
+# CR-003 / task #51: ACTION_GRACE_REMINDER and ACTION_RE_ENGAGEMENT removed
+# from the constants module; handle_re_engagement and handle_grace_reminder
+# removed from pe_dispatcher. The tests that exercised handle_grace_reminder /
 # handle_re_engagement / t17b_grace_reminder have been deleted; the
 # `test_journey_label_changes_skip_dispatch` test below has been retargeted
 # to use ACTION_GRACE_CHECK which is the live grace action post-CR-003.
@@ -65,22 +70,13 @@ from tap_lms.summer_program.constants import (
 
 
 def _ensure_batch():
-    """Create or fetch a test Batch the test PEs hang off."""
-    name = frappe.get_value("Batch", {"name1": "DispatcherTestBatch"}, "name")
-    if name:
-        return name
+    """Create or fetch a test Batch the test PEs hang off.
 
-    batch = frappe.new_doc("Batch")
-    batch.name1 = "DispatcherTestBatch"
-    batch.start_date = "2026-01-01"
-    batch.end_date = "2026-04-30"
-    batch.batch_id = "DSPT01"
-    batch.program_type = "Summer"
-    batch.total_weeks = 12
-    batch.current_calendar_week = 1
-    batch.grace_window_days = 14
-    batch.insert(ignore_permissions=True)
-    return batch.name
+    Delegates to the shared factory (L-037). Tests that need to advance
+    batch.current_calendar_week mutate it via frappe.db.set_value after
+    creation — that behavior is unchanged by this delegation.
+    """
+    return make_batch(label="DispatcherTestBatch", batch_id="DSPT01")
 
 
 def _ensure_student(suffix):

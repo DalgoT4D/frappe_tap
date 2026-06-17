@@ -2,7 +2,11 @@ import frappe
 from frappe import _
 import json
 import requests
-from .glific_integration import get_glific_auth_headers, get_glific_settings
+from .glific_integration import (
+    get_glific_auth_headers,
+    get_glific_settings,
+    _glific_post_with_401_retry,
+)
 
 @frappe.whitelist()
 def update_glific_contact(doc, method):
@@ -35,8 +39,7 @@ def update_glific_contact(doc, method):
 def get_glific_contact(glific_id):
     settings = get_glific_settings()
     url = f"{settings.api_url}/api"
-    headers = get_glific_auth_headers()
-    
+
     query = """
     query contact($id: ID!) {
       contact(id: $id) {
@@ -52,14 +55,16 @@ def get_glific_contact(glific_id):
       }
     }
     """
-    
-    variables = {"id": glific_id}
-    
-    response = requests.post(url, json={"query": query, "variables": variables}, headers=headers)
-    if response.status_code == 200:
+
+    payload = {"query": query, "variables": {"id": glific_id}}
+
+    try:
+        # CR-025: use 401-retry helper (was bare requests.post, no session, no timeout)
+        response = _glific_post_with_401_retry(url, payload)
         data = response.json()
         return data.get("data", {}).get("contact", {}).get("contact")
-    return None
+    except Exception:
+        return None
 
 
 
@@ -120,7 +125,6 @@ def prepare_update_payload(doc, glific_contact):
 def send_glific_update(glific_id, update_payload):
     settings = get_glific_settings()
     url = f"{settings.api_url}/api"
-    headers = get_glific_auth_headers()
 
     query = """
     mutation updateContact($id: ID!, $input: ContactInput!) {
@@ -145,11 +149,13 @@ def send_glific_update(glific_id, update_payload):
         "input": update_payload
     }
 
-    response = requests.post(url, json={"query": query, "variables": variables}, headers=headers)
-    if response.status_code == 200:
+    try:
+        # CR-025: use 401-retry helper (was bare requests.post, no session, no timeout)
+        response = _glific_post_with_401_retry(url, {"query": query, "variables": variables})
         data = response.json()
         if "errors" in data:
             frappe.logger().error(f"Glific API Error: {data['errors']}")
             return False
         return True
-    return False
+    except Exception:
+        return False

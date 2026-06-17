@@ -1,7 +1,7 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "format:{student}-{MM}-{####}",
+ "autoname": "hash",
  "creation": "2026-02-23 16:49:02.363941",
  "default_view": "List",
  "doctype": "DocType",
@@ -146,7 +146,7 @@
  "modified_by": "Administrator",
  "module": "Tap Lms",
  "name": "StudentContentLog",
- "naming_rule": "Expression",
+ "naming_rule": "Random",
  "owner": "Administrator",
  "permissions": [
   {

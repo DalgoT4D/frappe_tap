@@ -19,20 +19,24 @@ import frappe
 from frappe.tests.utils import FrappeTestCase
 from frappe.utils import random_string
 
+from tap_lms.summer_program.tests.factories import make_batch
+
 
 def _new_batch(batch_id, name1=None, start_date="2026-06-01"):
-	"""Insert a Batch doc with a known batch_id. Caller owns cleanup
-	via addCleanup at the test level."""
-	batch = frappe.new_doc("Batch")
-	batch.name1 = name1 or f"PEDocTest{random_string(4)}"
-	batch.start_date = start_date
-	batch.end_date = "2026-08-31"
-	batch.batch_id = batch_id
-	batch.program_type = "Summer"
-	batch.total_weeks = 12
-	batch.grace_window_days = 3
-	batch.insert(ignore_permissions=True)
-	return batch
+	"""Delegates to the shared make_batch factory (L-037 compliance).
+
+	The factory is the single source of truth for every mandatory Batch
+	field (regist_start_date, regist_end_date, current_calendar_week, ...),
+	so routing creation through it means this module inherits future
+	mandatory-field additions instead of breaking with MandatoryError.
+	Returns the Batch doc so call sites can keep reading .name / .batch_id.
+	"""
+	batch_name = make_batch(
+		label=name1 or f"PEDocTest{random_string(4)}",
+		batch_id=batch_id,
+		start_date=start_date,
+	)
+	return frappe.get_doc("Batch", batch_name)
 
 
 class TestProgramEnrollmentNameUsesBatchName(FrappeTestCase):

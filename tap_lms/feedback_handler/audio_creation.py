@@ -5,7 +5,7 @@ Handles text-to-speech conversion and GCS upload for feedback audio.
 import os
 import frappe
 from tap_lms.audio.audio_helpers import generate_speech_file
-from tap_lms.imgana.submission import upload_audio_to_gcs
+from tap_lms.imgana.gcs_client import upload_audio_feedback_to_gcs
 
 
 def get_language_code(language_name: str) -> str:
@@ -98,7 +98,11 @@ def generate_feedback_audio(
         frappe.logger().info(
             f"Uploading audio to GCS for submission {submission_id}"
         )
-        public_url = upload_audio_to_gcs(local_audio_path, submission_id, original_filename)
+        public_url = upload_audio_feedback_to_gcs(
+            local_audio_path,
+            submission_id,
+            original_filename,
+        )
         
         return public_url
         
@@ -131,5 +135,4 @@ def get_pre_generated_feedback_audio(feedback_type: str, language_name: str) -> 
 
     elif feedback_type == 'system-error':
         pass
-
 

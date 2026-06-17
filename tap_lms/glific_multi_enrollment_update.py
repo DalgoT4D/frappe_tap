@@ -5,7 +5,7 @@ import frappe
 import requests
 import json
 from datetime import datetime, timezone
-from .glific_integration import get_glific_settings, get_glific_auth_headers
+from .glific_integration import get_glific_settings, _glific_post_with_401_retry
 import time
 from frappe.utils.background_jobs import enqueue
 
@@ -110,8 +110,7 @@ def update_specific_set_contacts_with_multi_enrollment(onboarding_set_name, batc
             # Get current contact from Glific
             settings = get_glific_settings()
             url = f"{settings.api_url}/api"
-            headers = get_glific_auth_headers()
-            
+
             fetch_payload = {
                 "query": """
                 query contact($id: ID!) {
@@ -129,9 +128,15 @@ def update_specific_set_contacts_with_multi_enrollment(onboarding_set_name, batc
                     "id": glific_id
                 }
             }
-            
-            # Fetch current contact
-            response = requests.post(url, json=fetch_payload, headers=headers)
+
+            # Fetch current contact — CR-025: use 401-retry helper
+            try:
+                response = _glific_post_with_401_retry(url, fetch_payload)
+            except Exception as req_e:
+                frappe.logger().error(f"Failed to fetch contact {glific_id} for student {student_name}: {req_e}")
+                total_errors += 1
+                total_processed += 1
+                continue
             if response.status_code != 200:
                 frappe.logger().error(f"Failed to fetch contact {glific_id} for student {student_name}")
                 total_errors += 1
@@ -216,8 +221,14 @@ def update_specific_set_contacts_with_multi_enrollment(onboarding_set_name, batc
                 }
             }
             
-            # Execute update
-            update_response = requests.post(url, json=update_payload, headers=headers)
+            # Execute update — CR-025: use 401-retry helper
+            try:
+                update_response = _glific_post_with_401_retry(url, update_payload)
+            except Exception as req_e:
+                frappe.logger().error(f"Failed to update contact {glific_id}: {req_e}")
+                total_errors += 1
+                total_processed += 1
+                continue
             if update_response.status_code == 200:
                 update_data = update_response.json()
                 if "errors" not in update_data and update_data.get("data", {}).get("updateContact", {}).get("contact"):

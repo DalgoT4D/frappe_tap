@@ -1,12 +1,14 @@
 {
  "actions": [],
  "allow_rename": 1,
+ "autoname": "format:{project_id}-{bucket_type}",
  "creation": "2025-12-17 13:47:48.224561",
  "default_view": "List",
  "doctype": "DocType",
  "editable_grid": 1,
  "engine": "InnoDB",
  "field_order": [
+  "bucket_type",
   "enabled",
   "bucket_name",
   "project_id",
@@ -14,20 +16,32 @@
  ],
  "fields": [
   {
+   "fieldname": "bucket_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Bucket Type",
+   "options": "Authenticated\nPublic",
+   "reqd": 1
+  },
+  {
    "default": "0",
    "fieldname": "enabled",
    "fieldtype": "Check",
+   "in_list_view": 1,
    "label": "Enable GCS Storage"
   },
   {
    "fieldname": "bucket_name",
    "fieldtype": "Data",
+   "in_list_view": 1,
    "label": "Bucket Name"
   },
   {
    "fieldname": "project_id",
    "fieldtype": "Data",
-   "label": "GCP Project ID"
+   "in_list_view": 1,
+   "label": "GCP Project ID",
+   "reqd": 1
   },
   {
    "fieldname": "credentials_json",
@@ -39,7 +53,7 @@
   }
  ],
  "index_web_pages_for_search": 1,
- "issingle": 1,
+ "issingle": 0,
  "links": [],
  "modified": "2025-12-17 13:47:48.224561",
  "modified_by": "Administrator",
@@ -61,5 +75,6 @@
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": [],
+ "title_field": "project_id",
  "track_changes": 1
 }

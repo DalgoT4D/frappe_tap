@@ -1,8 +1,9 @@
 import frappe
+import requests
 from frappe.utils.background_jobs import enqueue
 from .glific_integration import (
-    optin_contact, 
-    start_contact_flow, 
+    optin_contact,
+    start_contact_flow,
     create_or_get_teacher_group_for_batch,
     add_contact_to_group
 )
@@ -11,7 +12,14 @@ from .glific_integration import (
 def process_glific_actions(teacher_id, phone, first_name, school, school_name, language, model_name, batch_name, batch_id):
     try:
         # Optin the contact
-        optin_success = optin_contact(phone, first_name)
+        try:
+            optin_success = optin_contact(phone, first_name)
+        except requests.exceptions.RequestException as e:
+            frappe.log_error(
+                title="Glific timeout (degraded)",
+                message=f"process_glific_actions: optin_contact timed out for {phone}: {e}",
+            )
+            optin_success = False
         if not optin_success:
             frappe.logger().error(f"Failed to opt in contact for teacher {teacher_id}")
             return
@@ -30,8 +38,14 @@ def process_glific_actions(teacher_id, phone, first_name, school, school_name, l
                 
                 if teacher_group and teacher_group.get("group_id"):
                     # Add the teacher to the group
-                    group_added = add_contact_to_group(glific_id, teacher_group["group_id"])
-                    
+                    try:
+                        group_added = add_contact_to_group(glific_id, teacher_group["group_id"])
+                    except requests.exceptions.RequestException as e:
+                        frappe.log_error(
+                            title="Glific timeout (degraded)",
+                            message=f"process_glific_actions: add_contact_to_group timed out for teacher {teacher_id}: {e}",
+                        )
+                        group_added = False
                     if group_added:
                         frappe.logger().info(f"Teacher {teacher_id} added to group {teacher_group['label']}")
                     else:

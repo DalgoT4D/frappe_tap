@@ -173,7 +173,7 @@
    "fieldname": "resolved_flow_state",
    "fieldtype": "Select",
    "label": "Resolved Flow State",
-   "options": "normal_content_delivery\nnormal_escalation\nremedial_content_delivery\nremedial_escalation\ngrace_waiting\npaused_binge\nsubmitted_awaiting_feedback\nfeedback_ready\nweek_completed\nprogram_completed\nprogram_dropped",
+   "options": "normal_content_delivery\nnormal_escalation\nremedial_content_delivery\nremedial_escalation\ngrace_waiting\npaused_binge\nsubmitted_awaiting_feedback\nfeedback_ready\nweek_completed\nprogram_completed\nprogram_dropped\nprogram_paused",
    "reqd": 1,
    "search_index": 1
   },
@@ -385,7 +385,7 @@
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-05-15 01:48:57.575744",
+ "modified": "2026-05-26 13:55:31.455688",
  "modified_by": "Administrator",
  "module": "TAP LMS",
  "name": "ProgramEnrollment",
@@ -406,5 +406,6 @@
  ],
  "sort_field": "modified",
  "sort_order": "DESC",
- "states": []
+ "states": [],
+ "track_changes": 1
 }

@@ -4,8 +4,112 @@ import json
 from datetime import datetime, timedelta, timezone
 from dateutil.parser import isoparse
 
+# ── CR-004 Slice 0: shared session + explicit timeout on every Glific call ──
+# A module-level Session reuses the TLS connection across calls (keep-alive).
+# GLIFIC_TIMEOUT is a hard ceiling on connect+read combined; without it a
+# hung Glific endpoint blocks the entire RQ worker thread indefinitely,
+# causing supervisor STOPPING / orphaned-worker incidents (2026-05-31).
+_GLIFIC_SESSION = requests.Session()
+GLIFIC_TIMEOUT = 10  # seconds, connect+read combined
+
 def get_glific_settings():
     return frappe.get_single("Glific Settings")
+
+
+# ── CR-025: Token-invalidation helper ─────────────────────────────────────────
+# Clears the stored access_token and token_expiry_time in Glific Settings so
+# the NEXT call to get_glific_auth_headers() triggers a fresh login (re-fetch
+# from the phone/password credentials). Called when any API POST returns 401.
+#
+# Uses frappe.db.set_value with update_modified=False (L-039 pattern):
+#   - No save-hook chain fires (correct — Glific Settings is a singleton with
+#     no Glific-mapped fields; no reconcile needed per the L-039 exception).
+#   - Followed by frappe.db.commit() so the cleared token is visible to other
+#     workers that might also be retrying concurrent calls.
+#
+# IMPORTANT: This is NOT called from get_glific_auth_headers() itself (the
+# auth POST). It is ONLY called from _glific_post_with_401_retry() which wraps
+# API POSTs. The auth POST is never wrapped (else infinite recursion).
+
+def _invalidate_stored_token():
+    """Clear the cached Glific token to force re-authentication on next call.
+
+    After this returns, get_glific_auth_headers() will POST /api/v1/session
+    and store a fresh token.
+    """
+    settings = get_glific_settings()
+    frappe.db.set_value(
+        "Glific Settings",
+        settings.name,
+        {"access_token": None, "token_expiry_time": None},
+        update_modified=False,
+    )
+    frappe.db.commit()
+
+
+# ── CR-025: 401-resilient POST helper ─────────────────────────────────────────
+# Routes every API POST (NOT the auth POST) through a single helper that:
+#   1. Fetches fresh auth headers for EACH attempt (so callers stop passing
+#      headers and headers never go stale between retries).
+#   2. On HTTP 401: invalidates the cached token + refetches headers + retries
+#      ONCE. A second 401 raises raise_for_status() immediately — no loop.
+#   3. On any other non-2xx: raises raise_for_status() immediately.
+#
+# Pattern:
+#   OLD: response = _GLIFIC_SESSION.post(url, json=payload, headers=get_glific_auth_headers(), timeout=GLIFIC_TIMEOUT)
+#        response.raise_for_status()
+#   NEW: response = _glific_post_with_401_retry(url, payload)
+#
+# The helper NEVER wraps the auth POST itself (/api/v1/session call inside
+# get_glific_auth_headers). To guard against that, callers must pass only
+# the GraphQL /api endpoint — auth is auto-wired internally.
+
+def _glific_post_with_401_retry(url, payload, max_attempts=2):
+    """POST to a Glific API endpoint with automatic 401-token-refresh retry.
+
+    Args:
+        url: Full Glific API URL (must be /api, NOT /api/v1/session).
+        payload: dict — JSON body for the POST request.
+        max_attempts: Number of total attempts (default 2 — one fresh-headers
+                      attempt + one retry after token invalidation).
+
+    Returns:
+        requests.Response with status_code in the 2xx range.
+
+    Raises:
+        requests.HTTPError: if the response is non-2xx after all attempts,
+                            or if a 401 persists after token refresh.
+        requests.RequestException: on network errors (connect timeout, etc.).
+    """
+    last_response = None
+    for attempt in range(1, max_attempts + 1):
+        headers = get_glific_auth_headers()
+        resp = _GLIFIC_SESSION.post(url, json=payload, headers=headers,
+                                    timeout=GLIFIC_TIMEOUT)
+        if resp.status_code == 401:
+            frappe.logger().warning(
+                f"_glific_post_with_401_retry: 401 on attempt {attempt} "
+                f"for {url}; invalidating token."
+            )
+            # Invalidate on EVERY 401, including the terminal attempt. The
+            # final invalidation is a cheap idempotent no-op on the already-
+            # cleared token, but it guarantees the confirmed-dead token is gone
+            # so the NEXT operation re-authenticates instead of reusing it.
+            _invalidate_stored_token()
+            last_response = resp
+            # If this was the last attempt, fall through to raise_for_status below
+            if attempt < max_attempts:
+                continue
+        elif not resp.ok:
+            # Non-401 error — surface immediately, no retry benefit
+            resp.raise_for_status()
+        else:
+            return resp  # Success
+
+    # All attempts consumed — raise on the final bad response
+    last_response.raise_for_status()
+    return last_response  # unreachable but satisfies linters
+
 
 def get_glific_auth_headers():
     settings = get_glific_settings()
@@ -32,10 +136,11 @@ def get_glific_auth_headers():
             "Content-Type": "application/json",
             "Accept": "application/json"
         }
-        response = requests.post(url, json=payload, headers=headers)
+        response = _GLIFIC_SESSION.post(url, json=payload, headers=headers,
+                                        timeout=GLIFIC_TIMEOUT)
         if response.status_code == 200:
             data = response.json()["data"]
-            
+
             # Parse the token_expiry_time string to a timezone-aware datetime object
             token_expiry_time = isoparse(data["token_expiry_time"])
             
@@ -103,11 +208,11 @@ def create_contact(name, phone, school_name, model_name, language_id, batch_id):
 
     frappe.logger().info(f"Attempting to create Glific contact. Name: {name}, Phone: {phone}, School: {school_name}, Model: {model_name}, Language ID: {language_id}, Batch ID: {batch_id}")
     frappe.logger().info(f"Glific API URL: {url}")
-    frappe.logger().info(f"Glific API Headers: {headers}")
     frappe.logger().info(f"Glific API Payload: {payload}")
 
     try:
-        response = requests.post(url, json=payload, headers=headers)
+        # CR-025: use 401-retry helper; headers fetched internally per attempt
+        response = _glific_post_with_401_retry(url, payload)
         frappe.logger().info(f"Glific API response status: {response.status_code}")
         frappe.logger().info(f"Glific API response content: {response.text}")
 
@@ -126,13 +231,17 @@ def create_contact(name, phone, school_name, model_name, language_id, batch_id):
         else:
             frappe.logger().error(f"Failed to create Glific contact. Status code: {response.status_code}")
             return None
+    except requests.exceptions.RequestException as e:
+        frappe.logger().error(f"Network error creating Glific contact: {str(e)}", exc_info=True)
+        raise  # FIX 2: transient network errors must propagate
     except Exception as e:
         frappe.logger().error(f"Exception occurred while creating Glific contact: {str(e)}", exc_info=True)
         return None
 
-def update_contact_fields(contact_id, fields_to_update):
+def update_contact_fields(contact_id, fields_to_update, language_id=None):
     """
-    Update Glific contact fields using fetch-merge-update pattern.
+    Update Glific contact fields using fetch-merge-update pattern, optionally
+    updating the contact's CORE language at the same time.
 
     Uses 2 GraphQL calls:
       1. Fetch existing contact fields (preserves fields set by other tools)
@@ -144,14 +253,22 @@ def update_contact_fields(contact_id, fields_to_update):
 
     Args:
         contact_id: Glific contact ID (string or int)
-        fields_to_update: dict of {field_name: value} to set
+        fields_to_update: dict of {field_name: value} to set. Can be empty
+                          if you only want to update language_id.
+        language_id: Optional Glific INTEGER language ID. When provided, sets
+                     the contact's CORE `language` field as part of the same
+                     updateContact mutation — no extra network round-trip.
+                     Pass None (default) to skip core-language update; pass
+                     an integer (or numeric string) to set it. Distinct from
+                     the custom `language_id` contact field — this updates
+                     Glific's built-in language attribute. Added 2026-05-19
+                     to fix the existing-contact-language-not-updated gap.
 
     Returns:
         True on success, False on failure
     """
     settings = get_glific_settings()
     url = f"{settings.api_url}/api"
-    headers = get_glific_auth_headers()
 
     # ── Step 1: Fetch existing contact fields ──────────────────
     fetch_payload = {
@@ -170,8 +287,8 @@ def update_contact_fields(contact_id, fields_to_update):
     }
 
     try:
-        fetch_response = requests.post(url, json=fetch_payload, headers=headers, timeout=15)
-        fetch_response.raise_for_status()
+        # CR-025: 401-retry helper fetches headers internally; no headers arg
+        fetch_response = _glific_post_with_401_retry(url, fetch_payload)
         fetch_data = fetch_response.json()
 
         if "errors" in fetch_data:
@@ -200,6 +317,23 @@ def update_contact_fields(contact_id, fields_to_update):
             }
 
         # ── Step 3: Write merged fields back ───────────────────
+        # If language_id was passed, include it in the mutation input so
+        # Glific's CORE language attribute is updated alongside the custom
+        # fields blob — single round-trip.
+        mutation_input = {
+            "name": contact_data.get("name", ""),
+            "fields": json.dumps(existing_fields),
+        }
+        if language_id is not None and language_id != "":
+            try:
+                mutation_input["languageId"] = int(language_id)
+            except (TypeError, ValueError):
+                frappe.logger().warning(
+                    f"Glific update_contact_fields: language_id={language_id!r} "
+                    f"is not a valid integer; skipping core-language update "
+                    f"for contact {contact_id}."
+                )
+
         update_payload = {
             "query": """
             mutation updateContact($id: ID!, $input: ContactInput!) {
@@ -217,15 +351,12 @@ def update_contact_fields(contact_id, fields_to_update):
             """,
             "variables": {
                 "id": str(contact_id),
-                "input": {
-                    "name": contact_data.get("name", ""),
-                    "fields": json.dumps(existing_fields)
-                }
-            }
+                "input": mutation_input,
+            },
         }
 
-        update_response = requests.post(url, json=update_payload, headers=headers, timeout=15)
-        update_response.raise_for_status()
+        # CR-025: 401-retry helper fetches headers internally; no headers arg
+        update_response = _glific_post_with_401_retry(url, update_payload)
         update_data = update_response.json()
 
         if "errors" in update_data:
@@ -245,15 +376,149 @@ def update_contact_fields(contact_id, fields_to_update):
 
     except requests.exceptions.RequestException as e:
         frappe.logger().error(f"Glific API request error for contact {contact_id}: {str(e)}")
-        return False
+        raise  # FIX 2: transient network errors must propagate
     except Exception as e:
         frappe.logger().error(f"Glific update_contact_fields error for {contact_id}: {str(e)}")
         return False
 
+
+# ════════════════════════════════════════════════════════════
+# CONTACT FIELD DEFINITION (createContactsField)
+# ════════════════════════════════════════════════════════════
+# Added 2026-05-26 (task #3 per session) in response to Glific support
+# ticket reply by Priyanshu (Glific) re. Himani-TAP escalation_order issue.
+#
+# Glific separates contact field VALUE from contact field DEFINITION:
+#   - VALUE      → stored in contacts.fields JSON via `updateContact`.
+#                  Visible in the contact profile JSON.
+#   - DEFINITION → registered in the contacts_fields table via
+#                  `createContactsField`. Required to make the field:
+#                    (a) selectable in the Flow Editor variable dropdown,
+#                    (b) resolvable via @contact.fields.<shortcode> in
+#                        flow templates / send-message nodes,
+#                    (c) returned in webhook query parameters where
+#                        applicable.
+#
+# Without (b), template tokens like @contact.fields.bonus_quiz_points
+# render as LITERAL TEXT to the end user — the root cause of the
+# "Submission Missing!" garbled card on Himani's contact (2026-05-26).
+#
+# Idempotency: createContactsField returns an error with key 'shortcode'
+# and message like 'has already been taken' when the field exists. The
+# helper treats that as a no-op (returns True). Other errors return False.
+#
+# Run once per Glific organization (dev, prod) via the bootstrap function
+# `dev_tools.bootstrap_sp_contact_fields()`. After that, the standard
+# update_contact_fields path is sufficient because the definitions persist.
+
+def register_contact_field(shortcode, display_name, value_type="TEXT",
+                           scope="CONTACT"):
+    """Register a Glific contact field DEFINITION (idempotent).
+
+    Args:
+        shortcode:   String — exact key used in @contact.fields.<shortcode>.
+                     Must match the CF_* constant from constants.py.
+        display_name: String — human-readable name shown in the Glific UI.
+        value_type:  Glific enum — TEXT / NUMBER / DATE / etc. TEXT is the
+                     safe default because Glific's flow rendering converts
+                     numbers to strings anyway and the JSON we store via
+                     updateContact uses {"type": "string"}.
+        scope:       CONTACT (default — per-contact) or WA_GROUP / RELATIONSHIP.
+                     We only use CONTACT.
+
+    Returns:
+        True  — field now exists (newly created OR already existed).
+        False — registration failed for some other reason. Logged.
+
+    Network: one POST to Glific GraphQL API. Synchronous.
+    """
+    settings = get_glific_settings()
+    url = f"{settings.api_url}/api"
+
+    payload = {
+        "query": """
+        mutation CreateContactsField($input: ContactsFieldInput!) {
+          createContactsField(input: $input) {
+            contactsField {
+              id
+              name
+              shortcode
+              valueType
+              scope
+            }
+            errors {
+              key
+              message
+            }
+          }
+        }
+        """,
+        "variables": {
+            "input": {
+                "name": display_name,
+                "shortcode": shortcode,
+                "valueType": value_type,
+                "scope": scope,
+            },
+        },
+    }
+
+    try:
+        # CR-025: 401-retry helper fetches headers internally
+        response = _glific_post_with_401_retry(url, payload)
+        data = response.json()
+
+        if "errors" in data:
+            frappe.logger().error(
+                f"Glific register_contact_field GraphQL error "
+                f"for shortcode={shortcode!r}: {data['errors']}"
+            )
+            return False
+
+        result = data.get("data", {}).get("createContactsField", {})
+        mutation_errors = result.get("errors") or []
+
+        # Idempotency: treat "already taken" / "already exists" as success.
+        if mutation_errors:
+            for err in mutation_errors:
+                msg = (err.get("message") or "").lower()
+                if ("already" in msg) or ("taken" in msg) or ("exists" in msg):
+                    # Already registered — no-op success.
+                    return True
+            # Some other mutation error (validation, permission, etc.)
+            frappe.logger().error(
+                f"Glific register_contact_field mutation error "
+                f"for shortcode={shortcode!r}: {mutation_errors}"
+            )
+            return False
+
+        if result.get("contactsField"):
+            return True
+
+        # Empty errors AND no contactsField — unexpected response shape.
+        frappe.logger().error(
+            f"Glific register_contact_field unexpected response "
+            f"for shortcode={shortcode!r}: {data}"
+        )
+        return False
+
+    except requests.exceptions.RequestException as e:
+        frappe.logger().error(
+            f"Glific register_contact_field network error "
+            f"for shortcode={shortcode!r}: {e}"
+        )
+        return False
+    except Exception as e:
+        frappe.logger().error(
+            f"Glific register_contact_field error "
+            f"for shortcode={shortcode!r}: {e}"
+        )
+        return False
+
+
 def get_contact_by_phone(phone):
     settings = get_glific_settings()
     url = f"{settings.api_url}/api"
-    headers = get_glific_auth_headers()
     payload = {
         "query": """
         query contactByPhone($phone: String!) {
@@ -279,14 +544,14 @@ def get_contact_by_phone(phone):
     }
 
     try:
-        response = requests.post(url, json=payload, headers=headers)
-        response.raise_for_status()
+        # CR-025: 401-retry helper fetches headers internally
+        response = _glific_post_with_401_retry(url, payload)
         data = response.json()
-        
+
         if "errors" in data:
             frappe.logger().error(f"Glific API Error in getting contact by phone: {data['errors']}")
             return None
-        
+
         contact = data.get("data", {}).get("contactByPhone", {}).get("contact")
         if contact:
             return contact
@@ -295,12 +560,11 @@ def get_contact_by_phone(phone):
             return None
     except requests.exceptions.RequestException as e:
         frappe.logger().error(f"Error calling Glific API to get contact by phone: {str(e)}")
-        return None
+        raise  # FIX 2: transient network errors must propagate so the retry/DLQ path fires
 
 def optin_contact(phone, name):
     settings = get_glific_settings()
     url = f"{settings.api_url}/api"
-    headers = get_glific_auth_headers()
     payload = {
         "query": """
         mutation optinContact($phone: String!, $name: String) {
@@ -327,14 +591,14 @@ def optin_contact(phone, name):
     }
 
     try:
-        response = requests.post(url, json=payload, headers=headers)
-        response.raise_for_status()
+        # CR-025: 401-retry helper fetches headers internally
+        response = _glific_post_with_401_retry(url, payload)
         data = response.json()
-        
+
         if "errors" in data:
             frappe.logger().error(f"Glific API Error in opting in contact: {data['errors']}")
             return False
-        
+
         contact = data.get("data", {}).get("optinContact", {}).get("contact")
         if contact:
             frappe.logger().info(f"Contact opted in successfully: {contact}")
@@ -344,12 +608,11 @@ def optin_contact(phone, name):
             return False
     except requests.exceptions.RequestException as e:
         frappe.logger().error(f"Error calling Glific API to opt in contact: {str(e)}")
-        return False
+        raise  # FIX 2: transient network errors must propagate
 
 def create_contact_old(name, phone):
     settings = get_glific_settings()
     url = f"{settings.api_url}/api"
-    headers = get_glific_auth_headers()
     payload = {
         "query": "mutation createContact($input:ContactInput!) { createContact(input: $input) { contact { id name phone } errors { key message } } }",
         "variables": {
@@ -362,11 +625,11 @@ def create_contact_old(name, phone):
 
     frappe.logger().info(f"Attempting to create Glific contact. Name: {name}, Phone: {phone}")
     frappe.logger().info(f"Glific API URL: {url}")
-    frappe.logger().info(f"Glific API Headers: {headers}")
     frappe.logger().info(f"Glific API Payload: {payload}")
 
     try:
-        response = requests.post(url, json=payload, headers=headers)
+        # CR-025: 401-retry helper fetches headers internally
+        response = _glific_post_with_401_retry(url, payload)
         frappe.logger().info(f"Glific API response status: {response.status_code}")
         frappe.logger().info(f"Glific API response content: {response.text}")
 
@@ -392,7 +655,6 @@ def create_contact_old(name, phone):
 def start_contact_flow(flow_id, contact_id, default_results):
     settings = get_glific_settings()
     url = f"{settings.api_url}/api"
-    headers = get_glific_auth_headers()
     payload = {
         "query": """
         mutation startContactFlow($flowId: ID!, $contactId: ID!, $defaultResults: Json!) {
@@ -413,14 +675,15 @@ def start_contact_flow(flow_id, contact_id, default_results):
     }
 
     try:
-        response = requests.post(url, json=payload, headers=headers)
-        response.raise_for_status()
+        # CR-025: 401-retry helper fetches headers internally
+        response = _glific_post_with_401_retry(url, payload)
         data = response.json()
-        
+
         if "errors" in data:
+            frappe.logger().error(f"{data}")
             frappe.logger().error(f"Glific API Error in starting flow: {data['errors']}")
             return False
-        
+
         success = data.get("data", {}).get("startContactFlow", {}).get("success")
         if success:
             return True
@@ -428,7 +691,21 @@ def start_contact_flow(flow_id, contact_id, default_results):
             frappe.logger().error(f"Failed to start Glific flow. Response: {data}")
             return False
     except requests.exceptions.RequestException as e:
-        frappe.logger().error(f"Error calling Glific API to start flow: {str(e)}")
+        # L-035: surface to the Error Log (operator-visible + picked up by the
+        # hourly watchers), not just the bench log file. Contract preserved —
+        # the 7 callers (pe_dispatcher, escalation, feedback, weekly flows,
+        # onboarding) rely on the False return, so we log loudly and return
+        # False rather than raising. A persistent 401 is handled INSIDE
+        # _glific_post_with_401_retry (token invalidated before it raises), so
+        # the next call recovers.
+        try:
+            frappe.log_error(
+                f"start_contact_flow network error: flow={flow_id} "
+                f"contact={contact_id}: {e}",
+                "Glific start_contact_flow Error",
+            )
+        except Exception:
+            frappe.logger().error(f"start_contact_flow error (double-fault): {e}")
         return False
 
 def update_student_glific_ids(batch_size=100):
@@ -470,7 +747,6 @@ def check_glific_group_exists(group_label):
     """Check if a group with the given label already exists in Glific"""
     settings = get_glific_settings()
     url = f"{settings.api_url}/api"
-    headers = get_glific_auth_headers()
 
     payload = {
         "query": """
@@ -490,8 +766,8 @@ def check_glific_group_exists(group_label):
     }
 
     try:
-        response = requests.post(url, json=payload, headers=headers)
-        response.raise_for_status()
+        # CR-025: 401-retry helper fetches headers internally
+        response = _glific_post_with_401_retry(url, payload)
         data = response.json()
 
         if "errors" in data:
@@ -510,7 +786,6 @@ def create_glific_group(label, description=""):
     """Create a new group in Glific"""
     settings = get_glific_settings()
     url = f"{settings.api_url}/api"
-    headers = get_glific_auth_headers()
 
     payload = {
         "query": """
@@ -537,8 +812,8 @@ def create_glific_group(label, description=""):
     }
 
     try:
-        response = requests.post(url, json=payload, headers=headers)
-        response.raise_for_status()
+        # CR-025: 401-retry helper fetches headers internally
+        response = _glific_post_with_401_retry(url, payload)
         data = response.json()
 
         if "errors" in data:
@@ -611,6 +886,96 @@ def create_or_get_glific_group_for_batch(set_id):
     # Failed to create group
     return None
 
+def remove_contact_from_group(contact_id, group_id):
+    """Remove a single contact from a single Glific group.
+
+    CR-005 (2026-05-15): used by collection_membership state-driven writes.
+    Wraps the same updateGroupContacts mutation as add_contact_to_group,
+    routing the contact through `deleteContactIds` instead of
+    `addContactIds`. Idempotent on the Glific side — removing a contact
+    not in the group is a no-op.
+    """
+    if not contact_id or not group_id:
+        return False
+
+    settings = get_glific_settings()
+    url = f"{settings.api_url}/api"
+
+    payload = {
+        "query": """
+        mutation updateGroupContacts($input: GroupContactsInput!) {
+          updateGroupContacts(input: $input) {
+            groupContacts {
+              id
+            }
+            numberDeleted
+          }
+        }
+        """,
+        "variables": {
+            "input": {
+                "groupId": group_id,
+                "addContactIds": [],
+                "deleteContactIds": [contact_id]
+            }
+        }
+    }
+
+    try:
+        # CR-025: 401-retry helper fetches headers internally
+        response = _glific_post_with_401_retry(url, payload)
+        data = response.json()
+
+        if "errors" in data:
+            frappe.logger().error(
+                f"Glific API Error removing contact from group: {data['errors']}"
+            )
+            return False
+
+        if "data" in data and "updateGroupContacts" in data["data"]:
+            if (
+                "errors" in data["data"]["updateGroupContacts"]
+                and data["data"]["updateGroupContacts"]["errors"]
+            ):
+                errors = data["data"]["updateGroupContacts"]["errors"]
+                frappe.logger().error(
+                    f"Glific API Error removing contact from group: {errors}"
+                )
+                return False
+            return True
+
+        return False
+    except Exception as e:
+        frappe.logger().error(f"Error removing contact from group: {str(e)}")
+        return False
+
+
+def create_group_if_missing(label, description=""):
+    """Idempotent Glific group helper used by CR-005 collection bootstrap.
+
+    Looks up `label` first; if a group with that label exists, returns its
+    Glific group id. Otherwise creates the group and returns the new id.
+    Returns None on API failure (caller decides whether to retry).
+
+    Used by `activate_bpr` and the `backfill_pg_collection_kinds` patch to
+    create the 5 kind-keyed collections per BPR without duplicating groups
+    on re-runs.
+    """
+    existing = check_glific_group_exists(label)
+    if existing and existing.get("id"):
+        return existing["id"]
+
+    new_group = create_glific_group(label, description)
+    if new_group and new_group.get("id"):
+        return new_group["id"]
+
+    frappe.log_error(
+        f"create_group_if_missing: failed to look up or create '{label}'",
+        "Glific Group Bootstrap",
+    )
+    return None
+
+
 def add_contact_to_group(contact_id, group_id):
     """Add a single contact to a single group"""
     if not contact_id or not group_id:
@@ -618,7 +983,6 @@ def add_contact_to_group(contact_id, group_id):
 
     settings = get_glific_settings()
     url = f"{settings.api_url}/api"
-    headers = get_glific_auth_headers()
 
     payload = {
         "query": """
@@ -641,8 +1005,8 @@ def add_contact_to_group(contact_id, group_id):
     }
 
     try:
-        response = requests.post(url, json=payload, headers=headers)
-        response.raise_for_status()
+        # CR-025: 401-retry helper fetches headers internally
+        response = _glific_post_with_401_retry(url, payload)
         data = response.json()
 
         if "errors" in data:
@@ -658,6 +1022,9 @@ def add_contact_to_group(contact_id, group_id):
             return True
 
         return False
+    except requests.exceptions.RequestException as e:
+        frappe.logger().error(f"Network error adding contact to group: {str(e)}")
+        raise  # FIX 2: transient network errors must propagate
     except Exception as e:
         frappe.logger().error(f"Error adding contact to group: {str(e)}")
         return False
@@ -736,7 +1103,17 @@ def add_student_to_glific_for_onboarding(student_name, phone, school_name, batch
         if grade:
             fields_to_update["grade"] = grade
 
-        update_contact_fields(existing_contact['id'], fields_to_update)
+        # 2026-05-19 — defensive existing-contact branch should also update
+        # the CORE language. Reached when process_glific_contact's initial
+        # lookup missed a contact (race / late-creation) but this function
+        # re-found one. Pass language_id so it's set in the same mutation
+        # as the field updates — parity with process_glific_contact's main
+        # existing-contact path.
+        update_contact_fields(
+            existing_contact['id'],
+            fields_to_update,
+            language_id=language_id,
+        )
 
         return existing_contact
     else:
@@ -827,10 +1204,10 @@ def add_student_to_glific_for_onboarding(student_name, phone, school_name, batch
 
         # Execute request
         try:
-            response = requests.post(
+            # CR-025: 401-retry helper fetches headers internally
+            response = _glific_post_with_401_retry(
                 f"{settings.api_url}/api",
-                json=contact_data,
-                headers=get_glific_auth_headers()
+                contact_data,
             )
 
             if response.status_code != 200:
@@ -867,6 +1244,9 @@ def add_student_to_glific_for_onboarding(student_name, phone, school_name, batch
 
             return contact
 
+        except requests.exceptions.RequestException as e:
+            frappe.logger().error(f"Network error in add_student_to_glific_for_onboarding: {str(e)}", exc_info=True)
+            raise  # FIX 2: transient network errors must propagate
         except Exception as e:
             frappe.logger().error(f"Exception in add_student_to_glific_for_onboarding: {str(e)}", exc_info=True)
             return None
@@ -949,3 +1329,75 @@ def create_or_get_teacher_group_for_batch(batch_name, batch_id):
     # Failed to create group
     frappe.logger().error(f"Failed to create Glific group for batch {batch_id}")
     return None
+
+
+# ── CR-025 Layer 3a — hourly token-health probe ────────────────────────────────
+# Registered as an hourly cron in hooks.py (requires `bench migrate` to land
+# per L-049).
+#
+# Sends a lightweight Glific API call (the "me" query) to verify the token
+# stored in Glific Settings is valid. If the probe returns 401, the stored
+# token is invalidated so the next real API call triggers a fresh login.
+#
+# This is a PREVENTIVE probe — it doesn't block the incident (that's handled
+# by _glific_post_with_401_retry on each API call). Its value is surfacing
+# silent token drift earlier and giving the hourly alert dashboard a signal.
+#
+# IMPORTANT: the probe makes ONE Glific API call on success path (200) and
+# ONE on 401 path (then token invalidated). It NEVER calls the auth endpoint
+# (/api/v1/session) itself — _invalidate_stored_token just clears the DB value
+# so the next get_glific_auth_headers() call does the fresh login.
+
+def probe_token_health():
+    """Hourly cron: verify the stored Glific token is still valid.
+
+    Makes a lightweight introspection query against the Glific /api endpoint.
+    On 401: invalidates the stored token (so the next real API call triggers
+    a fresh login). On 200: no-op. On other errors: logs and returns without
+    invalidating (connection errors don't indicate an auth problem).
+
+    Scheduled in hooks.py under the existing "0 * * * *" hourly block.
+    Requires `bench --site <site> migrate` to register the scheduler entry.
+    """
+    settings = get_glific_settings()
+    url = f"{settings.api_url}/api"
+
+    # The lightest possible query — just reads the current user's name.
+    probe_payload = {
+        "query": "{ currentUser { user { name } } }"
+    }
+
+    try:
+        headers = get_glific_auth_headers()
+        resp = _GLIFIC_SESSION.post(url, json=probe_payload, headers=headers,
+                                    timeout=GLIFIC_TIMEOUT)
+
+        if resp.status_code == 401:
+            frappe.logger().warning(
+                "probe_token_health: 401 from Glific — invalidating cached token "
+                "so next API call triggers fresh login."
+            )
+            _invalidate_stored_token()
+            frappe.log_error(
+                "probe_token_health detected stale Glific token (HTTP 401). "
+                "Token has been invalidated; next API call will re-authenticate. "
+                "If this fires repeatedly, check Glific credentials in Glific Settings.",
+                "Glific Token Health Alert",
+            )
+        elif resp.ok:
+            frappe.logger().debug(
+                f"probe_token_health: token OK (HTTP {resp.status_code})"
+            )
+        else:
+            frappe.logger().warning(
+                f"probe_token_health: unexpected HTTP {resp.status_code} — "
+                f"not a 401, so token not invalidated. Body: {resp.text[:200]}"
+            )
+
+    except Exception as exc:
+        # Connection errors (timeout, DNS) don't indicate a bad token.
+        # Log the connectivity problem but don't invalidate — a valid token
+        # is better than no token when Glific comes back.
+        frappe.logger().error(
+            f"probe_token_health: connectivity error (not invalidating token): {exc}"
+        )

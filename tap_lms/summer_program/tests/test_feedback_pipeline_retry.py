@@ -55,7 +55,7 @@ def _patches():
     """
     return [
         patch("tap_lms.imgana.submission.get_rabbitmq_settings"),
-        patch("tap_lms.imgana.submission.upload_to_gcs"),
+        patch("tap_lms.imgana.gcs_client.upload_to_gcs"),
         patch("tap_lms.summer_program.save_submission.pika"),
         patch("tap_lms.summer_program.save_submission.frappe.db"),
         patch("tap_lms.summer_program.save_submission.frappe.enqueue"),
@@ -270,7 +270,7 @@ class TestFeedbackPipelineRetry(unittest.TestCase):
         with patch("tap_lms.summer_program.save_submission.pika") as mock_pika, \
              patch("tap_lms.imgana.submission.get_rabbitmq_settings",
                    return_value=self._rabbitmq_config()), \
-             patch("tap_lms.imgana.submission.upload_to_gcs") as mock_upload:
+             patch("tap_lms.imgana.gcs_client.upload_to_gcs") as mock_upload:
             mock_conn = MagicMock()
             mock_channel = MagicMock()
             mock_conn.channel.return_value = mock_channel

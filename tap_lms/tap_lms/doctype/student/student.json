@@ -28,6 +28,7 @@
   "rigour",
   "language",
   "glific_id",
+  "glific_sync_status",
   "backend_onboarding",
   "peer_groups",
   "mentor_role",
@@ -35,6 +36,7 @@
   "preferred_time",
   "preferred_day",
   "swiftchat_id",
+  "vocallabs_prospect_id",
   "archetype",
   "experiment_arm"
  ],
@@ -144,6 +146,13 @@
    "label": "Glific ID"
   },
   {
+   "default": "pending",
+   "fieldname": "glific_sync_status",
+   "fieldtype": "Select",
+   "label": "Glific Sync Status",
+   "options": "pending\nsynced\nfailed"
+  },
+  {
    "fieldname": "backend_onboarding",
    "fieldtype": "Link",
    "label": "Backend Onboarding",
@@ -182,6 +191,14 @@
    "fieldname": "swiftchat_id",
    "fieldtype": "Data",
    "label": "SwiftChat ID"
+  },
+  {
+   "description": "Vocallabs UUID returned by addMultipleContactsToGroup the first time we register this student's parent phone with Vocallabs. Populated automatically by tap_lms.summer_program.vocallabs on first parent_call and reused for every subsequent call — this is what lets us re-call the same parent without hitting the (client_id, prospect_group_id, phone) uniqueness constraint. Read-only in UI; written via db.set_value from code.",
+   "fieldname": "vocallabs_prospect_id",
+   "fieldtype": "Data",
+   "label": "Vocallabs Prospect ID",
+   "no_copy": 1,
+   "read_only": 1
   },
   {
    "fieldname": "archetype",

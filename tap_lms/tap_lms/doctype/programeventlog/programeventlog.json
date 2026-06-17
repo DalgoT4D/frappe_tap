@@ -59,7 +59,7 @@
    "fieldname": "event_type",
    "fieldtype": "Select",
    "label": "Event Type",
-   "options": "flow_triggered\nflow_completed\nlabel_changed\npoints_awarded\nescalation_sent\nsubmission_received\ncall_queued\ncall_completed\npause\nresume\narchetype_assigned\nweek_advanced\nfeedback_generated\nfeedback_delivered\ncontent_delivered\npath_changed\nquiz_completed\ngrace_window_entered\ngrace_reminder_sent\nbinge_paused\nprogram_completed\nfeedback_timeout_retry\ndelivery_failed\nre_engagement_attempt\ncall_failed\nactivity_points_awarded\nquiz_points_awarded\nbonus_quiz_points_awarded\nprogram_dropped",
+   "options": "flow_triggered\nflow_completed\nlabel_changed\npoints_awarded\nescalation_sent\nsubmission_received\ncall_queued\ncall_completed\npause\nresume\narchetype_assigned\nweek_advanced\nfeedback_generated\nfeedback_delivered\ncontent_delivered\npath_changed\nquiz_completed\ngrace_window_entered\ngrace_reminder_sent\nbinge_paused\nprogram_completed\nfeedback_timeout_retry\ndelivery_failed\nre_engagement_attempt\ncall_failed\nactivity_points_awarded\nquiz_points_awarded\nbonus_quiz_points_awarded\nprogram_dropped\nescalation_scheduled",
    "reqd": 1
   },
   {
@@ -78,7 +78,7 @@
    "fieldname": "trigger_source",
    "fieldtype": "Select",
    "label": "Trigger Source",
-   "options": "scheduler\nglific_flow\nflow_callback\nadmin\nmicroservice\ndispatcher\nactivity_points\ncontent_log\nfeedback_consumer\nquiz_attempt"
+   "options": "scheduler\nglific_flow\nflow_callback\nadmin\nmicroservice\ndispatcher\nactivity_points\ncontent_log\nfeedback_consumer\nquiz_attempt\ncomplete_content"
   },
   {
    "description": "JSONB. GIN index. {points, step, week, archetype, experiment_arm}",
@@ -94,7 +94,7 @@
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-05-15 00:45:29.994897",
+ "modified": "2026-05-26 13:55:48.590119",
  "modified_by": "Administrator",
  "module": "TAP LMS",
  "name": "ProgramEventLog",
@@ -115,5 +115,6 @@
  ],
  "sort_field": "modified",
  "sort_order": "DESC",
- "states": []
+ "states": [],
+ "track_changes": 1
 }

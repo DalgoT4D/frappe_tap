@@ -4,12 +4,29 @@ from frappe import _
 import traceback
 from datetime import datetime
 
+# Task #1 (2026-05-28): journey APIs deprecated pre-launch. Preferred-day /
+# preferred-time was a legacy feature; the SP flow uses a fixed Tuesday
+# cadence (via summer_program.scheduler.weekly_content_delivery_trigger),
+# so the per-student preferences are no longer used. Old bodies preserved
+# as _DEPRECATED_* for one release cycle.
+from tap_lms.journey._deprecation import journey_deprecated_response
+
 
 @frappe.whitelist(allow_guest=False)
-def update_student_preferences(student_id=None, glific_id=None, phone=None, name=None, preferred_day=None, preferred_time=None):
+def update_student_preferences(**_kw):
+    """[DEPRECATED 2026-05-28] Was: update student's preferred day/time.
+    No SP-module replacement — the SP flow uses a fixed Tuesday cadence."""
+    return journey_deprecated_response("update_student_preferences", _kw)
+
+
+# _DEPRECATED_update_student_preferences_original ===================
+def _DEPRECATED_update_student_preferences_original(
+    student_id=None, glific_id=None, phone=None, name=None,
+    preferred_day=None, preferred_time=None,
+):
     """
     Update student's preferred day and time for receiving messages
-    
+
     Args:
         student_id (str, optional): Student ID (name field)
         glific_id (str, optional): Glific ID of student  
@@ -175,16 +192,25 @@ def update_student_preferences(student_id=None, glific_id=None, phone=None, name
 
 
 @frappe.whitelist(allow_guest=False)
-def get_student_preferences(student_id=None, glific_id=None, phone=None, name=None):
+def get_student_preferences(**_kw):
+    """[DEPRECATED 2026-05-28] Was: get student's current preferences.
+    No SP-module replacement — the feature is gone."""
+    return journey_deprecated_response("get_student_preferences", _kw)
+
+
+# _DEPRECATED_get_student_preferences_original =======================
+def _DEPRECATED_get_student_preferences_original(
+    student_id=None, glific_id=None, phone=None, name=None,
+):
     """
     Get student's current preferences for day and time
-    
+
     Args:
         student_id (str, optional): Student ID (name field)
-        glific_id (str, optional): Glific ID of student  
+        glific_id (str, optional): Glific ID of student
         phone (str, optional): Phone number of student
         name (str, optional): Student name to help identify unique student (STRICT matching)
-        
+
     Returns:
         dict: Student's current preferences
     """

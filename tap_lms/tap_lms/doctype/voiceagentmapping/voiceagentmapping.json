@@ -1,0 +1,62 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "format:{#####}",
+ "creation": "2026-05-28 19:00:00.000000",
+ "default_view": "List",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "language",
+  "agent_id",
+  "enabled",
+  "description"
+ ],
+ "fields": [
+  {
+   "description": "TAP Language this Vocallabs agent serves. Each parent VoiceAgentSettings row must have at most ONE enabled mapping per language (enforced in the controller's validate hook).",
+   "fieldname": "language",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Language",
+   "options": "TAP Language",
+   "reqd": 1
+  },
+  {
+   "description": "Vocallabs agent UUID delivered to the initiateVocallabsCall mutation when a student speaks this language. Required when the row is enabled.",
+   "fieldname": "agent_id",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Agent ID",
+   "reqd": 1
+  },
+  {
+   "default": "1",
+   "description": "Toggle this off to take a single language out of rotation without removing the row. When disabled, the resolver skips this mapping and falls back to VoiceAgentSettings.agent_id (the parent's default).",
+   "fieldname": "enabled",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Enabled"
+  },
+  {
+   "description": "Operator notes (e.g., 'Hindi persona v3, deployed 2026-05-28' or 'Tamil female voice, test pending'). Not read by code.",
+   "fieldname": "description",
+   "fieldtype": "Small Text",
+   "label": "Description"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-05-28 19:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "TAP LMS",
+ "name": "VoiceAgentMapping",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

@@ -30,7 +30,7 @@
   },
   {
    "default": "0",
-   "description": "W1-2: OFF, W3-4: ON. Varies by archetype.",
+   "description": "Gates BOTH Remedial routing AND submission point award. When 1: failed/flagged submissions route to Remedial path for the current week (T6b) AND on-time submissions earn Assignment.points_per_item only if AI verdict is valid (Failed/Flagged → 0). When 0: validation result is informational only — student stays on Core and earns full points regardless of AI verdict. Default for the current business spec (2026-05-19) is 1 for every week.",
    "fieldname": "submission_validation_enabled",
    "fieldtype": "Check",
    "label": "Submission Validation Enabled"

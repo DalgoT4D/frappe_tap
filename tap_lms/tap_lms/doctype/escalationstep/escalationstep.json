@@ -30,7 +30,7 @@
   {
    "default": "24",
    "fieldname": "hours_after_previous",
-   "fieldtype": "Int",
+   "fieldtype": "Float",
    "label": "Hours After Previous"
   },
   {
@@ -45,7 +45,7 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Escalation Type",
-   "options": "help_note_a\nhelp_note_b\nvoice_note\nparent_call",
+   "options": "help_note_a\nhelp_note_b\nvoice_note\nparent_call\nprogram_pause",
    "reqd": 1
   }
  ],

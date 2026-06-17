@@ -1,5 +1,6 @@
 {
  "actions": [],
+ "allow_import": 1,
  "allow_rename": 1,
  "autoname": "format:{academic_year}-{course_vertical}-{grade}-{student_type}-{assigned_course_level}",
  "creation": "2025-07-19 11:11:38.835091",
@@ -81,7 +82,7 @@
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2025-07-23 15:16:55.426884",
+ "modified": "2026-05-30 21:21:28.984345",
  "modified_by": "Administrator",
  "module": "Tap Lms",
  "name": "Grade Course Level Mapping",
@@ -103,5 +104,6 @@
  ],
  "sort_field": "modified",
  "sort_order": "DESC",
- "states": []
+ "states": [],
+ "track_changes": 1
 }

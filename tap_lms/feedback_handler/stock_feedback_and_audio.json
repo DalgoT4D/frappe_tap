@@ -34,6 +34,11 @@
             "message_type": "resend_unclear_photo",
             "translated_feedback": "Hi Champ , I couldn’t review your work because the photo was either a bit unclear or not of today’s activity. No worries; please send it again!Pro tip: Take the photo in good light and show your full work. I’m excited to see what you made. You can do this!",
             "audio_feedback_url": "https://storage.googleapis.com/tap-lms-submissions/audio_feedback/resend_unclear_photo_english.mp3"
+        },
+        {
+            "message_type": "double_submission",
+            "translated_feedback": "Hey champ, you've already submitted this activity! Hang tight — the next one is coming soon. 🏆",
+            "audio_feedback_url": "https://storage.googleapis.com/tap-lms-submissions/audio_feedback/double_submission_english.mp3"
         }
     ],
     "Hindi": [
@@ -71,6 +76,11 @@
             "message_type": "resend_unclear_photo",
             "translated_feedback": "नमस्ते चैंप, मैं आपका काम ठीक से देख नहीं पाया, क्योंकि फोटो साफ़ नहीं थी या आज की एक्टिविटी की नहीं थी। कोई बात नहीं, कृपया इसे फिर से भेज दें।छोटी सलाह: अच्छी रोशनी में फोटो लें और अपना पूरा काम दिखाएँ। मैं यह देखने के लिए उत्साहित हूँ कि आपने क्या बनाया है। आप यह कर सकते हैं।",
             "audio_feedback_url": "https://storage.googleapis.com/tap-lms-submissions/audio_feedback/resend_unclear_photo_hindi.mp3"
+        },
+        {
+            "message_type": "double_submission",
+            "translated_feedback": "अरे चैंप, तुमने इस activity को पहले ही submit कर दिया है! थोड़ा रुको — अगली activity जल्द आ रही है। 🏆",
+            "audio_feedback_url": "https://storage.googleapis.com/tap-lms-submissions/audio_feedback/double_submission_hindi.mp3"
         }
     ],
     "Marathi": [
@@ -108,6 +118,11 @@
             "message_type": "resend_unclear_photo",
             "translated_feedback": "नमस्कार चॅम्प, मी तुमचे काम तपासू शकलो नाही कारण फोटो एकतर थोडा अस्पष्ट होता किंवा तो आजच्या अॅक्टिविटीचा नव्हता. काळजी करू नका; कृपया तुमचे काम पुन्हा पाठव!एक महत्त्वाची सूचना: चांगल्या प्रकाशात फोटो काढा आणि तुमचे संपूर्ण काम दाखव. तुम्ही काय बनवले आहे हे पाहण्यासाठी मी उत्सुक आहे. तुम्ही हे करू शकता!",
             "audio_feedback_url": "https://storage.googleapis.com/tap-lms-submissions/audio_feedback/resend_unclear_photo_marathi.mp3"
+        },
+        {
+            "message_type": "double_submission",
+            "translated_feedback": "अरे चॅंप, तू ही activity आधीच submit केली आहेस! थांब — पुढची activity लवकरच येतेय. 🏆",
+            "audio_feedback_url": "https://storage.googleapis.com/tap-lms-submissions/audio_feedback/double_submission_marathi.mp3"
         }
     ],
     "Punjabi": [
@@ -145,6 +160,11 @@
             "message_type": "resend_unclear_photo",
             "translated_feedback": "ਹੈਲੋ ਚੈਂਪ, ਮੈਂ ਤੇਰਾ ਕੰਮ ਸਮੀਖਿਆ ਨਹੀਂ ਕਰ ਸਕਿਆ ਕਿਉਂਕਿ ਫੋਟੋ ਥੋੜ੍ਹੀ ਧੁੰਦਲੀ ਸੀ ਜਾਂ ਅੱਜ ਦੀ ਗਤੀਵਿਧੀ ਦੀ ਨਹੀਂ ਸੀ। ਕੋਈ ਗੱਲ ਨਹੀਂ; ਕਿਰਪਾ ਕਰਕੇ ਦੁਬਾਰਾ ਭੇਜ ਦਿਓ!ਪ੍ਰੋ ਟਿਪ: ਫੋਟੋ ਚੰਗੀ ਰੌਸ਼ਨੀ ਵਿੱਚ ਲਵੋ ਅਤੇ ਆਪਣਾ ਪੂਰਾ ਕੰਮ ਦਿਖਾਓ। ਮੈਂ ਵੇਖਣ ਲਈ ਉਤਸੁਕ ਹਾਂ ਕਿ ਤੂੰ ਕੀ ਬਣਾਇਆ ਹੈ। ਤੂੰ ਇਹ ਕਰ ਸਕਦਾ ਹੈ!",
             "audio_feedback_url": "https://storage.googleapis.com/tap-lms-submissions/audio_feedback/resend_unclear_photo_punjabi.mp3"
+        },
+        {
+            "message_type": "double_submission",
+            "translated_feedback": "ਅਰੇ ਚੈਂਪ, ਤੂੰ ਇਹ activity ਪਹਿਲਾਂ ਹੀ submit ਕਰ ਦਿੱਤੀ ਹੈ! ਚਿੰਮਾ ਨਾ ਕਰ — ਅਗਲੀ activity ਜਲਦੀ ਆਵੇਗੀ। 🏆",
+            "audio_feedback_url": "https://storage.googleapis.com/tap-lms-submissions/audio_feedback/double_submission_punjabi.mp3"
         }
     ],
     "Kannada": [
@@ -177,6 +197,11 @@
             "message_type": "resend_technical_issue",
             "translated_feedback": "ಓಹ್ ಇಲ್ಲ. ನನ್ನ ಕಡೆಯಿಂದ ಏನೋ ಸಮಸ್ಯೆ ಇದೆ. ದಯವಿಟ್ಟು ನಿಮ್ಮ ಕೆಲಸವನ್ನು ಮತ್ತೆ ಕಳುಹಿಸಬಹುದೇ?",
             "audio_feedback_url": "https://storage.googleapis.com/tap-lms-submissions/audio_feedback/resend_technical_issue_kannada.mp3"
+        },
+        {
+            "message_type": "double_submission",
+            "translated_feedback": "ಅರೇ ಚಾಂಪ್, ನೀನು ಈ activity ಅನ್ನು ಈಗಾಗಲೇ submit ಮಾಡಿದ್ದೀಯ! ತಡೆದುಕೋ — ಮುಂದಿನ activity ಶೀಘ್ರದಲ್ಲೇ ಬರುತ್ತೆ. 🏆",
+            "audio_feedback_url": "https://storage.googleapis.com/tap-lms-submissions/audio_feedback/double_submission_kannada.mp3"
         }
     ]
 }

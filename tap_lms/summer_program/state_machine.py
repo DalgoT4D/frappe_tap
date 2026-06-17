@@ -21,14 +21,14 @@ from tap_lms.summer_program.constants import (
     STATE_GRACE_WAITING, STATE_PAUSED_BINGE,
     STATE_SUBMITTED_AWAITING, STATE_FEEDBACK_READY,
     STATE_WEEK_COMPLETED, STATE_PROGRAM_COMPLETED, STATE_PROGRAM_DROPPED,
-    PAUSED_STATES, TERMINAL_STATES,
+    STATE_PROGRAM_PAUSED, PAUSED_STATES, TERMINAL_STATES,
     LABEL_CONTENT_DELIVERED, LABEL_REMEDIAL_STARTED,
     LABEL_SUBMITTED, LABEL_FEEDBACK_DELIVERED,
     LABEL_GRACE_WINDOW, LABEL_PAUSED, LABEL_RESUMED,
     LABEL_COMPLETED, LABEL_DROPPED, LABEL_WEEK_ADVANCED,
     PROGRAM_ACTIVE, PROGRAM_PAUSED, PROGRAM_COMPLETED, PROGRAM_DROPPED,
     PATH_CORE, PATH_REMEDIAL,
-    ACTION_ESCALATION, ACTION_CONTENT_DELIVERY, ACTION_FEEDBACK_NOTIFICATION,
+    ACTION_ESCALATION, ACTION_CONTENT_DELIVERY,
     ACTION_FEEDBACK_TIMEOUT, ACTION_WEEK_ADVANCEMENT,
     ACTION_GRACE_CHECK,
     ACTION_PAUSE_CHECK,
@@ -43,13 +43,20 @@ from tap_lms.summer_program.constants import (
     CF_TOTAL_ACTIVITY_POINTS, CF_WEEKLY_ACTIVITY_POINTS,
     CF_TOTAL_QUIZ_POINTS, CF_WEEKLY_QUIZ_POINTS,
     CF_TOTAL_SUBMISSION_POINTS, CF_WEEKLY_SUBMISSION_POINTS,
-    CF_SPECIAL_GEMS, CF_WEEKLY_SUBMISSION_DONE,
+    CF_SPECIAL_GEMS, CF_WEEKLY_SUBMISSION_DONE, CF_BONUS_QUIZ_POINTS,
+    CF_WEEKLY_ENGAGEMENT_POINTS,
     # CR-003 — 2 new escalation channel routing fields
     CF_ESCALATION_ORDER, CF_ESCALATION_TYPE,
     GLIFIC_SYNC_MAX_RETRIES, GLIFIC_SYNC_RETRY_LOG_TITLE, GLIFIC_SYNC_DLQ_LOG_TITLE,
     TIER_BY_WEEK, DEFAULT_TIER,
 )
 from tap_lms.summer_program.event_log import log_event, log_state_transition
+from tap_lms.summer_program.weekly_rollup import calculate_week_advance_rollup
+# CR-005 (2026-05-15): module-level import so tests can patch
+# `tap_lms.summer_program.state_machine.maintain_collections` cleanly.
+# (A function-local import would force tests to patch the source module,
+# which is fragile against future refactors.)
+from tap_lms.summer_program.collection_membership import maintain_collections
 
 
 # ════════════════════════════════════════════════════════════
@@ -59,6 +66,29 @@ from tap_lms.summer_program.event_log import log_event, log_state_transition
 def transition(pe, new_state, trigger_source="scheduler", extra_updates=None, skip_glific=False):
     """
     Execute a state transition on a ProgramEnrollment.
+
+    L-011 race-safety (task #27, 2026-05-22):
+      Previously this function did `pe.save(ignore_permissions=True)` which
+      writes EVERY column on the row, not just the dirty ones. Concurrent
+      atomic bumps to columns NOT in `extra_updates` (total_*/weekly_*/
+      grace_*/submission_count/weekly_video_done) — performed by
+      activity_points, quiz_points, save_submission's primary claim, and
+      _award_submission_points_atomic — were silently overwritten by the
+      stale in-memory values pe was loaded with.
+
+      Now uses `frappe.db.set_value` with the targeted updates dict —
+      touches ONLY the fields actually being changed, so concurrent
+      atomic bumps survive. Followed by `pe.reload()` so the in-memory
+      doc reflects (a) our updates AND (b) any concurrent column bumps;
+      downstream code (log_state_transition, _enqueue_contact_field_sync,
+      maintain_collections) sees fresh state, and the Glific contact
+      field push carries the post-bump values in the same payload as
+      the state change.
+
+      Safe because ProgramEnrollment has no controller validate/
+      before_save/after_save hooks and no doc_events registered in
+      hooks.py — the previous pe.save() was just performing the row
+      write, no business-logic hooks to preserve.
 
     Args:
         pe: ProgramEnrollment doc (must be loaded, not just name)
@@ -72,23 +102,40 @@ def transition(pe, new_state, trigger_source="scheduler", extra_updates=None, sk
     """
     old_state = pe.resolved_flow_state
 
-    # Apply state change
-    pe.resolved_flow_state = new_state
-    pe.last_label_change_at = now_datetime()
-
-    # Apply extra updates
+    # Build the targeted updates dict — only fields actually changing.
+    # Concurrent atomic bumps to other columns (handled by activity_points,
+    # quiz_points, feedback hook) will survive because they're not in the
+    # UPDATE SET clause.
+    updates = {
+        "resolved_flow_state": new_state,
+        "last_label_change_at": now_datetime(),
+    }
     if extra_updates:
-        for field, value in extra_updates.items():
-            setattr(pe, field, value)
+        updates.update(extra_updates)
 
-    pe.save(ignore_permissions=True)
+    # Targeted SQL UPDATE via Frappe ORM. set_value updates `modified` and
+    # `modified_by` by default — same audit-trail behavior as pe.save().
+    frappe.db.set_value("ProgramEnrollment", pe.name, updates)
+
+    # Reload the in-memory doc so downstream code (logging, Glific push,
+    # collection maintenance) sees fresh DB state — including any
+    # concurrent column bumps that happened between pe load and now.
+    pe.reload()
 
     # Log the transition
     log_state_transition(pe, old_state, new_state, trigger_source)
 
-    # Update Glific contact fields (async — runs in background worker)
+    # Update Glific contact fields (async — runs in background worker).
+    # The payload built here now reflects ALL post-update column values,
+    # including concurrent atomic bumps that pe.reload() picked up.
     if not skip_glific and pe.glific_id:
         _enqueue_contact_field_sync(pe)
+
+        # CR-005 (2026-05-15): maintain Glific group membership (audit + main)
+        # via state-driven writes (Approach B). The weekly Tuesday cron just
+        # fires the flow against the main collection — no membership recompute.
+        # See collection_membership.py for the delta-based decision logic.
+        maintain_collections(pe, from_state=old_state, to_state=new_state)
 
     return True
 
@@ -100,6 +147,85 @@ def _enqueue_contact_field_sync(pe):
     Serializes the PE fields into a plain dict so the background worker
     doesn't need to reload the doc. This keeps the API response fast
     (~50ms) while Glific sync happens in the background (~200-500ms).
+
+    ── Field provenance — the 30 SP contact fields ────────────────────
+    This function builds the recurring 23-field STATE payload pushed on
+    every state-machine transition. The 7 IDENTITY fields below (immutable
+    after enrollment) are pushed ONCE by `_process_pe_chunk` at PE creation
+    and never re-synced from here. Total cache size on Glific: 30 fields
+    (was 28 pre-task-#98; bonus_quiz_points added 2026-05-25;
+    weekly_engagement_points added 2026-05-26 task #7 — COMPUTED, not
+    stored on PE).
+
+    23 STATE fields (this function — re-synced on every transition):
+        resolved_flow_state         pe.resolved_flow_state
+        current_week                pe.current_week
+        current_path                pe.current_path
+        current_tier                pe.current_tier
+        program_status              pe.program_status
+        total_points                pe.total_points (stored, not summed)
+        current_streak              pe.current_streak
+        grace_window_end_at         pe.grace_window_end_at
+        current_expected_submission_type
+                                    pe.current_expected_submission_type
+                                    (denormalized — written at enrollment +
+                                     T14 week advance, read directly here)
+        last_escalation_step        pe.current_escalation_step
+        submission_count            pe.submission_count
+        # CR-002 v2 gamification (9 — bonus_quiz_points added 2026-05-25 task #98):
+        total_activity_points       pe.total_activity_points
+        weekly_activity_points      pe.weekly_activity_points
+        total_quiz_points           pe.total_quiz_points
+        weekly_quiz_points          pe.weekly_quiz_points
+        total_submission_points     pe.total_submission_points
+        weekly_submission_points    pe.weekly_submission_points
+        special_gems                pe.special_gems
+        weekly_submission_done      pe.weekly_submission_done
+        bonus_quiz_points           pe.bonus_quiz_points
+                                    (added 2026-05-25 task #98 — the Glific
+                                     gamification card references
+                                     @contact.fields.bonus_quiz_points and
+                                     was rendering literal template text
+                                     when the field was missing, e.g. for
+                                     ST00051295)
+        weekly_engagement_points    COMPUTED — weekly_submission_points
+                                    + weekly_activity_points (added
+                                    2026-05-26 task #7). NOT a PE column;
+                                    not bumped by any handler; recomputed
+                                    here every push so it always equals
+                                    the live sum of its two addends. The
+                                    Glific gamification card can render a
+                                    single "engagement" stat without doing
+                                    the sum in the flow editor.
+        # CR-003 escalation routing (2):
+        escalation_order            pe.current_escalation_step (re-aliased)
+        escalation_type             pe.current_escalation_type (denormalized,
+                                    written by dispatcher T2/T4/T8/T10
+                                    escalation handlers)
+
+    7 IDENTITY fields (pushed once by _process_pe_chunk, immutable):
+        student_id, student_name, batch_id, archetype, language,
+        experiment_arm, course_level
+
+    INTENTIONALLY EXCLUDED:
+        weekly_video_done — internal state-machine flag for T19 streak/gem
+                            penalty branch; never pushed to Glific.
+        streak / gems     — these are LEGACY Glific keys OWNED BY OTHER
+                            and other programs sharing the same Glific
+                            organisation (TLM, scert, pocflow, …). The
+                            shared org has ~470 contact field definitions
+                            across all programs; the SP backend MUST NOT
+                            write to any field outside its registered
+                            namespace (the 29 SP-owned fields above) —
+                            doing so would silently clobber data that
+                            other programs rely on. SP-owned canonical
+                            keys are `current_streak` and `special_gems`.
+                            See L-008 (rename = breakage) and constants.py
+                            multi-tenant boundary note.
+
+    If you add a new contact field to the SP, update both this function
+    AND _process_pe_chunk's enrollment-time push so the cache is consistent
+    from day-one rather than only after the first transition.
     """
     fields = {
         CF_RESOLVED_FLOW_STATE: pe.resolved_flow_state or "",
@@ -114,8 +240,10 @@ def _enqueue_contact_field_sync(pe):
         CF_LAST_ESCALATION_STEP: str(pe.current_escalation_step or 0),
         CF_SUBMISSION_COUNT: str(pe.submission_count or 0),
         # ── CR-002 v2: 8 new gamification fields ──
-        # Pushed alongside the existing fields so the cache size on Glific is
-        # 26 after this CR (28 after CR-003 also ships escalation_order/type).
+        # Pushed alongside the existing fields. Cache evolution:
+        #   - 26 after CR-002 v2 (+ 8 gamification fields)
+        #   - 28 after CR-003 (+ escalation_order, escalation_type)
+        #   - 29 after task #98 (+ bonus_quiz_points)
         # `weekly_video_done` is intentionally NOT included — internal-only.
         CF_TOTAL_ACTIVITY_POINTS: str(pe.total_activity_points or 0),
         CF_WEEKLY_ACTIVITY_POINTS: str(pe.weekly_activity_points or 0),
@@ -125,6 +253,20 @@ def _enqueue_contact_field_sync(pe):
         CF_WEEKLY_SUBMISSION_POINTS: str(pe.weekly_submission_points or 0),
         CF_SPECIAL_GEMS: str(pe.special_gems or 0),
         CF_WEEKLY_SUBMISSION_DONE: str(int(pe.weekly_submission_done or 0)),
+        # 2026-05-25 (task #98): added to sync payload because the
+        # Glific gamification card references @contact.fields.bonus_quiz_points
+        # and was rendering literal text when the field was missing. The earlier
+        # "intentionally excluded" stance has been retired — the card needs it.
+        CF_BONUS_QUIZ_POINTS: str(pe.bonus_quiz_points or 0),
+        # 2026-05-26 (task #7): weekly_engagement_points is COMPUTED, not
+        # stored. Pushed alongside the canonical weekly_* fields so the
+        # Glific flow can render a single "engagement" stat (submission +
+        # activity) without computing the sum in the flow editor. Resets
+        # to 0 naturally with the lazy reset because both addends reset.
+        CF_WEEKLY_ENGAGEMENT_POINTS: str(
+            (pe.weekly_submission_points or 0)
+            + (pe.weekly_activity_points or 0)
+        ),
         # ── CR-003: escalation_order + escalation_type are re-synced here so
         # the Glific contact cache reflects the current escalation step on
         # every transition. The dispatcher's T2/T4/T8/T10 calls now resolve
@@ -184,52 +326,94 @@ def _sync_contact_fields_job(glific_id, fields, pe_name, retry_count=0, student_
     this revision minimal.
     """
     try:
-        update_contact_fields(glific_id, fields)
+        # Fix 2026-05-22 (task #5): update_contact_fields returns True/False
+        # and writes diagnostics to frappe.logger().error on every failure
+        # mode (Glific GraphQL fetch errors, contact-not-found, mutation
+        # errors, network errors, catch-all) — it NEVER raises. The except
+        # branch below only fires on raised exceptions, so prior to this
+        # fix every False return silently exited and the retry/DLQ machinery
+        # never ran. Raise an explicit marker exception on False so failures
+        # actually flow through retries + the DLQ log entry. Without this
+        # guard the file-log line was the ONLY signal of a dropped write.
+        ok = update_contact_fields(glific_id, fields)
+        if not ok:
+            raise RuntimeError(
+                f"update_contact_fields returned False for contact "
+                f"{glific_id} (PE {pe_name}); see prior logger().error "
+                f"for the specific failure mode."
+            )
     except Exception as e:
+        import json as _json
+        from datetime import timedelta as _timedelta
         retry_count = (retry_count or 0) + 1
         if retry_count <= GLIFIC_SYNC_MAX_RETRIES:
+            # CR-025 Layer 2 — exponential backoff delay (min(60, 2**retry) seconds).
+            # We attempt to schedule via rq Queue.enqueue_in (non-blocking, no worker
+            # sleep). If enqueue_in is unavailable (rq-scheduler not running), we fall
+            # back to an immediate frappe.enqueue so the retry still fires.
+            # do NOT use time.sleep() here — this blocks a shared worker for up to 60s.
+            delay_seconds = min(60, 2 ** retry_count)
             frappe.log_error(
                 title=GLIFIC_SYNC_RETRY_LOG_TITLE,
                 message=(
                     f"Glific sync transient failure "
                     f"(attempt {retry_count}/{GLIFIC_SYNC_MAX_RETRIES + 1}) "
-                    f"for PE {pe_name} (student={student_id or 'unknown'}): {e}"
+                    f"for PE {pe_name} (student={student_id or 'unknown'}), "
+                    f"backoff={delay_seconds}s: {e}"
                 ),
             )
             try:
-                frappe.enqueue(
+                from frappe.utils.background_jobs import get_queue as _get_queue
+                q = _get_queue("short")
+                q.enqueue_in(
+                    _timedelta(seconds=delay_seconds),
                     "tap_lms.summer_program.state_machine._sync_contact_fields_job",
-                    queue="short",
-                    timeout=30,
-                    glific_id=glific_id,
-                    fields=fields,
-                    pe_name=pe_name,
-                    retry_count=retry_count,
-                    student_id=student_id,
+                    kwargs=dict(
+                        glific_id=glific_id,
+                        fields=fields,
+                        pe_name=pe_name,
+                        retry_count=retry_count,
+                        student_id=student_id,
+                    ),
+                    job_timeout=30,
                 )
             except Exception as enqueue_err:
-                # Double-fault: queue itself is unhealthy. Surface to DLQ
-                # immediately so the update isn't lost.
-                import json as _json
-                frappe.log_error(
-                    title=GLIFIC_SYNC_DLQ_LOG_TITLE,
-                    message=_json.dumps(
-                        {
-                            "reason": "double_fault_enqueue_failed",
-                            "student_id": student_id,
-                            "pe_name": pe_name,
-                            "glific_id": glific_id,
-                            "fields": fields,
-                            "final_error": str(e),
-                            "enqueue_error": str(enqueue_err),
-                            "retries_attempted": retry_count,
-                        },
-                        indent=2,
-                        default=str,
-                    ),
-                )
+                # Double-fault: enqueue_in failed (rq-scheduler unavailable or
+                # Redis unhealthy). Fall back to immediate frappe.enqueue so we
+                # don't silently drop the retry.
+                try:
+                    frappe.enqueue(
+                        "tap_lms.summer_program.state_machine._sync_contact_fields_job",
+                        queue="short",
+                        timeout=30,
+                        glific_id=glific_id,
+                        fields=fields,
+                        pe_name=pe_name,
+                        retry_count=retry_count,
+                        student_id=student_id,
+                    )
+                except Exception as fallback_err:
+                    # Both delayed and immediate enqueue failed — queue is down.
+                    # Surface to DLQ so the update isn't silently lost.
+                    frappe.log_error(
+                        title=GLIFIC_SYNC_DLQ_LOG_TITLE,
+                        message=_json.dumps(
+                            {
+                                "reason": "double_fault_enqueue_failed",
+                                "student_id": student_id,
+                                "pe_name": pe_name,
+                                "glific_id": glific_id,
+                                "fields": fields,
+                                "final_error": str(e),
+                                "enqueue_error": str(enqueue_err),
+                                "fallback_error": str(fallback_err),
+                                "retries_attempted": retry_count,
+                            },
+                            indent=2,
+                            default=str,
+                        ),
+                    )
         else:
-            import json as _json
             frappe.log_error(
                 title=GLIFIC_SYNC_DLQ_LOG_TITLE,
                 message=_json.dumps(
@@ -348,18 +532,34 @@ def t1_content_no_response(pe, escalation_step, trigger_source="flow_callback"):
 
 
 # ── T2: Start escalation (Core) ───────────────────────────
-def t2_start_escalation(pe, step_number=1, escalation_type="", trigger_source="scheduler"):
+def t2_start_escalation(pe, step_number=1, escalation_type="",
+                         next_hours=None, trigger_source="scheduler"):
     """T2: normal_content_delivery → normal_escalation.
 
     CR-003 follow-up: also writes `current_escalation_type` so the standard
     contact-field sync pushes it to Glific without the dispatcher needing a
     separate eager push. Defaults to "" for backward compatibility with any
     caller that still passes only `step_number`.
+
+    CR-009 follow-up (2026-05-23): re-arm next_action_at + next_action_type
+    so the dispatcher fires the NEXT escalation step. Pre-fix, the
+    dispatcher's atomic claim cleared next_action_at on row pickup, and T2
+    failed to re-arm — leaving the chain stuck at step 1 forever. Mirrors
+    T4's existing re-arm pattern. `next_hours` is the wait before the next
+    step fires (the current step's hours_after_previous, matching T4's
+    semantic). If None, defaults to 24h so legacy callers (tests / one-off
+    admin invocations) still produce a sensible schedule.
     """
     return transition(pe, STATE_NORMAL_ESCALATION, trigger_source, {
         "current_escalation_step": step_number,
-        "current_escalation_type": escalation_type or "",
+        "current_escalation_type": escalation_type,
         "journey_label": LABEL_CONTENT_DELIVERED,
+        # B-1 (2026-06-15): `or 24` honors the docstring's promised default
+        # so operator-replay / one-off-admin calls without next_hours don't
+        # crash with TypeError: float() argument must be a string or a real
+        # number, not 'NoneType'.
+        "next_action_at": add_to_date(now_datetime(), hours=float(next_hours or 24)),
+        "next_action_type": ACTION_ESCALATION,
     })
 
 
@@ -367,25 +567,33 @@ def t2_start_escalation(pe, step_number=1, escalation_type="", trigger_source="s
 def t3_escalation_submission(pe, points=0, trigger_source="flow_callback"):
     """T3: normal_escalation → submitted_awaiting_feedback.
 
-    CR-002 v2: extends the existing updates dict to bump the new submission
-    counters (`total_submission_points`, `weekly_submission_points`), set the
-    sticky `weekly_submission_done` flag, and increment `current_streak` and
-    `special_gems` — all in the same atomic save. Streak/gems increment AT
-    SUBMISSION TIME, not deferred to T19.
+    CR-002 v2: sets the sticky `weekly_submission_done` flag and increments
+    `current_streak` + `special_gems`. Streak/gems increment AT SUBMISSION
+    TIME, not deferred to T19.
 
     CR-003 follow-up (2026-05-13): also clears the grace clock fields
     (`in_grace_window`, `grace_window_end_at`, `grace_window_start`). A
     primary submission ends the week's grace window even if the student
     submitted before the dispatcher escalated all the way to grace_waiting.
+
+    CR-007 follow-up (2026-05-22): `points` is ignored — submission point
+    awards run later in feedback_consumer_hook via atomic SQL. See
+    t7_core_submission's docstring for the L-011 rationale. DO NOT re-add
+    `+ points` reads on the point-stream columns.
+
+    NOTE: submission_count is owned by save_submission._try_claim_primary
+    (atomic claim); state-machine transitions no longer bump it — see
+    task #80 / audit 2026-05-15. Removing the bump here prevents the
+    double-increment that occurred when _try_claim_primary's UPDATE +
+    this transition's update both incremented the column.
     """
+    # CR-007 follow-up (2026-05-22): points parameter intentionally unused.
+    del points  # silence linter; preserve signature
     return transition(pe, STATE_SUBMITTED_AWAITING, trigger_source, {
         "journey_label": LABEL_SUBMITTED,
-        "submission_count": (pe.submission_count or 0) + 1,
         "last_submission_at": now_datetime(),
-        "total_points": (pe.total_points or 0) + points,
-        # CR-002 v2: submission-points split + streak/gems/sticky flag
-        "total_submission_points": (pe.total_submission_points or 0) + points,
-        "weekly_submission_points": (pe.weekly_submission_points or 0) + points,
+        # CR-002 v2: streak/gems/sticky flag set explicitly. Point-stream
+        # columns owned by the feedback hook's atomic SQL bump.
         "weekly_submission_done": 1,
         "current_streak": (pe.current_streak or 0) + 1,
         "special_gems": (pe.special_gems or 0) + 1,
@@ -393,8 +601,8 @@ def t3_escalation_submission(pe, points=0, trigger_source="flow_callback"):
         "in_grace_window": 0,
         "grace_window_end_at": None,
         "grace_window_start": None,
-        "next_action_at": add_to_date(now_datetime(), hours=FEEDBACK_TIMEOUT_HOURS),
-        "next_action_type": ACTION_FEEDBACK_TIMEOUT,
+        "next_action_at": None,
+        "next_action_type": "",
     })
 
 
@@ -445,36 +653,44 @@ def t5_escalation_to_grace(pe, trigger_source="scheduler"):
     return transition(pe, STATE_GRACE_WAITING, trigger_source, grace_updates)
 
 
-# ── T6: Escalation exhausted + ZERO activity → remedial ──
+# ── T6: REMOVED per CR-006 (2026-05-15) — kept as deprecation stub ──
 def t6_escalation_to_remedial(pe, week_rule=None, trigger_source="scheduler"):
-    """T6: normal_escalation → remedial_content_delivery."""
-    updates = {
-        # CR-004: distinguishes remedial entry from Core content for analytics.
-        # Shared with T6b — both routes into remedial write the same label.
-        "journey_label": LABEL_REMEDIAL_STARTED,
-        "current_path": PATH_REMEDIAL,
-        "current_escalation_step": 0,
-        "current_escalation_type": "",
-        "next_action_at": now_datetime(),
-        "next_action_type": ACTION_CONTENT_DELIVERY,
-    }
-    if week_rule:
-        updates["current_expected_submission_type"] = week_rule.get("expected_submission_type", "")
+    """T6: DEPRECATED per CR-006 (2026-05-15).
 
-    log_event(pe, "path_changed", PATH_CORE, PATH_REMEDIAL, trigger_source)
+    Previously transitioned `normal_escalation → remedial_content_delivery`
+    when the escalation chain exhausted with zero submissions. Removed
+    because remedial is now reserved for failed-feedback students (T6b,
+    CR-004). Zero-submission exhausters go to grace via T5, then drop at
+    grace end per CR-001.
 
-    return transition(pe, STATE_REMEDIAL_CONTENT, trigger_source, updates)
+    This stub raises so any hidden caller surfaces loudly. The function
+    will be removed entirely in a follow-up cleanup CR.
+    """
+    frappe.throw(
+        "t6_escalation_to_remedial is removed per CR-006. "
+        "Use t5_escalation_to_grace for escalation exhaustion, "
+        "or t6b_failed_feedback_to_remedial for failed AI feedback."
+    )
 
 
 # ── T6b: Failed AI feedback → remedial (CR-004) ──
 def t6b_failed_feedback_to_remedial(pe, week_rule=None, trigger_source="microservice"):
-    """T6b: submitted_awaiting_feedback → remedial_content_delivery.
+    """T6b: submitted_awaiting_feedback → week_completed.
 
     CR-004. Fires when an AI-graded submission comes back with
-    Submission.result_status == 'failed'. Routes the student into the
-    remedial content track for the SAME week. Does NOT clawback points
-    awarded by T7/T9 — the submission counted; only the LEARNING
-    outcome failed.
+    `Submission.submission_validity == "Invalid"` AND
+    `WeekRule.submission_validation_enabled == 1` (current contract per
+    `feedback_consumer_hook.on_feedback_ready` and architecture.md §9.3).
+    Routes the student into the remedial content track for the SAME week.
+    Does NOT clawback points awarded by T7/T9 — the submission counted;
+    only the LEARNING outcome failed.
+
+    Note: CR-004 originally specified branching on
+    `Submission.result_status == 'failed'`; the routing input was later
+    switched to `submission_validity` to separate the AI-scoring signal
+    (`result_status` → points) from the validation-gate signal
+    (`submission_validity` → routing). `result_status` still governs the
+    POINT award via `_compute_submission_points` (Failed/Flagged → 0).
 
     Differences vs T6:
     - Does NOT reset current_escalation_step / current_escalation_type
@@ -484,42 +700,54 @@ def t6b_failed_feedback_to_remedial(pe, week_rule=None, trigger_source="microser
       caller; T6 defaults to "scheduler").
     """
     updates = {
-        "journey_label": LABEL_REMEDIAL_STARTED,
+        "journey_label": LABEL_FEEDBACK_DELIVERED,
         "current_path": PATH_REMEDIAL,
         "next_action_at": now_datetime(),
-        "next_action_type": ACTION_CONTENT_DELIVERY,
+        "next_action_type": ACTION_WEEK_ADVANCEMENT,
     }
     if week_rule:
         updates["current_expected_submission_type"] = week_rule.get("expected_submission_type", "")
 
     log_event(pe, "path_changed", PATH_CORE, PATH_REMEDIAL, trigger_source)
 
-    return transition(pe, STATE_REMEDIAL_CONTENT, trigger_source, updates)
+    return transition(pe, STATE_WEEK_COMPLETED, trigger_source, updates)
 
 
 # ── T7: First submission (Core, from content delivery) ────
 def t7_core_submission(pe, points=0, trigger_source="flow_callback"):
     """T7: normal_content_delivery → submitted_awaiting_feedback.
 
-    CR-002 v2: extends the existing updates dict to bump the new submission
-    counters (`total_submission_points`, `weekly_submission_points`), set the
-    sticky `weekly_submission_done` flag, and increment `current_streak` and
-    `special_gems` — all in the same atomic save. Streak/gems increment AT
-    SUBMISSION TIME, not deferred to T19.
+    CR-002 v2: sets the sticky `weekly_submission_done` flag and increments
+    `current_streak` + `special_gems`. Streak/gems increment AT SUBMISSION
+    TIME, not deferred to T19.
 
     CR-003 follow-up (2026-05-13): also clears the grace clock fields
     (`in_grace_window`, `grace_window_end_at`, `grace_window_start`). A
     primary submission ends the week's grace window (which the activity-points
     handler armed when the student watched their first VideoClass).
+
+    CR-007 follow-up (2026-05-22): the `points` parameter is retained for
+    signature compatibility but IGNORED. Submission point awards are now
+    owned by `feedback_consumer_hook._award_submission_points_atomic`
+    (atomic COALESCE SQL), which runs after AI validation. The previous
+    `(pe.X or 0) + points` reads on total_points / total_submission_points
+    / weekly_submission_points opened a read-modify-write window that
+    clobbered concurrent atomic bumps from activity_points / quiz_points
+    / the feedback hook (L-011 violation). DO NOT re-add those lines.
+
+    NOTE: submission_count is owned by save_submission._try_claim_primary
+    (atomic claim); state-machine transitions no longer bump it — see
+    task #80 / audit 2026-05-15.
     """
+    # CR-007 follow-up (2026-05-22): points parameter intentionally unused.
+    # The atomic award fires later in feedback_consumer_hook.
+    del points  # silence linter; preserve signature
     return transition(pe, STATE_SUBMITTED_AWAITING, trigger_source, {
         "journey_label": LABEL_SUBMITTED,
-        "submission_count": (pe.submission_count or 0) + 1,
         "last_submission_at": now_datetime(),
-        "total_points": (pe.total_points or 0) + points,
-        # CR-002 v2: submission-points split + streak/gems/sticky flag
-        "total_submission_points": (pe.total_submission_points or 0) + points,
-        "weekly_submission_points": (pe.weekly_submission_points or 0) + points,
+        # CR-002 v2: streak/gems/sticky flag set explicitly (not additive on
+        # a stale read). Point-stream columns are owned by the feedback
+        # hook's atomic SQL bump; do NOT include them here.
         "weekly_submission_done": 1,
         "current_streak": (pe.current_streak or 0) + 1,
         "special_gems": (pe.special_gems or 0) + 1,
@@ -527,22 +755,31 @@ def t7_core_submission(pe, points=0, trigger_source="flow_callback"):
         "in_grace_window": 0,
         "grace_window_end_at": None,
         "grace_window_start": None,
-        "next_action_at": add_to_date(now_datetime(), hours=FEEDBACK_TIMEOUT_HOURS),
-        "next_action_type": ACTION_FEEDBACK_TIMEOUT,
+        "next_action_at": None,
+        "next_action_type": "",
     })
 
 
 # ── T8: Start Remedial escalation ────────────────────────
-def t8_start_remedial_escalation(pe, step_number=1, escalation_type="", trigger_source="scheduler"):
+def t8_start_remedial_escalation(pe, step_number=1, escalation_type="",
+                                  next_hours=None, trigger_source="scheduler"):
     """T8: remedial_content_delivery → remedial_escalation.
 
     CR-003 follow-up: writes `current_escalation_type` so the standard
     contact-field sync pushes it to Glific. Defaults to "" for backward
     compatibility.
+
+    CR-009 follow-up (2026-05-23): re-arm next_action_at + next_action_type
+    so the dispatcher fires the NEXT remedial escalation step. Mirror of
+    the T2 fix — pre-CR-009 the Remedial chain was also stuck at step 1.
     """
     return transition(pe, STATE_REMEDIAL_ESCALATION, trigger_source, {
         "current_escalation_step": step_number,
         "current_escalation_type": escalation_type or "",
+        # B-1 (2026-06-15): same fix as t2_start_escalation — honor the
+        # documented next_hours=None → 24h fallback.
+        "next_action_at": add_to_date(now_datetime(), hours=float(next_hours or 24)),
+        "next_action_type": ACTION_ESCALATION,
     })
 
 
@@ -550,24 +787,30 @@ def t8_start_remedial_escalation(pe, step_number=1, escalation_type="", trigger_
 def t9_remedial_submission(pe, points=0, trigger_source="flow_callback"):
     """T9: remedial_content_delivery → submitted_awaiting_feedback.
 
-    CR-002 v2: extends the existing updates dict to bump the new submission
-    counters (`total_submission_points`, `weekly_submission_points`), set the
-    sticky `weekly_submission_done` flag, and increment `current_streak` and
-    `special_gems` — all in the same atomic save. Streak/gems increment AT
-    SUBMISSION TIME, not deferred to T19.
+    CR-002 v2: sets the sticky `weekly_submission_done` flag and increments
+    `current_streak` + `special_gems`. Streak/gems increment AT SUBMISSION
+    TIME, not deferred to T19.
 
     CR-003 follow-up (2026-05-13): also clears the grace clock fields
     (`in_grace_window`, `grace_window_end_at`, `grace_window_start`). A
     primary submission ends the week's grace window.
+
+    CR-007 follow-up (2026-05-22): `points` is ignored — submission point
+    awards run later in feedback_consumer_hook via atomic SQL. See
+    t7_core_submission's docstring for the L-011 rationale. DO NOT re-add
+    `+ points` reads on the point-stream columns.
+
+    NOTE: submission_count is owned by save_submission._try_claim_primary
+    (atomic claim); state-machine transitions no longer bump it — see
+    task #80 / audit 2026-05-15.
     """
+    # CR-007 follow-up (2026-05-22): points parameter intentionally unused.
+    del points  # silence linter; preserve signature
     return transition(pe, STATE_SUBMITTED_AWAITING, trigger_source, {
         "journey_label": LABEL_SUBMITTED,
-        "submission_count": (pe.submission_count or 0) + 1,
         "last_submission_at": now_datetime(),
-        "total_points": (pe.total_points or 0) + points,
-        # CR-002 v2: submission-points split + streak/gems/sticky flag
-        "total_submission_points": (pe.total_submission_points or 0) + points,
-        "weekly_submission_points": (pe.weekly_submission_points or 0) + points,
+        # CR-002 v2: streak/gems/sticky flag set explicitly. Point-stream
+        # columns owned by the feedback hook's atomic SQL bump.
         "weekly_submission_done": 1,
         "current_streak": (pe.current_streak or 0) + 1,
         "special_gems": (pe.special_gems or 0) + 1,
@@ -575,8 +818,8 @@ def t9_remedial_submission(pe, points=0, trigger_source="flow_callback"):
         "in_grace_window": 0,
         "grace_window_end_at": None,
         "grace_window_start": None,
-        "next_action_at": add_to_date(now_datetime(), hours=FEEDBACK_TIMEOUT_HOURS),
-        "next_action_type": ACTION_FEEDBACK_TIMEOUT,
+        "next_action_at": None,
+        "next_action_type": "",
     })
 
 
@@ -670,9 +913,20 @@ def t14_week_advance(pe, new_week, week_rule=None, trigger_source="scheduler"):
         else:
             both unchanged.
 
-    Phase 2 — reset all weekly_* counters and both sticky flags to 0,
-    advance the week, and write the streak/gem values computed in Phase 1.
-    `total_*` counters are NEVER reset (cumulative across program).
+    Phase 2 — roll up weekly points into cumulative totals via
+    `calculate_week_advance_rollup`. Advance the week. Reset `weekly_video_done`
+    to 0 (the lazy-reset trigger for next week's first video). Apply streak /
+    gem updates.
+
+    CR-008 lazy reset (2026-05-23): T14 NO LONGER zeros these fields —
+        weekly_activity_points, weekly_quiz_points, weekly_submission_points,
+        bonus_quiz_points, weekly_submission_done, quiz_completed,
+        submission_count
+    The first VideoClass of the new week (gated on weekly_video_done = 0)
+    atomically resets the gamification + sticky fields. submission_count is
+    intentionally NOT reset — it's a lifetime program counter. This keeps
+    Glific showing the student's W1 reward through the inter-week gap until
+    they actively start W2 content. See activity_points.award_activity_points.
 
     Gem floor is enforced in Python (`max(0, ...)`) because the value is
     computed before the UPDATE. SQL `GREATEST(0, ...)` is not needed — the
@@ -680,42 +934,44 @@ def t14_week_advance(pe, new_week, week_rule=None, trigger_source="scheduler"):
     """
     tier = TIER_BY_WEEK.get(new_week, DEFAULT_TIER)
 
-    # ── Phase 1: streak/gem compute (CR-002 v2) ─────────────
-    was_assigned = bool(pe.weekly_video_done)
-    did_submit = bool(pe.weekly_submission_done)
-    streak_update = pe.current_streak or 0
-    gems_update = pe.special_gems or 0
-    if was_assigned and not did_submit:
-        # Penalty branch: streak resets, gem decremented (floored at 0).
-        streak_update = 0
-        gems_update = max(0, gems_update - 1)
-    # else: streak/gems unchanged. Either:
-    #   - Nothing was assigned (no video) → no penalty for not submitting.
-    #   - Student submitted → streak/gems already incremented at submission
-    #     time inside the T7/T9/T17 transitions.
+    # ── Phase 2: roll up weekly points + build the reset update dict ─────
+    # The rollup reads CURRENT weekly_* values (still showing this just-completed
+    # week's earnings) and adds them to the corresponding total_* columns.
+    # After this T14, the weekly_* values remain visible on Glific (lazy reset);
+    # the next VideoClass of the new week wipes them via
+    # activity_points.award_activity_points' CASE WHEN gates.
+    rollup_updates = calculate_week_advance_rollup(pe)
 
-    # ── Phase 2: build the reset update dict ────────────────
     updates = {
         "journey_label": LABEL_WEEK_ADVANCED,
         "current_week": new_week,
         "current_path": PATH_CORE,
         "current_tier": tier,
-        "submission_count": 0,
-        "quiz_completed": 0,
+        # CR-008 (2026-05-23): submission_count / quiz_completed are NOT
+        # reset here — submission_count accumulates as a lifetime counter,
+        # quiz_completed flips back via the lazy-reset in activity_points
+        # on the next week's first VideoClass.
         "current_escalation_step": 0,
         "current_escalation_type": "",
-        "next_action_at": now_datetime(),
-        "next_action_type": ACTION_CONTENT_DELIVERY,
-        # CR-002 v2: apply streak/gem update + reset all weeklies + flags
-        "current_streak": streak_update,
-        "special_gems": gems_update,
-        "weekly_activity_points": 0,
-        "weekly_quiz_points": 0,
-        "weekly_submission_points": 0,
-        "weekly_submission_done": 0,
+        # CR-005 (2026-05-15): content_delivery is now batch-triggered via the
+        # weekly Tuesday cron (`weekly_content_delivery_trigger`) firing
+        # SP_Content_Delivery against the BPR's `main` Glific collection. T14
+        # no longer arms `next_action_type = ACTION_CONTENT_DELIVERY` — that
+        # would re-introduce the per-PE dispatcher path we're moving off of.
+        # `handle_content_delivery` in pe_dispatcher.py is preserved as an
+        # operator escape hatch (see CR-005 §4) but is no longer reached in
+        # the normal weekly cadence.
+        "next_action_at": None,
+        "next_action_type": "",
+        # CR-002 v2: streak/gem update from rollup + cumulative totals.
+        **rollup_updates,
+        # CR-008 lazy reset (2026-05-23): the following fields are NOT zeroed
+        # here — the first VideoClass of the new week wipes them atomically:
+        #   weekly_activity_points, weekly_quiz_points, weekly_submission_points,
+        #   bonus_quiz_points, weekly_submission_done, quiz_completed
+        # weekly_video_done MUST stay at 0 here — it's the signal that gates
+        # the lazy-reset SQL in activity_points.award_activity_points.
         "weekly_video_done": 0,
-        # NOTE: total_activity_points, total_quiz_points,
-        # total_submission_points, total_points are NEVER reset (E10).
     }
 
     # ── CR-003 follow-up (2026-05-13): grace re-arm removed ──
@@ -741,13 +997,24 @@ def t14_week_advance(pe, new_week, week_rule=None, trigger_source="scheduler"):
 
 # ── T15: Binge limit hit ────────────────────────────────
 def t15_binge_pause(pe, next_open_date=None, trigger_source="scheduler"):
-    """T15: week_completed → paused_binge."""
+    """T15: week_completed → paused_binge.
+
+    Task #14 (2026-05-28, Esc R5): also set `weekly_video_done = 0` so
+    the next first-VideoClass of a new week re-arms the CR-008 lazy reset.
+    Without this, a binge pause that spans a week boundary leaves the
+    student in next-week's calendar week with weekly_* values still
+    carrying the prior week's accumulated totals, until the next
+    activity_points handler can flip the gate (which it won't because
+    `weekly_video_done` is already 1).
+    """
     return transition(pe, STATE_PAUSED_BINGE, trigger_source, {
         "journey_label": LABEL_PAUSED,
         "program_status": PROGRAM_PAUSED,
         "pause_reason": PAUSE_BINGE_LIMIT,
         "next_action_at": next_open_date,
         "next_action_type": ACTION_PAUSE_CHECK,
+        # Arm CR-008 lazy reset on next week's first VideoClass watch.
+        "weekly_video_done": 0,
     })
 
 
@@ -766,28 +1033,34 @@ def t16_program_completed(pe, trigger_source="scheduler"):
 def t17_grace_submission(pe, points=0, trigger_source="flow_callback"):
     """T17: grace_waiting → submitted_awaiting_feedback.
 
-    CR-002 v2: extends the existing updates dict to bump the new submission
-    counters (`total_submission_points`, `weekly_submission_points`), set the
-    sticky `weekly_submission_done` flag, and increment `current_streak` and
-    `special_gems` — all in the same atomic save. Streak/gems increment AT
-    SUBMISSION TIME, not deferred to T19.
+    CR-002 v2: sets the sticky `weekly_submission_done` flag and increments
+    `current_streak` + `special_gems`. Streak/gems increment AT SUBMISSION
+    TIME, not deferred to T19.
+
+    CR-007 follow-up (2026-05-22): `points` is ignored — submission point
+    awards run later in feedback_consumer_hook via atomic SQL. See
+    t7_core_submission's docstring for the L-011 rationale. DO NOT re-add
+    `+ points` reads on the point-stream columns.
+
+    NOTE: submission_count is owned by save_submission._try_claim_primary
+    (atomic claim); state-machine transitions no longer bump it — see
+    task #80 / audit 2026-05-15.
     """
+    # CR-007 follow-up (2026-05-22): points parameter intentionally unused.
+    del points  # silence linter; preserve signature
     return transition(pe, STATE_SUBMITTED_AWAITING, trigger_source, {
         "journey_label": LABEL_SUBMITTED,
         "in_grace_window": 0,
         "grace_window_start": None,
         "grace_window_end_at": None,
-        "submission_count": (pe.submission_count or 0) + 1,
         "last_submission_at": now_datetime(),
-        "total_points": (pe.total_points or 0) + points,
-        # CR-002 v2: submission-points split + streak/gems/sticky flag
-        "total_submission_points": (pe.total_submission_points or 0) + points,
-        "weekly_submission_points": (pe.weekly_submission_points or 0) + points,
+        # CR-002 v2: streak/gems/sticky flag set explicitly. Point-stream
+        # columns owned by the feedback hook's atomic SQL bump.
         "weekly_submission_done": 1,
         "current_streak": (pe.current_streak or 0) + 1,
         "special_gems": (pe.special_gems or 0) + 1,
-        "next_action_at": add_to_date(now_datetime(), hours=FEEDBACK_TIMEOUT_HOURS),
-        "next_action_type": ACTION_FEEDBACK_TIMEOUT,
+        "next_action_at": None,
+        "next_action_type": "",
     })
 
 
@@ -815,11 +1088,11 @@ def t17_grace_expired(pe, trigger_source="scheduler"):
     that import by the old name; both point to the same function so existing
     grep'ed call sites still work during the cutover window.
     """
-    log_event(pe, "program_dropped", trigger_source=trigger_source,
+    log_event(pe, "program_paused", trigger_source=trigger_source,
               details={"reason": "grace_expired"})
-    return transition(pe, STATE_PROGRAM_DROPPED, trigger_source, {
-        "journey_label": LABEL_DROPPED,
-        "program_status": PROGRAM_DROPPED,
+    return transition(pe, STATE_PROGRAM_PAUSED, trigger_source, {
+        "journey_label": LABEL_PAUSED,
+        "program_status": PROGRAM_PAUSED,
         "drop_reason": "grace_expired",
         "in_grace_window": 0,
         "next_action_at": None,
@@ -859,6 +1132,20 @@ def t21_binge_resume(pe, trigger_source="scheduler"):
         "pause_reason": "",
         "next_action_at": now_datetime(),
         "next_action_type": ACTION_WEEK_ADVANCEMENT,
+    })
+
+def t21_a_resume_paused(pe, trigger_source="scheduler"):
+    """T21: paused → normal_content_delivery (calendar advanced)."""
+    return transition(pe, STATE_NORMAL_CONTENT, trigger_source, {
+        "journey_label": LABEL_RESUMED,
+        "program_status": PROGRAM_ACTIVE,
+        "pause_reason": "",
+        "drop_reason": "",
+        "in_grace_window": 0,
+        "grace_window_start": None,
+        "grace_window_end_at": None,
+        "next_action_at": now_datetime(),
+        "next_action_type": ACTION_CONTENT_DELIVERY,
     })
 
 
@@ -918,12 +1205,31 @@ def t24_admin_drop(pe, trigger_source="admin"):
 
 # ── T25: Delivery failure (no state change) ─────────────
 def t25_delivery_failure(pe, flow_name, trigger_source="scheduler"):
-    """T25: ANY → same state. Increment failure count."""
-    pe.delivery_failure_count = (pe.delivery_failure_count or 0) + 1
-    pe.save(ignore_permissions=True)
+    """T25: ANY → same state. Increment failure count.
+
+    Task #19 (2026-05-28, L-011): atomic COALESCE increment (P-002)
+    replaces the prior `pe.delivery_failure_count = ... + 1; pe.save()`
+    sequence. The Python-read-then-save would write every PE column from
+    a possibly-stale doc, clobbering concurrent atomic SQL bumps from
+    the activity_points / quiz_points / feedback_consumer_hook award
+    handlers. The atomic SQL UPDATE here is race-safe — concurrent
+    bumps on OTHER columns proceed independently.
+
+    Mirrors the pattern already used in `pe_dispatcher._record_delivery_failure`.
+    """
+    frappe.db.sql(
+        """
+        UPDATE "tabProgramEnrollment"
+           SET delivery_failure_count = COALESCE(delivery_failure_count, 0) + 1
+         WHERE name = %s
+        """,
+        (pe.name,),
+    )
+    pe.reload()
 
     log_event(pe, "delivery_failed", trigger_source=trigger_source,
-              details={"flow_name": flow_name, "failure_count": pe.delivery_failure_count})
+              details={"flow_name": flow_name,
+                       "failure_count": pe.delivery_failure_count})
     return True
 
 

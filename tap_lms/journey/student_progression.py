@@ -24,6 +24,14 @@ from frappe import _
 from frappe.utils import now_datetime, cint, flt, time_diff_in_seconds
 import json
 
+# Task #1 (2026-05-28): journey APIs deprecated pre-launch. All 8
+# whitelisted endpoints in this file return a deprecation envelope and
+# do NOT execute the legacy progression logic. The SP replacement lives
+# in summer_program/student_progression_sp.py with the same function
+# names. Old endpoint bodies are preserved as `_DEPRECATED_*_original`
+# helpers for one release cycle so the code is still readable.
+from tap_lms.journey._deprecation import journey_deprecated_response
+
 # ============================================================
 # CONSTANTS
 # ============================================================
@@ -111,8 +119,8 @@ def get_student_progress(student_id: str, course_level: str) -> dict:
         "total_time_spent_seconds": 0
     })
     doc.insert(ignore_permissions=True)
-    frappe.db.commit()
-    
+    # Removed mid-handler commit per L-017 — Frappe commits at request-end.
+
     return frappe.db.get_value(
         "StudentStageProgress", doc.name,
         ["name", "student", "stage", "status", "current_week", "current_tier",
@@ -129,7 +137,7 @@ def update_progress(progress_name: str, updates: dict):
     """Update progress record."""
     updates["last_activity_timestamp"] = now_datetime()
     frappe.db.set_value("StudentStageProgress", progress_name, updates)
-    frappe.db.commit()
+    # Removed mid-handler commit per L-017 — Frappe commits at request-end.
 
 
 def get_first_learning_unit(course_level: str, week_no: int, tier: str) -> str:
@@ -224,10 +232,15 @@ def get_content_name(content_type: str, content_id: str) -> str:
 # ============================================================
 
 @frappe.whitelist(allow_guest=False)
-def get_next_content(student_id: str, course_level: str):
+def get_next_content(**_kw):
+    """[DEPRECATED 2026-05-28] Use summer_program.student_progression_sp.get_next_content."""
+    return journey_deprecated_response("get_next_content", _kw)
+
+
+def _DEPRECATED_get_next_content_original(student_id: str, course_level: str):
     """
     Get next content item for student.
-    
+
     Returns:
     - Content info if available
     - Quiz in progress status if active quiz exists
@@ -414,7 +427,12 @@ def get_next_content(student_id: str, course_level: str):
 # ============================================================
 
 @frappe.whitelist(allow_guest=False)
-def get_content_details(content_type: str, content_id: str, language: str = None):
+def get_content_details(**_kw):
+    """[DEPRECATED 2026-05-28] Use summer_program.student_progression_sp.get_content_details."""
+    return journey_deprecated_response("get_content_details", _kw)
+
+
+def _DEPRECATED_get_content_details_original(content_type: str, content_id: str, language: str = None):
     """
     Get detailed information about a specific content item.
     Includes translations if available.
@@ -512,7 +530,12 @@ def get_content_details(content_type: str, content_id: str, language: str = None
 # ============================================================
 
 @frappe.whitelist(allow_guest=False)
-def complete_content(student_id: str, course_level: str, content_type: str, content_id: str):
+def complete_content(**_kw):
+    """[DEPRECATED 2026-05-28] Use summer_program.student_progression_sp.complete_content."""
+    return journey_deprecated_response("complete_content", _kw)
+
+
+def _DEPRECATED_complete_content_original(student_id: str, course_level: str, content_type: str, content_id: str):
     """
     Mark non-quiz content as complete.
     For Quiz, use start_quiz and submit_answer instead.
@@ -716,7 +739,12 @@ def advance_to_next_content(progress: dict, course_level: str) -> dict:
 # ============================================================
 
 @frappe.whitelist(allow_guest=False)
-def start_quiz(student_id: str, course_level: str, quiz_id: str, language: str = None):
+def start_quiz(**_kw):
+    """[DEPRECATED 2026-05-28] Use summer_program.student_progression_sp.start_quiz."""
+    return journey_deprecated_response("start_quiz", _kw)
+
+
+def _DEPRECATED_start_quiz_original(student_id: str, course_level: str, quiz_id: str, language: str = None):
     """
     Begin a quiz attempt or resume existing one.
     Returns first question (or current question if resuming).
@@ -778,8 +806,16 @@ def start_quiz(student_id: str, course_level: str, quiz_id: str, language: str =
             "answers": []
         })
         attempt.insert(ignore_permissions=True)
+        # L-017: commit kept — legacy journey/ endpoint. The new StudentQuizAttempt
+        # row needs to be visible before update_progress() writes
+        # `active_quiz_attempt = attempt.name` onto StudentStageProgress, because
+        # the teacher dashboard (other consumer of this endpoint) cross-reads
+        # both tables and historically relied on the pointer being resolvable
+        # after start_quiz returns. Removing this commit changes that assumption
+        # without coordinating with the dashboard. Revisit when journey/ is
+        # consolidated with summer_program/.
         frappe.db.commit()
-        
+
         # Update progress
         update_progress(progress["name"], {
             "active_quiz_attempt": attempt.name,
@@ -837,8 +873,15 @@ def resume_quiz(attempt, progress: dict, language: str = None) -> dict:
     update_progress(progress["name"], {"question_started_at": now_datetime()})
     attempt.question_started_at = now_datetime()
     attempt.save(ignore_permissions=True)
+    # L-017: commit kept — legacy journey/ resume_quiz. This is a mid-handler
+    # safety commit on a refresh-time write (`question_started_at`); strictly,
+    # removing it would only mean a Frappe request-end commit a few ms later.
+    # Conservative: kept because other consumers of resume_quiz (teacher
+    # dashboard) may observe `question_started_at` from a parallel read; the
+    # explicit commit makes that read-after-write boundary unambiguous. Cheap
+    # to remove once journey/ has its own test coverage.
     frappe.db.commit()
-    
+
     # Get question details
     question_row = questions[next_index - 1]
     question_details = get_question_details(question_row.question, language)
@@ -935,7 +978,12 @@ def get_question_details(question_id: str, language: str = None) -> dict:
 # ============================================================
 
 @frappe.whitelist(allow_guest=False)
-def submit_answer(student_id: str, quiz_attempt_id: str, question_index: int, answer: str, language: str = None):
+def submit_answer(**_kw):
+    """[DEPRECATED 2026-05-28] Use summer_program.student_progression_sp.submit_answer."""
+    return journey_deprecated_response("submit_answer", _kw)
+
+
+def _DEPRECATED_submit_answer_original(student_id: str, quiz_attempt_id: str, question_index: int, answer: str, language: str = None):
     """
     Submit an answer for current question.
     Time tracking handled server-side.
@@ -1020,8 +1068,16 @@ def submit_answer(student_id: str, quiz_attempt_id: str, question_index: int, an
         # Update for next question
         attempt.question_started_at = now_datetime()
         attempt.save(ignore_permissions=True)
+        # L-017: commit kept — legacy journey/ submit_answer mid-quiz path.
+        # The commit is between saving the answer row and the subsequent
+        # update_progress() write on StudentStageProgress. Removing it would
+        # rely on Frappe's end-of-request commit, which is fine in the happy
+        # path but loses durability of the answer if a downstream call later
+        # raises. The teacher dashboard reads answers + progress together;
+        # keeping the commit preserves the historical "answers are durable
+        # the moment submit_answer returns" guarantee for that consumer.
         frappe.db.commit()
-        
+
         # Update progress
         progress = frappe.db.get_value(
             "StudentStageProgress", attempt.student_progress,
@@ -1089,8 +1145,15 @@ def complete_quiz(attempt, quiz_doc, questions, language: str = None) -> dict:
     attempt.passed = 1 if passed else 0
     attempt.time_spent_seconds = total_time
     attempt.save(ignore_permissions=True)
+    # L-017: commit kept — legacy journey/ complete_quiz. The terminal write
+    # marks the attempt completed and stores final score. Downstream work in
+    # complete_quiz reads back StudentStageProgress (different table) and may
+    # invoke remediation logic that the teacher dashboard expects to be
+    # idempotent against the committed attempt row. Removing this commit
+    # would couple attempt-completion durability to whatever happens after
+    # this return, including any caller that might raise. Conservative: keep.
     frappe.db.commit()
-    
+
     # Get progress
     progress = frappe.db.get_value(
         "StudentStageProgress", attempt.student_progress,
@@ -1315,7 +1378,12 @@ def handle_quiz_failed(progress: dict, course_level: str) -> dict:
 # ============================================================
 
 @frappe.whitelist(allow_guest=False)
-def get_quiz_status(student_id: str, course_level: str):
+def get_quiz_status(**_kw):
+    """[DEPRECATED 2026-05-28] Quiz status surfaces in summer_program/program_enrollment_api.get_student_state (quiz fields are flattened into the PE state response)."""
+    return journey_deprecated_response("get_quiz_status", _kw)
+
+
+def _DEPRECATED_get_quiz_status_original(student_id: str, course_level: str):
     """
     Check if student has an active quiz attempt.
     Used for resume detection.
@@ -1375,7 +1443,12 @@ def get_quiz_status(student_id: str, course_level: str):
 # ============================================================
 
 @frappe.whitelist(allow_guest=False)
-def get_student_progress_overview(student_id: str, course_level: str):
+def get_student_progress_overview(**_kw):
+    """[DEPRECATED 2026-05-28] Use summer_program/program_enrollment_api.get_student_state — flat-map response with all SP state fields."""
+    return journey_deprecated_response("get_student_progress_overview", _kw)
+
+
+def _DEPRECATED_get_student_progress_overview_original(student_id: str, course_level: str):
     """
     Get comprehensive progress overview for dashboard.
     """
@@ -1490,7 +1563,12 @@ def get_student_progress_overview(student_id: str, course_level: str):
 # ============================================================
 
 @frappe.whitelist(allow_guest=False)
-def get_student_history(student_id: str, course_level: str, limit: int = 50, offset: int = 0):
+def get_student_history(**_kw):
+    """[DEPRECATED 2026-05-28] No direct SP equivalent. If you need completion history, query StudentContentLog / ProgramEventLog directly via the Frappe REST API."""
+    return journey_deprecated_response("get_student_history", _kw)
+
+
+def _DEPRECATED_get_student_history_original(student_id: str, course_level: str, limit: int = 50, offset: int = 0):
     """
     Get detailed content completion history.
     """

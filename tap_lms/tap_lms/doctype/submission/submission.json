@@ -1,7 +1,7 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "format: SUB-{YY}{MM}{DD}{####}",
+ "autoname": "hash",
  "creation": "2024-09-06 14:55:57.040930",
  "default_view": "List",
  "doctype": "DocType",
@@ -15,6 +15,10 @@
   "submission_text",
   "submission_url",
   "status",
+  "send_feedback",
+  "feedback_requested_at",
+  "feedback_ready_processed_at",
+  "feedback_flow_triggered_at",
   "upload_error_log",
   "result_status",
   "created_at",
@@ -88,6 +92,31 @@
    "fieldtype": "Select",
    "label": "Status",
    "options": "Pending\nProcessing\nCompleted\nFailed"
+  },
+  {
+   "default": "no",
+   "fieldname": "send_feedback",
+   "fieldtype": "Select",
+   "label": "Send Feedback",
+   "options": "no\nyes"
+  },
+  {
+   "fieldname": "feedback_requested_at",
+   "fieldtype": "Datetime",
+   "label": "Feedback Requested At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "feedback_ready_processed_at",
+   "fieldtype": "Datetime",
+   "label": "Feedback Ready Processed At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "feedback_flow_triggered_at",
+   "fieldtype": "Datetime",
+   "label": "Feedback Flow Triggered At",
+   "read_only": 1
   },
   {
    "fieldname": "upload_error_log",
@@ -287,7 +316,7 @@
  "modified_by": "Administrator",
  "module": "Tap Lms",
  "name": "Submission",
- "naming_rule": "Expression",
+ "naming_rule": "Random",
  "owner": "Administrator",
  "permissions": [
   {
