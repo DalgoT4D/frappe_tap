@@ -2,8 +2,11 @@
 Summer Program Scheduler
 tap_lms/summer_program/scheduler.py
 
-PAL Scheduler — runs as a Frappe scheduled task.
-Handles collection-based and per-student flow triggers.
+PAL Scheduler — runs as Frappe scheduled tasks.
+Live triggers: weekly_content_delivery_trigger (Tue content → `main` collection),
+weekly_content_sweep (Mon, CR-027), and run_daily_actions (post BR-006: only the
+batch-level program-complete flag). Per-PE escalation + per-student actions live
+in pe_dispatcher.handle_*.
 
 Register in hooks.py:
     scheduler_events = {
@@ -73,14 +76,22 @@ def _process_bpr_actions(bpr, batch):
     """
     current_week = _get_current_week(batch)
     total_weeks = batch.total_weeks or 0
-    grace_days = batch.grace_window_days or 0
 
     # ── Collection-based actions ─────────────────────────
-    # Content delivery: runs daily for active batches
-    _run_collection_action(bpr, ACTION_CONTENT_DELIVERY)
-
-    # Escalation: for Dormant and Fence Sitter collections
-    _run_escalation(bpr)
+    # BR-006 (2026-06-16): the daily content-delivery + escalation
+    # collection-fires are REMOVED. They duplicated the live paths and the
+    # collection model drifted underneath them (firing at audit collections
+    # like program_dropped / program_completed and at is_active=0 legacy
+    # archetype×arm groups, daily instead of weekly). Superseded by:
+    #   - content delivery → weekly_content_delivery_trigger (Tue 09:00 IST,
+    #     `main` collection only) + weekly_content_sweep (CR-005 / CR-027)
+    #   - escalation → pe_dispatcher.handle_escalation (per-PE, config-driven
+    #     from ArchetypeConfig, advances current_escalation_step)
+    # Same defect class that retired escalation_runner (task #50, 2026-05-21).
+    # Preserved (not deleted) per L-050; re-enable ONLY if the per-PE / weekly
+    # paths are removed. See docs/bug-reports/BR-006-run-daily-actions-collection-overlap.md.
+    # _run_collection_action(bpr, ACTION_CONTENT_DELIVERY)
+    # _run_escalation(bpr)
 
     # CR-003: proactive re-engagement removed. Dropped students are
     # re-engaged via SP_Incoming_Router when they send an inbound
@@ -91,7 +102,12 @@ def _process_bpr_actions(bpr, batch):
     # escalation steps within the active week ARE the reminders;
     # grace expiry is policed by handle_grace_check in pe_dispatcher.
 
-    # Program complete: when batch reaches total_weeks
+    # Program complete: retained ONLY for the batch-level BPR.status='completed'
+    # flag (the sole setter — it gates the active-BPR schedulers). Per-STUDENT
+    # completion is handled individually by pe_dispatcher.handle_week_advancement
+    # (t16 + per-PE program_complete flow), so _run_program_complete's own
+    # collection group-fire is redundant (BR-006 / architect review 2026-06-16)
+    # and is a candidate for a separate cleanup.
     if current_week and total_weeks and current_week > total_weeks:
         _run_program_complete(bpr, batch)
 
