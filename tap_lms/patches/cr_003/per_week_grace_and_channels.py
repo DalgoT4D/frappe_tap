@@ -106,9 +106,25 @@ def execute():
     # Per CR-003 §Proposed behavior: the paused_no_activity state is retired.
     # Students drop directly at grace expiry. Existing paused PEs need to be
     # transitioned to the terminal dropped state and emit an audit event.
+    # L-059/L-061 guard (same as Step 1): re_engagement_count is DROPPED from
+    # the CR-003 ProgramEnrollment JSON. On migration deploys the column still
+    # physically exists (Frappe never auto-drops), so we read it. On fresh
+    # installs / dev DBs built from the post-CR-003 schema the column was never
+    # created, and an unguarded SELECT raises UndefinedColumn and aborts migrate.
+    # When the column is absent there is no re-engagement history to read, so
+    # every paused PE falls back to re_engagement_count = 0 (-> 'grace_expired').
+    # table_exists FIRST, then has_column — L-061: has_column raises
+    # TableMissingError (not False) on a missing table. Mirrors Step 1.
+    # reeng_expr is one of two hardcoded literals; no untrusted input.
+    reeng_expr = (
+        "COALESCE(re_engagement_count, 0)"
+        if (frappe.db.table_exists("ProgramEnrollment")
+            and frappe.db.has_column("ProgramEnrollment", "re_engagement_count"))
+        else "0"
+    )
     paused = frappe.db.sql(
-        """
-        SELECT name, COALESCE(re_engagement_count, 0) AS re_engagement_count
+        f"""
+        SELECT name, student, batch, {reeng_expr} AS re_engagement_count
           FROM "tabProgramEnrollment"
          WHERE resolved_flow_state = 'paused_no_activity'
            AND program_status = 'active'
@@ -142,10 +158,15 @@ def execute():
         # NOTE: the FK column on tabProgramEventLog is `enrollment`, NOT
         # `program_enrollment` (L-052). frappe.get_doc translates DocType
         # field names ('enrollment') correctly regardless.
+        # student + batch are reqd:1 on ProgramEventLog and .insert() runs full
+        # validation, so both must be set or it raises MandatoryError. They're
+        # pulled from the PE row in the Step 3 SELECT above.
         frappe.get_doc(
             {
                 "doctype": "ProgramEventLog",
                 "enrollment": pe.name,
+                "student": pe.student,
+                "batch": pe.batch,
                 "event_type": "program_dropped",
                 "details": {"reason": reason, "source": "CR-003 migration"},
             }
