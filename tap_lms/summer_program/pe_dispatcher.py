@@ -355,7 +355,18 @@ def handle_escalation(pe_row):
                 break
         except (TypeError, ValueError):
             step_config = steps[next_step - 1]
+            break
 
+    # BR-007: if no step is tagged escalation_order == next_step (non-contiguous
+    # escalation_order values in ArchetypeConfig), step_config stays None and
+    # `step_config.get(...)` below crashes with `'NoneType' object has no
+    # attribute 'get'`. That crash rolls back the atomic claim, so the PE is
+    # re-tried every dispatcher tick forever (poison row) and starves the queue.
+    # Fall back to the positionally-Nth step (next_step is guaranteed
+    # 1..len(steps) by the `next_step > len(steps)` guard above). Mirrors the
+    # except branch + sweep_migration._pick_first_escalation_step's fallback.
+    if not step_config:
+        step_config = steps[next_step - 1]
 
     next_hours = step_config.get("hours_after_previous", 24)
     escalation_type = step_config.get("escalation_type") or "help_note_a"
@@ -630,7 +641,17 @@ def handle_pause_check(pe_row):
 
     batch = frappe.get_doc("Batch", pe.batch)
     next_week = (pe.current_week or 1) + 1
-    max_allowed = batch.current_calendar_week or 1
+    # Binge ceiling is calendar_week + 1 (a student may be up to 1 week ahead).
+    # The PAUSE decision (handle_week_advancement) and the inbound REACTIVATION
+    # path both use calendar+1; this resume check previously used bare
+    # `calendar_week`, holding paused students one week longer than the pause
+    # policy allows and disagreeing with reactivation (same student resumed via
+    # an inbound message but not via the scheduler). Aligned to calendar+1,
+    # mirroring reactivation.py exactly. Compute fresh from the batch rather
+    # than reading pe.max_allowed_week: the live calendar value is authoritative
+    # and can't be stale if the calendar was changed via a path that didn't run
+    # update_batch_week (e.g. a manual db.set_value on the Batch).
+    max_allowed = (batch.current_calendar_week or 1) + 1
 
     if next_week <= max_allowed:
         # Calendar caught up — resume
@@ -696,7 +717,40 @@ def _get_flow_id(batch_name, action_type):
 
 
 def _trigger_flow(flow_id, glific_id, pe_name, action_label):
-    """Trigger a Glific flow for a single contact."""
+    """Enqueue a Glific flow trigger for a single contact (BR-007).
+
+    Previously this called `start_contact_flow` INLINE. In the per-PE dispatcher
+    that blocks every tick on a Glific HTTP round-trip per PE; at scale (~25K due
+    escalations) the tick blows its 300s job timeout and the queue starves —
+    binge-resume (`pause_check`) and `week_advancement` actions never get
+    reached because they sit behind the escalation backlog in `next_action_at`
+    order. The flow trigger is fire-and-forget (no PE state depends on its
+    result), so enqueue it to the `short` queue and let the dispatcher tick
+    return immediately. `enqueue_after_commit=True` so the PE's just-written
+    state is durable before the flow fires (and so a rolled-back tick doesn't
+    fire a flow for a transition that didn't persist). Mirrors the parent_call
+    branch in handle_escalation.
+
+    All callers (content_delivery, escalation, program_complete, binge_info)
+    are dispatcher-driven and fire-and-forget, so async is correct for every
+    call site.
+    """
+    frappe.enqueue(
+        "tap_lms.summer_program.pe_dispatcher._trigger_flow_job",
+        queue="short",
+        timeout=120,
+        enqueue_after_commit=True,
+        flow_id=flow_id,
+        glific_id=glific_id,
+        pe_name=pe_name,
+        action_label=action_label,
+    )
+
+
+def _trigger_flow_job(flow_id, glific_id, pe_name, action_label):
+    """Background worker (RQ): actually fire the Glific flow. Enqueued by
+    `_trigger_flow` (BR-007). Decoupled from the dispatcher tick — a failure
+    here never touches the dispatcher."""
     from tap_lms.glific_integration import start_contact_flow
 
     try:
@@ -705,12 +759,31 @@ def _trigger_flow(flow_id, glific_id, pe_name, action_label):
             "action": action_label,
         }
         start_contact_flow(str(flow_id), str(glific_id), default_results)
-    except Exception as e:
-        frappe.log_error(
-            f"Flow trigger error: PE={pe_name}, action={action_label}, "
-            f"flow={flow_id}, glific_id={glific_id}: {str(e)}",
-            "SP Flow Trigger",
+        # L-035: log the success path too, so ops can confirm a flow fired
+        # without spelunking the Error Log.
+        frappe.logger().info(
+            f"_trigger_flow_job: fired flow {flow_id} for PE={pe_name} "
+            f"action={action_label} glific_id={glific_id}"
         )
+    except Exception as e:
+        # L-056: an RQ job must fail LOUDLY — rollback (L-030/L-077), log
+        # durably in a nested try (double-fault defense), then RE-RAISE so the
+        # failure lands in RQ's FailedJobRegistry (the rq_queue_depth_watcher
+        # alerts on it) instead of a silent clean exit. No frappe-level retry
+        # is configured, so this won't re-send; it's visible for manual replay.
+        try:
+            frappe.db.rollback()
+        except Exception:
+            pass
+        try:
+            frappe.log_error(
+                f"Flow trigger error: PE={pe_name}, action={action_label}, "
+                f"flow={flow_id}, glific_id={glific_id}: {str(e)}",
+                "SP Flow Trigger",
+            )
+        except Exception:
+            frappe.logger().error(f"_trigger_flow_job double-fault: {e}")
+        raise
 
 
 def _get_escalation_steps_for_pe(pe):

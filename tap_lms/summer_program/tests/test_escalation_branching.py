@@ -122,6 +122,43 @@ class TestEscalationBranching(FrappeTestCase):
         ]
         self.assertEqual(len(vocallabs_calls), 0)
 
+    def test_noncontiguous_escalation_order_does_not_crash(self):
+        """BR-007: if no configured step has escalation_order == next_step
+        (non-contiguous orders, e.g. [1, 3] with next_step=2), handle_escalation
+        previously left step_config=None and crashed on `step_config.get(...)`
+        with `'NoneType' object has no attribute 'get'` — which rolled back the
+        atomic claim and made the PE a poison row retried every tick. It must
+        now fall back to the positionally-Nth step and transition cleanly."""
+        from tap_lms.summer_program import pe_dispatcher
+
+        s = _ensure_student("99")
+        pe_name = _make_pe(
+            self.batch_name, s, "99",
+            resolved_flow_state=STATE_NORMAL_ESCALATION,
+            current_escalation_step=1,   # next_step = 2 → matches no order in [1,3]
+        )
+
+        with _patch_escalation_steps([_step(1, "help_note_a"), _step(3, "voice_note")]), \
+             patch.object(pe_dispatcher, "_get_flow_id", return_value="flow-esc"), \
+             patch.object(pe_dispatcher, "_trigger_flow") as fake_trigger, \
+             patch.object(frappe, "enqueue"), \
+             patch("tap_lms.summer_program.state_machine._enqueue_contact_field_sync"), \
+             patch("tap_lms.summer_program.state_machine.maintain_collections"):
+            row = frappe._dict({
+                "name": pe_name,
+                "next_action_type": ACTION_ESCALATION,
+                "batch": self.batch_name,
+                "journey_label": LABEL_CONTENT_DELIVERED,
+            })
+            pe_dispatcher.handle_escalation(row)   # must NOT raise
+
+        # Transitioned (not stuck) and fired the flow using the fallback step.
+        self.assertEqual(fake_trigger.call_count, 1)
+        self.assertEqual(
+            frappe.db.get_value("ProgramEnrollment", pe_name, "current_escalation_step"),
+            2,
+        )
+
     def test_voice_note_step_fires_glific_flow(self):
         """escalation_type='voice_note' → SP_Escalation flow triggered."""
         from tap_lms.summer_program import pe_dispatcher
@@ -434,3 +471,27 @@ class TestEscalationBranching(FrappeTestCase):
             pe_dispatcher.handle_escalation(row)
 
         self.assertEqual(fake_t5.call_count, 1)
+
+
+class TestFlowTriggerAsync(FrappeTestCase):
+    """BR-007: `_trigger_flow` must ENQUEUE the Glific call, not run it inline,
+    so the dispatcher tick doesn't block on a per-PE HTTP round-trip."""
+
+    def test_trigger_flow_enqueues_not_inline(self):
+        from tap_lms.summer_program import pe_dispatcher
+        with patch.object(frappe, "enqueue") as fake_enqueue, \
+             patch("tap_lms.glific_integration.start_contact_flow") as fake_glific:
+            pe_dispatcher._trigger_flow("flow-1", "glific-1", "PE-1", "escalation")
+        fake_glific.assert_not_called()          # NOT called inline (no blocking HTTP)
+        fake_enqueue.assert_called_once()
+        self.assertEqual(
+            fake_enqueue.call_args.args[0],
+            "tap_lms.summer_program.pe_dispatcher._trigger_flow_job",
+        )
+        self.assertTrue(fake_enqueue.call_args.kwargs.get("enqueue_after_commit"))
+
+    def test_trigger_flow_job_calls_glific(self):
+        from tap_lms.summer_program import pe_dispatcher
+        with patch("tap_lms.glific_integration.start_contact_flow") as fake_glific:
+            pe_dispatcher._trigger_flow_job("flow-1", "glific-1", "PE-1", "escalation")
+        fake_glific.assert_called_once()
