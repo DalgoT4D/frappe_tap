@@ -25,7 +25,6 @@ from tap_lms.summer_program.constants import (
     PER_STUDENT_ACTIONS,
     ARCHETYPE_DORMANT,
     ARCHETYPE_FENCE_SITTER,
-    PROGRAM_PAUSED,
 )
 # CR-003: ACTION_REENGAGEMENT and ACTION_GRACE_REMINDER removed from constants.
 # _run_reengagement and _run_grace_notifications were the daily-scheduler
@@ -241,3 +240,402 @@ def _get_students_for_bpr(bpr):
     """Get all student names linked to a BPR."""
     from tap_lms.summer_program.enrollment import _get_students_for_bpr as get_students
     return get_students(bpr)
+
+
+# ── CR-005 (2026-05-15): Weekly content delivery via main collection ──
+
+def process_pending_feedback_ready_before_weekly_content():
+    """
+    Run the internal feedback-ready PE mutation for completed submissions
+    that never requested the student-facing feedback flow.
+
+    This intentionally does NOT send the Glific feedback notification. It only
+    ensures ProgramEnrollment points/state/remedial routing are up to date
+    before the next weekly content flow starts.
+    """
+    pending_submissions = frappe.db.sql(
+        """
+        SELECT s.name AS submission_id,
+               s.student_id AS student_id
+          FROM "tabSubmission" s
+          JOIN "tabProgramEnrollment" pe
+            ON pe.name = s.program_enrollment
+          JOIN "tabBatchProgramRun" bpr
+            ON bpr.batch = pe.batch
+           AND bpr.status = 'active'
+           AND bpr.content_delivery_flow IS NOT NULL
+         WHERE s.is_primary = 1
+           AND s.status IN ('Completed', 'Failed')
+           AND s.feedback_ready_processed_at IS NULL
+           AND pe.program_status = 'active'
+           AND pe.resolved_flow_state = 'submitted_awaiting_feedback'
+        """,
+        as_dict=True,
+    )
+
+    if not pending_submissions:
+        return {"status": "success", "processed": 0, "failed": 0}
+
+    from tap_lms.feedback_handler.feedback_consumer import FeedbackConsumer
+
+    consumer = FeedbackConsumer.__new__(FeedbackConsumer)
+    processed = 0
+    failed = 0
+
+    for row in pending_submissions:
+        submission_id = row["submission_id"]
+        try:
+            if consumer.process_feedback_ready(
+                submission_id,
+                {
+                    "submission_id": submission_id,
+                    "student_id": row.get("student_id"),
+                    "feedback": {},
+                },
+            ):
+                processed += 1
+        except Exception as e:
+            failed += 1
+            frappe.log_error(
+                f"weekly_content_delivery_trigger feedback-ready preflight "
+                f"failed for submission {submission_id}: {e}",
+                "SP Weekly Feedback Ready Preflight",
+            )
+
+    return {"status": "success", "processed": processed, "failed": failed}
+
+
+def weekly_content_delivery_trigger():
+    """CR-005: Tuesday 09:00 IST (03:30 UTC). For each active BPR, fire
+    SP_Content_Delivery against the `main` Glific collection. Membership is
+    already current because state transitions wrote it continuously throughout
+    the week (Approach B). No recompute, no reconcile.
+
+    Idempotency: re-running produces another start_group_flow call for each
+    active BPR. Glific deduplicates identical group-flow starts within a short
+    window; operator discipline (don't manually invoke during the cron window)
+    is the documented mitigation. No code-level mutex per locked decision
+    2026-05-15.
+    """
+    process_pending_feedback_ready_before_weekly_content()
+
+    active_bprs = frappe.db.sql(
+        """
+        SELECT name, batch, content_delivery_flow
+          FROM "tabBatchProgramRun"
+         WHERE status = 'active'
+           AND content_delivery_flow IS NOT NULL
+        """,
+        as_dict=True,
+    )
+
+    for bpr in active_bprs:
+        main_col = frappe.db.sql(
+            """
+            SELECT name, glific_group_id, collection_label, member_count
+              FROM "tabPGCollection"
+             WHERE parent = %s
+               AND kind = %s
+               AND COALESCE(is_active, 0) = 1
+             LIMIT 1
+            """,
+            (bpr["name"], "main"),
+            as_dict=True,
+        )
+        if not main_col:
+            continue
+        main_col = main_col[0]
+
+        if not main_col.get("glific_group_id"):
+            continue
+
+        # Skip BPRs whose main collection has zero members. Reading
+        # member_count avoids a needless Glific call (which would either
+        # error or no-op). The count is maintained by the state-driven
+        # collection_membership writes (Approach B); if a deployment doesn't
+        # yet maintain member_count, treat NULL as zero to be safe.
+        if (main_col.get("member_count") or 0) <= 0:
+            frappe.logger().info(
+                f"weekly_content_delivery_trigger: skipping BPR "
+                f"{bpr['name']} — main collection empty"
+            )
+            continue
+
+        try:
+            start_group_flow(
+                flow_id=str(bpr["content_delivery_flow"]),
+                group_id=str(main_col["glific_group_id"]),
+            )
+            frappe.logger().info(
+                f"weekly_content_delivery_trigger: fired flow "
+                f"{bpr['content_delivery_flow']} for BPR {bpr['name']} "
+                f"(main members: {main_col.get('member_count', 0)})"
+            )
+        except Exception as e:
+            frappe.log_error(
+                f"weekly_content_delivery_trigger failed for BPR "
+                f"{bpr['name']}: {e}",
+                "SP Weekly Content Delivery",
+            )
+
+
+# ════════════════════════════════════════════════════════════
+# Periodic Glific reconciliation safety net (added 2026-05-25)
+# ════════════════════════════════════════════════════════════
+
+def periodic_glific_reconcile():
+    """Manual safety-net — push PE truth to Glific for every active batch.
+
+    Status (2026-05-26): registered as a callable, but NOT wired into
+    hooks.scheduler_events.cron. The */10-min cron entry was removed once
+    the real root cause of the Himani / ST00051295 rendering bug was
+    diagnosed as missing createContactsField definitions (fixed via
+    `dev_tools.bootstrap_sp_contact_fields`), not value drift. Per L-027
+    MVP discipline: production normal operation doesn't create the drift
+    condition this guards against, so a continuously running cron isn't
+    justified.
+
+    When to use this function:
+      - After a console session that ran multiple `frappe.db.set_value`
+        calls against Glific-mirrored PE columns.
+      - As a periodic operator-driven sanity check (e.g. once a week).
+      - As a one-shot cleanup if the team reports gamification-card
+        rendering issues that smell like drift.
+
+    Alternatives for single-PE work:
+      - `dev_tools.reconcile_pe_to_glific(pe_name)` — single PE.
+      - `dev_tools.reconcile_batch_to_glific(batch_name, dry_run=True)` —
+        cohort-wide read-only sweep with a per-field drift roll-up. Pass
+        `dry_run=False` to push.
+
+    Cost per invocation on a 45-PE cohort: ~45 Glific GraphQL reads +
+    writes only for fields that drifted. Typical run completes in ~15
+    seconds. Idempotent — re-running on a clean cohort is essentially
+    free.
+
+    Why this exists (CLAUDE.md "set_value bypasses save hooks" gotcha
+    applied to Glific-mirrored PE columns):
+
+      `frappe.db.set_value` and Frappe Desk UI edits on ProgramEnrollment
+      do NOT trigger `_enqueue_contact_field_sync`. Operational backfills,
+      QA manual edits, and any path that updates a Glific-mirrored column
+      without going through `_apply_transition_to_pe` /
+      `dev_tools.update_student_state` therefore leave Glific stale until
+      the next state-machine transition happens to re-push.
+
+      Reconcile sweep on 2026-05-25 (palv2-test-BT52231) found 16/45 PEs
+      drifting on `total_points`, 2 on `archetype` + `experiment_arm`,
+      and a few isolated stream-column drifts — all from set_value
+      bypasses (no DLQ entries, no reset events, sync machinery healthy
+      when invoked).
+
+    What it does:
+      For every active Batch (matched via active BPRs), call
+      `dev_tools.reconcile_batch_to_glific(..., dry_run=False)` which
+      diffs each PE's Glific-mirrored fields against the PE record and
+      pushes only the fields that differ. The per-field roll-up is
+      printed to the scheduler log so operators can spot systemic drift.
+
+    Idempotency:
+      `reconcile_pe_to_glific` is idempotent — re-running on a clean PE
+      produces an empty diff and pushes nothing. Running often is
+      essentially free for PEs that aren't drifting.
+
+    Failure isolation:
+      Per-batch try/except so one batch's failure doesn't stop the rest.
+      Per-PE try/except is inside reconcile_batch_to_glific (already
+      logs the FAILED status line).
+    """
+    from tap_lms.summer_program import dev_tools
+
+    active_batches = frappe.db.sql(
+        """
+        SELECT DISTINCT batch
+          FROM "tabBatchProgramRun"
+         WHERE status = %s
+        """,
+        (BPR_ACTIVE,),
+        as_dict=True,
+    )
+
+    if not active_batches:
+        frappe.logger().info("periodic_glific_reconcile: no active BPRs — nothing to reconcile.")
+        return
+
+    total_pes_checked = 0
+    total_pushed = 0
+    total_mismatches = 0
+    for row in active_batches:
+        batch_name = row.batch
+        if not batch_name:
+            continue
+        try:
+            results = dev_tools.reconcile_batch_to_glific(
+                batch_name, dry_run=False, verbose=False,
+            )
+        except Exception as e:
+            frappe.log_error(
+                f"periodic_glific_reconcile: batch {batch_name} failed: {e}",
+                "SP Periodic Glific Reconcile",
+            )
+            continue
+
+        batch_pushed = 0
+        batch_mismatches = 0
+        for pe_name, result in results.items():
+            if "error" in result:
+                continue
+            total_pes_checked += 1
+            diff_len = len(result.get("diff") or [])
+            batch_mismatches += diff_len
+            if result.get("pushed"):
+                batch_pushed += 1
+        total_pushed += batch_pushed
+        total_mismatches += batch_mismatches
+
+        # Only log per-batch when there's actual work — at 10-min cadence
+        # the no-drift case dominates and noisy logs hide real signal.
+        if batch_mismatches or batch_pushed:
+            frappe.logger().info(
+                f"periodic_glific_reconcile: batch={batch_name} "
+                f"pes={len(results)} mismatches={batch_mismatches} "
+                f"pushed={batch_pushed}"
+            )
+
+    # Roll-up logs only when work happened, same reason.
+    if total_mismatches or total_pushed:
+        frappe.logger().info(
+            f"periodic_glific_reconcile DONE: pes={total_pes_checked} "
+            f"mismatches={total_mismatches} pushed={total_pushed}"
+        )
+
+
+# ════════════════════════════════════════════════════════════
+# Async-failure visibility watchers
+# Added 2026-05-28 (task #17 / shared Esc R1 + Content R1+R4)
+# ════════════════════════════════════════════════════════════
+#
+# Both the Glific contact-field sync pipeline and the RQ enqueue path used by
+# `complete_content`, `_enqueue_contact_field_sync`, and collection-membership
+# writes are ASYNC with retry+DLQ but NO ALERTING. A queue that's stalled or
+# a DLQ that's filling up is invisible to operators unless they go looking.
+# These two cron-driven watchers turn silent failure into an Error Log entry
+# that surfaces in the Frappe Desk Error Log list view.
+#
+# Wired in hooks.scheduler_events.cron at `0 * * * *` (hourly). Each watcher
+# is read-only — never re-enqueues, never auto-recovers — by design. Operator
+# replay remains explicit.
+
+# Threshold for the RQ queue-depth alert. Anything above this gets an Error
+# Log entry. 100 is conservative: a healthy backend processes the SP cohort
+# (~45 PEs, infrequent events) with steady-state queue depth ≈ 0; sustained
+# 100+ means a worker is wedged or upstream is firehosing.
+RQ_QUEUE_DEPTH_ALERT_THRESHOLD = 100
+
+
+def glific_sync_dlq_watcher():
+    """Hourly watcher — alerts on new entries in the SP Glific Sync DLQ.
+
+    Compares the count of Error Log rows with method='SP Glific Sync DLQ —
+    manual replay required' added in the last hour against zero. Any new
+    entries → write a single summary Error Log so the operator-on-call
+    notices.
+
+    Read-only — does NOT replay. Manual replay via
+    `dev_tools.reconcile_pe_to_glific(pe_name)` remains the recovery path.
+    """
+    from tap_lms.summer_program.constants import GLIFIC_SYNC_DLQ_LOG_TITLE
+
+    new_dlq = frappe.db.sql(
+        """
+        SELECT COUNT(*) AS n
+          FROM "tabError Log"
+         WHERE method = %s
+           AND creation > NOW() AT TIME ZONE 'UTC' - INTERVAL '1 hour'
+        """,
+        (GLIFIC_SYNC_DLQ_LOG_TITLE,),
+        as_dict=True,
+    )
+    count = new_dlq[0].n if new_dlq else 0
+
+    if count > 0:
+        frappe.log_error(
+            f"SP Glific Sync DLQ has {count} new entries in the last hour. "
+            f"Operator action required — replay manually via "
+            f"`dev_tools.reconcile_pe_to_glific(pe_name)` for each stuck PE. "
+            f"List the DLQ entries: `SELECT creation, LEFT(error::text, 400) "
+            f"FROM \"tabError Log\" WHERE method = "
+            f"'{GLIFIC_SYNC_DLQ_LOG_TITLE}' "
+            f"ORDER BY creation DESC LIMIT {count};`",
+            "SP DLQ Watcher Alert",
+        )
+    # No new DLQ entries → silent (don't fill Error Log with no-op pings).
+
+
+def rq_queue_depth_watcher():
+    """Hourly watcher — alerts on RQ queues that have backed up past threshold.
+
+    Polls Frappe's wrapper around RQ (`frappe.utils.background_jobs.get_queue`)
+    for each queue (default, short, long) and writes an Error Log entry if
+    any queue exceeds `RQ_QUEUE_DEPTH_ALERT_THRESHOLD`.
+
+    Why this matters (Content R1+R4): `complete_content` enqueues the SCL
+    insert + activity_points + Glific sync into the RQ queue. If a worker is
+    wedged or the queue is paused, the webhook returns 200 OK to Glific but
+    the work never happens — students appear stuck mid-progress with no
+    error surface anywhere.
+
+    Read-only — does NOT restart workers or flush queues. Operator action
+    is to inspect the worker log and restart the supervisor process.
+    """
+    try:
+        from rq import Queue
+        from frappe.utils.background_jobs import get_redis_conn
+    except Exception as e:
+        # If RQ isn't importable in this environment, skip silently — this
+        # watcher is best-effort, not load-bearing.
+        frappe.logger().warning(f"rq_queue_depth_watcher: rq import failed: {e}")
+        return
+
+    try:
+        conn = get_redis_conn()
+    except Exception as e:
+        frappe.log_error(
+            f"rq_queue_depth_watcher: cannot connect to Redis: {e}",
+            "SP Queue Watcher Error",
+        )
+        return
+
+    # Frappe's standard RQ queues. If the deployment uses custom queue names,
+    # add them here. Threshold applies per-queue independently.
+    queue_names = ["default", "short", "long"]
+    alerts = []
+    for name in queue_names:
+        try:
+            q = Queue(name, connection=conn)
+            depth = len(q)
+            failed_depth = q.failed_job_registry.count
+            if depth > RQ_QUEUE_DEPTH_ALERT_THRESHOLD:
+                alerts.append(
+                    f"queue={name} depth={depth} (threshold "
+                    f"{RQ_QUEUE_DEPTH_ALERT_THRESHOLD})"
+                )
+            if failed_depth > 0:
+                alerts.append(
+                    f"queue={name} failed_jobs={failed_depth} "
+                    f"(non-zero — operator should review)"
+                )
+        except Exception as e:
+            alerts.append(f"queue={name}: probe failed: {e}")
+
+    if alerts:
+        frappe.log_error(
+            "RQ queue-depth alert (operator action required):\n" +
+            "\n".join(alerts) +
+            f"\n\nDiagnostic: in bench console run `from rq import Queue; "
+            f"from frappe.utils.background_jobs import get_redis_conn; "
+            f"q = Queue('default', connection=get_redis_conn()); "
+            f"print(len(q), q.jobs[:5])` to see queued jobs.",
+            "SP Queue Watcher Alert",
+        )
+    # All queues healthy → silent.

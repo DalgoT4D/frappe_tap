@@ -1,7 +1,7 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "format:{name1}-{vertical}-C{####}",
+ "autoname": "format:{name1}-{vertical}-{level}",
  "creation": "2024-07-09 13:25:33.662522",
  "default_view": "List",
  "doctype": "DocType",
@@ -9,7 +9,9 @@
  "engine": "InnoDB",
  "field_order": [
   "name1",
+  "program",
   "vertical",
+  "level",
   "stage",
   "kit_less",
   "course_description",
@@ -27,10 +29,24 @@
    "label": "Name"
   },
   {
+   "fieldname": "program",
+   "fieldtype": "Link",
+   "label": "Program",
+   "options": "Program",
+   "reqd": 1
+  },
+  {
    "fieldname": "vertical",
    "fieldtype": "Link",
    "label": "Vertical ",
    "options": "Course Verticals"
+  },
+  {
+   "default": "",
+   "fieldname": "level",
+   "fieldtype": "Select",
+   "label": "Level",
+   "options": "Level 1\nLevel 2\nLevel 2A\nLevel 3\nLevel 3A\nLevel 3K\nLevel 3AK\nLevel 4\nLevel 4K"
   },
   {
    "fieldname": "stage",
@@ -84,7 +100,7 @@
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2025-09-10 00:12:55.560514",
+ "modified": "2026-05-16 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Tap Lms",
  "name": "Course Level",

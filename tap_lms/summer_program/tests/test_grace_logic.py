@@ -22,6 +22,8 @@ from frappe.tests.utils import FrappeTestCase
 from frappe.utils import now_datetime, add_to_date, get_datetime
 from unittest.mock import patch
 
+from tap_lms.summer_program.tests.factories import make_batch
+
 from tap_lms.summer_program.constants import (
     LABEL_CONTENT_DELIVERED,
     LABEL_GRACE_WINDOW,
@@ -46,23 +48,21 @@ from tap_lms.summer_program.state_machine import (
 # ════════════════════════════════════════════════════════════
 
 def _ensure_batch(grace_days=14):
+    # Idempotent-update branch preserved: re-asserts grace_window_days when the
+    # batch already exists (tests call it with varying grace values). Creation
+    # delegates to the shared factory (L-037) so the fixture inherits future
+    # mandatory-field additions.
     name = frappe.get_value("Batch", {"name1": f"GraceTestBatch{grace_days}"}, "name")
     if name:
         # Make sure grace_window_days is what we expect.
         frappe.db.set_value("Batch", name, "grace_window_days", grace_days,
                             update_modified=False)
         return name
-    batch = frappe.new_doc("Batch")
-    batch.name1 = f"GraceTestBatch{grace_days}"
-    batch.start_date = "2026-01-01"
-    batch.end_date = "2026-04-30"
-    batch.batch_id = f"GT{grace_days:02d}"
-    batch.program_type = "Summer"
-    batch.total_weeks = 12
-    batch.current_calendar_week = 1
-    batch.grace_window_days = grace_days
-    batch.insert(ignore_permissions=True)
-    return batch.name
+    return make_batch(
+        label=f"GraceTestBatch{grace_days}",
+        batch_id=f"GT{grace_days:02d}",
+        grace_window_days=grace_days,
+    )
 
 
 def _ensure_student(suffix):
@@ -108,7 +108,7 @@ def _make_pe(batch_name, student_name, suffix, **kwargs):
     pe.current_path = PATH_CORE
     pe.current_week = kwargs.get("current_week", 1)
     pe.current_tier = "Basic"
-    pe.archetype = "Submitter"
+    pe.archetype = "submitter"
     pe.weekly_submission_done = kwargs.get("weekly_submission_done", 0)
     pe.weekly_video_done = kwargs.get("weekly_video_done", 0)
     if "grace_window_end_at" in kwargs:

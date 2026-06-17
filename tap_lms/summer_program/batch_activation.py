@@ -199,14 +199,53 @@ def activate_bpr(bpr_name):
     bpr.save(ignore_permissions=True)
     frappe.db.commit()
 
-    # Seed next_action_at on all PEs for first content delivery
-    seeded = _seed_pe_actions(bpr, batch)
+    # CR-005 (2026-05-15): create the 5 kind-keyed PGCollections + Glific
+    # groups for this BPR (`main`, `escalation`, `binge_paused`,
+    # `program_dropped`, `program_completed`). Idempotent — if a row or
+    # group with the same label already exists, reuse it. Replaces the old
+    # archetype-keyed PGCollection scheme (deactivated by the migration
+    # patch). The first weekly cron tick after activation fires
+    # SP_Content_Delivery on the `main` group; no fire-on-activation here.
+    _ensure_kind_keyed_pg_collections(bpr)
+
+    # BR-002 (2026-06-03): bulk-populate the kind-keyed collections (in practice
+    # just `main` at a fresh activation) with the cohort's contacts. PEs created
+    # by start_program_enrollment are inserted DIRECTLY into
+    # normal_content_delivery — they never transition INTO it, so
+    # maintain_collections never fires for them and `main` would stay empty until
+    # students organically transition. BT00000019 (71,240 PEs) shipped with an
+    # empty `main` collection on 2026-06-03 and an operator had to bulk-add by
+    # hand.
+    #
+    # Runs on the `long` queue, NOT inline: at 71K contacts this is ~143 Glific
+    # bulk calls (~4-5 min) — well past an HTTP timeout. Inline would risk
+    # leaving `main` half-populated with status already=active and no retry path.
+    # The job is idempotent (member_count SET not incremented; re-adding an
+    # existing Glific member is a no-op) so an operator can safely re-enqueue it.
+    frappe.enqueue(
+        "tap_lms.summer_program.batch_activation._bulk_populate_kind_keyed_collections",
+        queue="long",
+        timeout=1800,
+        bpr_name=bpr.name,
+    )
+
+    # CR-005 (locked decision #4, 2026-05-15): NO fire-on-activation for CONTENT
+    # DELIVERY. Content delivery is batch-triggered every Tuesday 09:00 IST via
+    # `scheduler.weekly_content_delivery_trigger` against the `main` collection.
+    # (The bulk-population above is collection MEMBERSHIP, not content delivery —
+    # the "no fire-on-activation" comment was always about the latter.)
+    #
+    # `_seed_pe_actions` is preserved as dead code (parallel to the
+    # `handle_content_delivery` preservation pattern in pe_dispatcher.py) — can
+    # be used for operator escape-hatch scenarios (e.g., manual catch-up push
+    # for a single batch). Call it directly from `bench console` if needed.
 
     return {
         "success": True,
         "message": f"BatchProgramRun {bpr_name} is now active. "
-        f"{seeded} students seeded for content delivery.",
-        "seeded_count": seeded,
+                   f"Main collection is being populated in the background; "
+                   f"first content delivery on next Tuesday 09:00 IST (collection-mode, CR-005).",
+        "seeded_count": 0,
     }
 
 
@@ -357,3 +396,219 @@ def check_auto_activate():
             )
 
     return activated
+
+
+# ── CR-005: kind-keyed PGCollection bootstrap ──
+
+def _ensure_kind_keyed_pg_collections(bpr):
+    """CR-005 (2026-05-15): idempotently create the 5 kind-keyed
+    PGCollection rows + Glific groups for the BPR.
+
+    PGCollection is a child table (istable=1) embedded under BatchProgramRun;
+    the parent BPR is referenced via the standard Frappe `parent` column.
+    The 5 kinds are imported from collection_membership.COLLECTION_KINDS so
+    one canonical source defines the topology.
+
+    Idempotent:
+      - If a child row with (parent=bpr.name, kind) already exists, skip.
+      - The Glific group lookup-or-create is handled by
+        `create_group_if_missing` — re-runs find the existing group.
+    """
+    from tap_lms.glific_integration import create_group_if_missing
+    from tap_lms.summer_program.collection_membership import COLLECTION_KINDS
+
+    created = 0
+    for kind in COLLECTION_KINDS:
+        existing = frappe.db.exists(
+            "PGCollection",
+            {"parent": bpr.name, "kind": kind},
+        )
+        if existing:
+            continue
+
+        label = f"SP_{bpr.batch}_{kind}"
+        glific_group_id = create_group_if_missing(
+            label,
+            description=f"CR-005 {kind} collection for BPR {bpr.name}",
+        )
+        if not glific_group_id:
+            frappe.log_error(
+                f"_ensure_kind_keyed_pg_collections: could not create or "
+                f"resolve Glific group '{label}' for BPR {bpr.name}",
+                "SP Collection Bootstrap",
+            )
+            continue
+
+        pg_col = frappe.new_doc("PGCollection")
+        pg_col.parent = bpr.name
+        pg_col.parenttype = "BatchProgramRun"
+        pg_col.parentfield = "pg_collections"
+        pg_col.kind = kind
+        pg_col.collection_label = label
+        pg_col.glific_group_id = str(glific_group_id)
+        pg_col.member_count = 0
+        pg_col.is_active = 1
+        pg_col.insert(ignore_permissions=True)
+        created += 1
+
+    if created:
+        frappe.db.commit()
+        frappe.logger().info(
+            f"_ensure_kind_keyed_pg_collections: created {created} kind-keyed "
+            f"PGCollection rows for BPR {bpr.name}"
+        )
+    return created
+
+
+def _bulk_populate_kind_keyed_collections(bpr_name):
+    """BR-002 (2026-06-03): bulk-populate each kind-keyed PGCollection with the
+    contacts whose current resolved_flow_state maps to that kind.
+
+    Enqueued by `activate_bpr` on the `long` queue so the ~143 Glific bulk calls
+    for a 71K cohort run off the request path. Uses `add_contacts_to_group_bulk`
+    (one API call per COLLECTION_BATCH_SIZE chunk) for a ~60x speedup over the
+    per-PE `_enqueue_group_write` path — the same helper `setup_collections`
+    uses for the legacy archetype collections.
+
+    Bucketing mirrors `maintain_collections` exactly — it is STATE-driven, not
+    program_status-driven (L-055's distinction):
+      - resolved_flow_state in MAIN_ELIGIBLE_STATES  -> 'main'
+      - STATE_TO_AUDIT_KIND[resolved_flow_state]      -> that audit kind
+    At a fresh activation every PE is in normal_content_delivery, so only 'main'
+    is populated; the audit buckets are the correct generalization for an
+    activation that runs after some PEs have already transitioned. (NOTE: the
+    handoff's draft query filtered program_status IN ('active','paused'), which
+    would have excluded program_dropped/program_completed PEs from their own
+    audit collections — dropped here to match maintain_collections semantics.)
+
+    Re-run semantics: built for activation (fresh cohort — `main` populated,
+    audit buckets empty, every member_count seeded at 0 by
+    _ensure_kind_keyed_pg_collections). `member_count` is SET (not incremented)
+    to the count actually added, and re-adding an existing Glific member is a
+    no-op, so re-running re-adds + re-counts the CURRENTLY-eligible contacts per
+    kind without doubling. Note it is an ADD-only resync: it never removes a
+    contact from a Glific group and never zeroes a kind it now finds empty (that
+    would risk member_count lying about a group still holding members from later
+    transitions) — removals/decrements are owned by maintain_collections.
+
+    Per-batch Glific failures are logged and the job continues; if any batch
+    failed, the job raises at the end so RQ records the failure (L-056,
+    FailedJobRegistry) and an operator can re-run.
+    """
+    from tap_lms.summer_program.collection_membership import (
+        MAIN_ELIGIBLE_STATES,
+        STATE_TO_AUDIT_KIND,
+    )
+    from tap_lms.summer_program.glific_extensions import add_contacts_to_group_bulk
+    from tap_lms.summer_program.constants import COLLECTION_BATCH_SIZE
+
+    batch_name = frappe.db.get_value("BatchProgramRun", bpr_name, "batch")
+    if not batch_name:
+        frappe.log_error(
+            message=f"_bulk_populate_kind_keyed_collections: BPR {bpr_name} "
+                    f"not found or has no batch",
+            title="SP activate_bpr bulk-populate",
+        )
+        return
+
+    # Kind-keyed collections for this BPR. Read fresh from the DB — the rows were
+    # just created by _ensure_kind_keyed_pg_collections and are NOT in any
+    # in-memory child list on the BPR doc.
+    cols = frappe.db.sql(
+        """
+        SELECT name, kind, glific_group_id
+          FROM "tabPGCollection"
+         WHERE parent = %s
+           AND COALESCE(is_active, 0) = 1
+        """,
+        (bpr_name,),
+        as_dict=True,
+    )
+    if not cols:
+        # L-035: log the empty-path exit so "job ran but did nothing" is visible
+        # — BR-002 itself was a silent empty-collection bug.
+        frappe.logger().info(
+            f"_bulk_populate_kind_keyed_collections: BPR {bpr_name} has no active "
+            f"kind-keyed collections — nothing to populate"
+        )
+        return
+
+    # All PEs in the batch with a usable Glific contact id. The NULL/empty
+    # glific_id filter lives here in SQL (validated on real PG by bench run-tests).
+    pes = frappe.db.sql(
+        """
+        SELECT name, glific_id, resolved_flow_state
+          FROM "tabProgramEnrollment"
+         WHERE batch = %s
+           AND glific_id IS NOT NULL
+           AND glific_id != ''
+        """,
+        (batch_name,),
+        as_dict=True,
+    )
+
+    # Bucket glific_ids by collection kind (state-driven; mirrors maintain_collections).
+    by_kind = {}
+    for pe in pes:
+        state = pe.get("resolved_flow_state")
+        if state in MAIN_ELIGIBLE_STATES:
+            by_kind.setdefault("main", []).append(pe["glific_id"])
+        audit_kind = STATE_TO_AUDIT_KIND.get(state)
+        if audit_kind:
+            by_kind.setdefault(audit_kind, []).append(pe["glific_id"])
+
+    failed_batches = 0
+    populated = {}
+    for col in cols:
+        kind = col.get("kind")
+        group_id = col.get("glific_group_id")
+        glific_ids = by_kind.get(kind, [])
+        if not glific_ids or not group_id:
+            continue
+
+        added = 0
+        for j in range(0, len(glific_ids), COLLECTION_BATCH_SIZE):
+            batch_ids = glific_ids[j:j + COLLECTION_BATCH_SIZE]
+            if add_contacts_to_group_bulk(batch_ids, group_id):
+                added += len(batch_ids)
+            else:
+                failed_batches += 1
+                frappe.log_error(
+                    message=(
+                        f"BPR={bpr_name} kind={kind} group={group_id} "
+                        f"batch_start={j} batch_size={len(batch_ids)} — "
+                        f"add_contacts_to_group_bulk returned False"
+                    ),
+                    title="SP activate_bpr bulk-add failed",
+                )
+
+        # member_count is a denormalized counter (Glific is the SSOT). SET to the
+        # count actually added so a re-run corrects drift rather than doubling.
+        # Not a Glific-mapped field, so set_value needs no reconcile (L-039 N/A).
+        frappe.db.set_value(
+            "PGCollection", col["name"], "member_count", added,
+            update_modified=False,
+        )
+        frappe.db.commit()
+        populated[kind] = added
+        frappe.logger().info(
+            f"activate_bpr bulk-populated {kind} with {added} contacts "
+            f"(group {group_id}, BPR {bpr_name})"
+        )
+
+    # L-035: structured completion log on the SUCCESS path too, so an operator
+    # can confirm the job did its job (and how much) without a manual query.
+    frappe.logger().info(
+        f"_bulk_populate_kind_keyed_collections done: BPR={bpr_name} "
+        f"total_added={sum(populated.values())} per_kind={populated} "
+        f"failed_batches={failed_batches}"
+    )
+
+    if failed_batches:
+        # L-056: surface terminal failure to RQ so it lands in FailedJobRegistry
+        # and an operator can re-run. Successful batches are already committed;
+        # the raise does not undo them.
+        raise RuntimeError(
+            f"_bulk_populate_kind_keyed_collections: {failed_batches} batch(es) "
+            f"failed for BPR {bpr_name} — see Error Log 'SP activate_bpr bulk-add failed'"
+        )

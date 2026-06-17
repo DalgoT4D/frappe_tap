@@ -15,6 +15,8 @@ from tap_lms.summer_program.constants import (
     ALL_ARCHETYPES,
     ALL_ARMS,
     ACTION_FLOW_FIELD_MAP,
+    PROGRAM_ACTIVE,
+    PROGRAM_PAUSED,
 )
 
 
@@ -196,19 +198,32 @@ def get_student_sp_status(student_id):
     """
     student = frappe.get_doc("Student", student_id)
 
-    # Find BPRs where this student is enrolled
-    # (via enrollment child table → batch → BatchProgramRun)
+    # Find BPRs the student is currently enrolled in via ProgramEnrollment
+    # (canonical SP source). The legacy Student.enrollment child table is
+    # populated only by backend onboarding and misses students enrolled
+    # through start_program_enrollment for a new SP batch (root cause of
+    # 2026-05-19 "no_active_batch" incident).
     bpr_info = None
-    if student.enrollment:
-        for enrollment in student.enrollment:
-            bprs = frappe.get_all(
-                "BatchProgramRun",
-                filters={"batch": enrollment.batch},
-                fields=["name", "status"],
-            )
-            if bprs:
-                bpr_info = bprs[0]
-                break
+    pe_batches = frappe.get_all(
+        "ProgramEnrollment",
+        filters={
+            "student": student.name,
+            "program_status": ["in", [PROGRAM_ACTIVE, PROGRAM_PAUSED]],
+        },
+        fields=["batch"],
+        order_by="creation desc",
+    )
+    for pe in pe_batches:
+        if not pe.batch:
+            continue
+        bprs = frappe.get_all(
+            "BatchProgramRun",
+            filters={"batch": pe.batch},
+            fields=["name", "status"],
+        )
+        if bprs:
+            bpr_info = bprs[0]
+            break
 
     # Get engagement state
     engagement = frappe.get_all(

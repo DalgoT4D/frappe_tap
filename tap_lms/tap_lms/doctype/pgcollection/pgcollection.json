@@ -6,13 +6,23 @@
  "editable_grid": 1,
  "engine": "InnoDB",
  "field_order": [
+  "kind",
   "collection_label",
   "glific_group_id",
+  "is_active",
+  "member_count",
   "archetype",
   "experiment_arm",
   "student_count"
  ],
  "fields": [
+  {
+   "fieldname": "kind",
+   "fieldtype": "Select",
+   "label": "Kind",
+   "options": "\nmain\nescalation\nbinge_paused\nprogram_dropped\nprogram_completed",
+   "description": "CR-005 (2026-05-15): kind-keyed PGCollection. Legacy archetype-keyed rows leave this blank and are marked is_active=0 by the backfill patch."
+  },
   {
    "fieldname": "collection_label",
    "fieldtype": "Data",
@@ -24,27 +34,44 @@
    "label": "Glific Group ID"
   },
   {
+   "fieldname": "is_active",
+   "fieldtype": "Check",
+   "label": "Is Active",
+   "default": "1",
+   "description": "CR-005: 1 for kind-keyed rows in use; 0 for deactivated legacy archetype rows."
+  },
+  {
+   "fieldname": "member_count",
+   "fieldtype": "Int",
+   "label": "Member Count",
+   "default": "0",
+   "description": "CR-005: cached count of contacts in this Glific group. Maintained by collection_membership writes."
+  },
+  {
    "fieldname": "archetype",
    "fieldtype": "Select",
-   "label": "Archetype",
-   "options": "dormant\nfence_sitter\nirregular_submitter\nsubmitter"
+   "label": "Archetype (legacy)",
+   "options": "dormant\nfence_sitter\nirregular_submitter\nsubmitter",
+   "description": "Legacy pre-CR-005 archetype-keyed routing. Retained for historical rows; not used by new code."
   },
   {
    "fieldname": "experiment_arm",
    "fieldtype": "Select",
-   "label": "Experiment Arm",
-   "options": "default\narm_a\narm_b"
+   "label": "Experiment Arm (legacy)",
+   "options": "default\narm_a\narm_b",
+   "description": "Legacy pre-CR-005 arm-keyed routing. Retained for historical rows."
   },
   {
    "fieldname": "student_count",
    "fieldtype": "Int",
-   "label": "Student Count"
+   "label": "Student Count (legacy)",
+   "description": "Legacy counter superseded by member_count."
   }
  ],
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2026-05-14 17:16:29.357196",
+ "modified": "2026-05-16 00:30:00.000000",
  "modified_by": "Administrator",
  "module": "TAP LMS",
  "name": "PGCollection",

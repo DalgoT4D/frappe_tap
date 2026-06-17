@@ -1,7 +1,7 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "format:{language}-{###}",
+ "autoname": "format:{#####}",
  "creation": "2025-08-09 14:36:41.837083",
  "default_view": "List",
  "doctype": "DocType",
@@ -27,7 +27,7 @@
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2025-11-21 21:14:37.813794",
+ "modified": "2026-05-27 17:14:28.787170",
  "modified_by": "Administrator",
  "module": "TAP LMS",
  "name": "QuizOptionTranslation",

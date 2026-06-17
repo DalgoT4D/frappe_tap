@@ -115,7 +115,7 @@ def update_batch_week(batch_id, new_calendar_week=None):
           AND program_status NOT IN ('completed', 'dropped')
     """, (max_allowed_week, batch_id))
 
-    frappe.db.commit()
+    # Removed mid-handler commit per L-017 — Frappe commits at request-end.
 
     return {
         "success": True,
@@ -167,7 +167,7 @@ def admin_drop_student(student_id, batch_id=None, reason=None):
               new_value=STATE_PROGRAM_DROPPED, trigger_source="admin",
               details={"reason": reason or "admin_action"})
 
-    frappe.db.commit()
+    # Removed mid-handler commit per L-017 — Frappe commits at request-end.
 
     return {
         "success": True,

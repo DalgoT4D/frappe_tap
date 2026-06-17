@@ -1,7 +1,7 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "format:{student}-{stage}-{status}-{###}",
+ "autoname": "hash",
  "creation": "2025-04-19 12:03:39.737144",
  "default_view": "List",
  "doctype": "DocType",
@@ -207,7 +207,7 @@
  "modified_by": "Administrator",
  "module": "Tap Lms",
  "name": "StudentStageProgress",
- "naming_rule": "Expression",
+ "naming_rule": "Random",
  "owner": "Administrator",
  "permissions": [
   {

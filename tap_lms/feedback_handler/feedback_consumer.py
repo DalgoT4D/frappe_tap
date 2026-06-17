@@ -199,9 +199,12 @@ class FeedbackConsumer:
                 message_data, submission_id = self.processor.parse_and_validate(body)
             except ValueError as e:
                 frappe.logger().error(f"Invalid message format: {str(e)}. Body: {body}")
+                frappe.db.rollback()
                 ch.basic_reject(delivery_tag=method.delivery_tag, requeue=False)
                 return
+            
 
+            print(f"Received feedback for submission: {submission_id}")
             frappe.logger().info(f"Processing feedback for submission: {submission_id}")
 
             # SRE: pipeline trace — message received from rag_service
@@ -218,44 +221,34 @@ class FeedbackConsumer:
                 self.processor.ensure_submission_exists(submission_id)
             except ValueError as e:
                 frappe.logger().error(f"{str(e)}. Rejecting message.")
+                frappe.db.rollback()
                 ch.basic_reject(delivery_tag=method.delivery_tag, requeue=False)
                 return
 
-            # Process the message
+            # Process the message and commit before the SP transition and
+            # external flow. Glific may immediately call back into our public
+            # APIs; if this transaction is still open, those APIs only see the
+            # previous committed Submission.status (usually "Processing").
             self.processor.update_submission(message_data)
-
-            # Send Glific notification (non-critical — failure does not fail the message)
-            _glific_ok = False
-            _glific_err = None
-            try:
-                self.send_glific_notification(message_data)
-                _glific_ok = True
-            except Exception as glific_error:
-                _glific_err = str(glific_error)
-                frappe.logger().warning(
-                    f"Glific notification failed for {submission_id}: {_glific_err}"
-                )
-
-            # SRE: Glific notification outcome — always emitted regardless of success/failure
-            _emit(
-                severity="INFO" if _glific_ok else "WARNING",
-                message="glific_notification_sent",
-                submission_id=submission_id,
-                student_id=message_data.get("student_id"),
-                success=_glific_ok,
-                error=_glific_err,
-            )
-
-            # Summer Program: trigger T12 state transition (non-critical)
-            try:
-                self._update_sp_state(submission_id, message_data)
-            except Exception as sp_error:
-                frappe.logger().warning(
-                    f"SP state update failed for {submission_id}: {str(sp_error)}"
-                )
-                # pe_dispatcher's feedback_timeout handler is the safety net
-
             frappe.db.commit()
+
+            if not self._is_feedback_requested(submission_id):
+                time.sleep(5)
+
+            if self._is_feedback_requested(submission_id):
+                self.process_feedback_ready(submission_id, message_data)
+
+            if self._claim_feedback_flow(submission_id):
+                frappe.db.commit()
+                self.trigger_feedback_flow(submission_id, message_data)
+            else:
+                frappe.db.commit()
+                frappe.logger().info(
+                    f"Feedback flow not requested for submission {submission_id}; "
+                    "acknowledging without Glific notification"
+                )
+
+            # Acknowledge message only after successful processing
             ch.basic_ack(delivery_tag=method.delivery_tag)
 
             duration_ms = int((time.monotonic() - receive_time) * 1000)
@@ -279,9 +272,11 @@ class FeedbackConsumer:
             frappe.db.rollback()
 
             error_msg = str(e)
-            frappe.logger().error(
-                f"Error processing submission {submission_id}: {error_msg}"
-            )
+            import traceback
+            traceback_str = traceback.format_exc()
+            error_msg += f"\nTraceback:\n{traceback_str}"
+            print(f"Error processing feedback for submission {submission_id}: {error_msg}")
+            frappe.logger().error(f"Error processing submission {submission_id}: {error_msg}")
 
             # classify_error returns both the retry decision AND the named reason.
             # Using it here (instead of is_retryable_error) means failure_reason
@@ -326,6 +321,82 @@ class FeedbackConsumer:
 
                 ch.basic_reject(delivery_tag=method.delivery_tag, requeue=False)
 
+    def _is_feedback_requested(self, submission_id):
+        return (
+            frappe.db.get_value("Submission", submission_id, "send_feedback")
+            == "yes"
+        )
+
+    def _claim_feedback_flow(self, submission_id):
+        """
+        Atomically claim a pending feedback-flow request.
+
+        Both the public API and RabbitMQ consumer use this gate. Exactly one
+        caller can flip send_feedback from yes to no for a terminal submission,
+        which prevents duplicate Glific flows.
+        """
+        result = frappe.db.sql(
+            """
+            UPDATE `tabSubmission`
+            SET send_feedback = 'no',
+                feedback_flow_triggered_at = NOW()
+            WHERE name = %s
+              AND send_feedback = 'yes'
+              AND feedback_flow_triggered_at IS NULL
+              AND status IN ('Completed', 'Failed')
+            RETURNING name
+            """,
+            (submission_id,),
+        )
+        return bool(result)
+
+    def _claim_feedback_ready_processing(self, submission_id):
+        """
+        Atomically claim the internal SP feedback-ready mutation.
+
+        This is intentionally separate from _claim_feedback_flow: weekly
+        content delivery may run the PE mutation without sending the
+        student-facing Glific feedback notification.
+        """
+        result = frappe.db.sql(
+            """
+            UPDATE `tabSubmission`
+            SET feedback_ready_processed_at = NOW()
+            WHERE name = %s
+              AND feedback_ready_processed_at IS NULL
+              AND status IN ('Completed', 'Failed')
+            RETURNING name
+            """,
+            (submission_id,),
+        )
+        return bool(result)
+
+    def process_feedback_ready(self, submission_id, message_data):
+        try:
+            frappe.db.begin()
+            if not self._claim_feedback_ready_processing(submission_id):
+                frappe.db.rollback()
+                return False
+
+            result = self._update_sp_state(submission_id, message_data) or {}
+            if result.get("status") == "error":
+                raise Exception(result.get("message") or "on_feedback_ready failed")
+
+            frappe.db.commit()
+            return True
+        except Exception as sp_error:
+            frappe.db.rollback()
+            frappe.logger().warning(f"SP state update failed for {submission_id}: {str(sp_error)}")
+            raise
+
+    def trigger_feedback_flow(self, submission_id, message_data):
+        # Send Glific notification (non-critical - don't fail message if this fails)
+        try:
+            self.send_glific_notification(message_data)
+        except Exception as glific_error:
+            frappe.logger().warning(f"Glific notification failed for {submission_id}: {str(glific_error)}")
+            # Continue processing - notification failure shouldn't fail the entire message
+
     def _update_sp_state(self, submission_id, message_data):
         """
         Summer Program hook: advance PE state from submitted_awaiting_feedback
@@ -334,9 +405,8 @@ class FeedbackConsumer:
         This is non-critical — if it fails, pe_dispatcher's handle_feedback_timeout
         will catch it within 1-4 hours as a safety net.
 
-        The Glific notification (send_glific_notification above) already delivers
-        the feedback to the student, so this only updates the state machine to
-        unlock week advancement.
+        The Glific notification is sent after this hook commits, so callbacks
+        from the feedback flow can read the updated ProgramEnrollment state.
         """
         try:
             from tap_lms.summer_program.feedback_consumer_hook import on_feedback_ready
@@ -352,9 +422,10 @@ class FeedbackConsumer:
                 frappe.logger().warning(
                     f"[SP] Hook returned error for {submission_id}: {result.get('message')}"
                 )
+            return result
         except ImportError:
             # Summer Program module not installed/available — skip silently
-            pass
+            return {"status": "skipped", "reason": "import_error"}
         except Exception as e:
             frappe.logger().warning(
                 f"[SP] State update failed for {submission_id}: {str(e)}"
@@ -363,7 +434,18 @@ class FeedbackConsumer:
             raise
 
     def send_glific_notification(self, message_data: Dict):
-        """Send feedback notification via Glific with proper error handling"""
+        """Send feedback notification via Glific with proper error handling.
+
+        IMPORTANT (2026-05-19 fix): The `student_id` field in the RabbitMQ
+        payload is the Frappe Student doc name (e.g. "ST00051238"), NOT a
+        Glific contact ID. Glific's `startContactFlow` mutation expects a
+        numeric Glific contact ID (e.g. "13325"). Passing the Frappe doc
+        name causes Glific to fail with the generic "Something unexpected
+        has happened" error because the contact lookup fails server-side.
+
+        Always resolve `Student.glific_id` from the Student doc before
+        invoking start_contact_flow.
+        """
         try:
             submission_id = message_data["submission_id"]
             student_id = message_data.get("student_id")
@@ -371,6 +453,17 @@ class FeedbackConsumer:
             if not student_id:
                 frappe.logger().warning(
                     f"No student_id for submission {submission_id}, skipping Glific notification"
+                )
+                return
+
+            # Resolve the Glific contact ID from the Student record.
+            # We accept the message's student_id as the Frappe doc name and
+            # look up the contact ID — the source of truth for Glific addressing.
+            glific_id = frappe.db.get_value("Student", student_id, "glific_id")
+            if not glific_id:
+                frappe.logger().warning(
+                    f"Student {student_id} has no glific_id; skipping Glific "
+                    f"notification for submission {submission_id}"
                 )
                 return
 
@@ -396,17 +489,23 @@ class FeedbackConsumer:
                 "feedback": overall_feedback,
             }
 
+            # Start Glific flow — pass the resolved Glific contact ID, NOT
+            # the Frappe Student doc name (see docstring above).
             success = start_contact_flow(
-                flow_id=flow_id, contact_id=student_id, default_results=default_results
+                flow_id=str(flow_id),
+                contact_id=str(glific_id),
+                default_results=default_results,
             )
 
             if success:
                 frappe.logger().info(
                     f"Sent Glific notification for submission: {submission_id}"
+                    f"to glific_id={glific_id} (student={student_id})"
                 )
             else:
                 frappe.logger().warning(
                     f"Failed to send Glific notification for submission: {submission_id}"
+                    f"{submission_id} (student={student_id}, glific_id={glific_id})"
                 )
                 raise RuntimeError(
                     f"start_contact_flow returned False for {submission_id}"

@@ -14,6 +14,8 @@ Two surfaces are covered:
 import frappe
 from frappe.tests.utils import FrappeTestCase
 
+from tap_lms.summer_program.tests.factories import make_batch
+
 from tap_lms.summer_program.constants import (
     LABEL_CONTENT_DELIVERED,
     PATH_CORE,
@@ -27,6 +29,10 @@ from tap_lms.summer_program.validators import (
 
 
 def _ensure_batch(name, grace_days, total_weeks=12):
+    # Idempotent-update branch preserved: when the batch already exists this
+    # helper re-asserts grace_window_days/total_weeks (tests call it with
+    # varying grace values). Creation delegates to the shared factory (L-037)
+    # so the fixture inherits future mandatory-field additions.
     existing = frappe.get_value("Batch", {"name1": name}, "name")
     if existing:
         frappe.db.set_value("Batch", existing, {
@@ -34,20 +40,19 @@ def _ensure_batch(name, grace_days, total_weeks=12):
             "total_weeks": total_weeks,
         }, update_modified=False)
         return existing
-    batch = frappe.new_doc("Batch")
-    batch.name1 = name
-    batch.start_date = "2026-01-01"
-    batch.end_date = "2026-04-30"
-    batch.batch_id = name[:6].upper()
-    batch.program_type = "Summer"
-    batch.total_weeks = total_weeks
-    batch.current_calendar_week = 1
-    batch.grace_window_days = grace_days
-    batch.insert(ignore_permissions=True)
-    return batch.name
+    return make_batch(
+        # batch_id must be injective across callers: name[:6].upper() collided
+        # (ValidatorOkBatch/Over/Empty all → "VALIDA"; ACVMissingTuple/Weeks →
+        # "ACVMIS"; ACVEmptySteps/Type → "ACVEMP") against the tabBatch
+        # batch_id unique constraint. Use the full alphanumeric name uppercased.
+        label=name,
+        batch_id="".join(ch for ch in name if ch.isalnum()).upper(),
+        total_weeks=total_weeks,
+        grace_window_days=grace_days,
+    )
 
 
-def _make_ac(batch_name, hours_list, archetype="Submitter", arm="default",
+def _make_ac(batch_name, hours_list, archetype="submitter", arm="default",
              path="Core", escalation_type="help_note_a", total_weeks=12,
              include_week_rules=True):
     """Create an ArchetypeConfig with escalation_steps using the given
@@ -81,7 +86,7 @@ def _make_ac(batch_name, hours_list, archetype="Submitter", arm="default",
     return ac.name
 
 
-def _ensure_student(suffix, archetype="Submitter", arm="default"):
+def _ensure_student(suffix, archetype="submitter", arm="default"):
     """Create a Student row tagged with archetype + arm. The per-tuple
     validator reads from PE roster joined to Student."""
     phone = f"+9997000{suffix}"
@@ -120,7 +125,7 @@ def _make_pe(batch_name, student_name, suffix):
 
 
 def _full_archetype_set(batch_name, total_weeks=12,
-                       archetypes=("Submitter",), arms=("default",)):
+                       archetypes=("submitter",), arms=("default",)):
     """Author all required ArchetypeConfig rows for the given archetype
     × arm × path matrix. Returns the list of config names."""
     names = []
@@ -198,13 +203,13 @@ class TestValidateArchetypeConfig(FrappeTestCase):
         batch_name = _ensure_batch("ACVDefaultOk", grace_days=14, total_weeks=4)
         self._wipe_batch_data(batch_name)
 
-        s = _ensure_student("V01", archetype="Submitter", arm="default")
+        s = _ensure_student("V01", archetype="submitter", arm="default")
         _make_pe(batch_name, s, "V01")
 
-        # 2 configs: Submitter × default × {Core, Remedial}
-        _make_ac(batch_name, [24, 24, 24], archetype="Submitter",
+        # 2 configs: submitter × default × {Core, Remedial}
+        _make_ac(batch_name, [24, 24, 24], archetype="submitter",
                  arm="default", path="Core", total_weeks=4)
-        _make_ac(batch_name, [24, 24, 24], archetype="Submitter",
+        _make_ac(batch_name, [24, 24, 24], archetype="submitter",
                  arm="default", path="Remedial", total_weeks=4)
 
         result = validate_archetype_config(batch_name)
@@ -212,16 +217,16 @@ class TestValidateArchetypeConfig(FrappeTestCase):
         self.assertEqual(result["issues"], [])
 
     def test_validate_archetype_config_invalid_missing_tuple(self):
-        """If the roster needs a (Submitter, default, Remedial) config and
+        """If the roster needs a (submitter, default, Remedial) config and
         only Core is authored, the validator reports an error."""
         batch_name = _ensure_batch("ACVMissingTuple", grace_days=14, total_weeks=4)
         self._wipe_batch_data(batch_name)
 
-        s = _ensure_student("V02", archetype="Submitter", arm="default")
+        s = _ensure_student("V02", archetype="submitter", arm="default")
         _make_pe(batch_name, s, "V02")
 
         # Only Core authored; Remedial missing.
-        _make_ac(batch_name, [24, 24, 24], archetype="Submitter",
+        _make_ac(batch_name, [24, 24, 24], archetype="submitter",
                  arm="default", path="Core", total_weeks=4)
 
         result = validate_archetype_config(batch_name)
@@ -232,7 +237,7 @@ class TestValidateArchetypeConfig(FrappeTestCase):
         ]
         self.assertTrue(missing, msg=f"expected a missing-config error, got: {result['issues']}")
         # Tuple reported should be the Remedial one.
-        self.assertEqual(missing[0]["tuple"], ("Submitter", "default", "Remedial"))
+        self.assertEqual(missing[0]["tuple"], ("submitter", "default", "Remedial"))
 
     def test_validate_archetype_config_invalid_empty_escalation_steps(self):
         """A config exists for the tuple but has no active escalation
@@ -240,12 +245,12 @@ class TestValidateArchetypeConfig(FrappeTestCase):
         batch_name = _ensure_batch("ACVEmptySteps", grace_days=14, total_weeks=4)
         self._wipe_batch_data(batch_name)
 
-        s = _ensure_student("V03", archetype="Submitter", arm="default")
+        s = _ensure_student("V03", archetype="submitter", arm="default")
         _make_pe(batch_name, s, "V03")
 
-        _make_ac(batch_name, [], archetype="Submitter", arm="default",
+        _make_ac(batch_name, [], archetype="submitter", arm="default",
                  path="Core", total_weeks=4)
-        _make_ac(batch_name, [], archetype="Submitter", arm="default",
+        _make_ac(batch_name, [], archetype="submitter", arm="default",
                  path="Remedial", total_weeks=4)
 
         result = validate_archetype_config(batch_name)
@@ -267,13 +272,13 @@ class TestValidateArchetypeConfig(FrappeTestCase):
         batch_name = _ensure_batch("ACVHoursWarn", grace_days=14, total_weeks=4)
         self._wipe_batch_data(batch_name)
 
-        s = _ensure_student("V04", archetype="Submitter", arm="default")
+        s = _ensure_student("V04", archetype="submitter", arm="default")
         _make_pe(batch_name, s, "V04")
 
         # 100+100+200 = 400h > 14d (336h) → warning.
-        _make_ac(batch_name, [100, 100, 200], archetype="Submitter",
+        _make_ac(batch_name, [100, 100, 200], archetype="submitter",
                  arm="default", path="Core", total_weeks=4)
-        _make_ac(batch_name, [24, 24, 24], archetype="Submitter",
+        _make_ac(batch_name, [24, 24, 24], archetype="submitter",
                  arm="default", path="Remedial", total_weeks=4)
 
         result = validate_archetype_config(batch_name)
@@ -281,22 +286,22 @@ class TestValidateArchetypeConfig(FrappeTestCase):
         self.assertTrue(result["valid"])
         warnings = [i for i in result["issues"] if i["severity"] == "warning"]
         self.assertEqual(len(warnings), 1)
-        self.assertEqual(warnings[0]["tuple"], ("Submitter", "default", "Core"))
+        self.assertEqual(warnings[0]["tuple"], ("submitter", "default", "Core"))
 
     def test_validate_archetype_config_error_missing_week_rules(self):
         """week_rules don't cover weeks 1..total_weeks → error."""
         batch_name = _ensure_batch("ACVMissingWeeks", grace_days=14, total_weeks=4)
         self._wipe_batch_data(batch_name)
 
-        s = _ensure_student("V05", archetype="Submitter", arm="default")
+        s = _ensure_student("V05", archetype="submitter", arm="default")
         _make_pe(batch_name, s, "V05")
 
         # Author configs without any week_rules — _make_ac honors
         # include_week_rules=False to drop them entirely.
-        _make_ac(batch_name, [24, 24, 24], archetype="Submitter",
+        _make_ac(batch_name, [24, 24, 24], archetype="submitter",
                  arm="default", path="Core", total_weeks=4,
                  include_week_rules=False)
-        _make_ac(batch_name, [24, 24, 24], archetype="Submitter",
+        _make_ac(batch_name, [24, 24, 24], archetype="submitter",
                  arm="default", path="Remedial", total_weeks=4,
                  include_week_rules=False)
 
@@ -313,14 +318,14 @@ class TestValidateArchetypeConfig(FrappeTestCase):
         batch_name = _ensure_batch("ACVEmptyType", grace_days=14, total_weeks=4)
         self._wipe_batch_data(batch_name)
 
-        s = _ensure_student("V06", archetype="Submitter", arm="default")
+        s = _ensure_student("V06", archetype="submitter", arm="default")
         _make_pe(batch_name, s, "V06")
 
         # escalation_type="" forces the empty-type branch.
-        _make_ac(batch_name, [24, 24, 24], archetype="Submitter",
+        _make_ac(batch_name, [24, 24, 24], archetype="submitter",
                  arm="default", path="Core", total_weeks=4,
                  escalation_type="")
-        _make_ac(batch_name, [24, 24, 24], archetype="Submitter",
+        _make_ac(batch_name, [24, 24, 24], archetype="submitter",
                  arm="default", path="Remedial", total_weeks=4)
 
         result = validate_archetype_config(batch_name)
@@ -331,7 +336,7 @@ class TestValidateArchetypeConfig(FrappeTestCase):
         ]
         # One per tuple that has the empty type (Core).
         self.assertEqual(len(empty_type), 1)
-        self.assertEqual(empty_type[0]["tuple"], ("Submitter", "default", "Core"))
+        self.assertEqual(empty_type[0]["tuple"], ("submitter", "default", "Core"))
 
     def test_validate_archetype_config_supports_multiple_arms(self):
         """Batch with default + arm_a students requires configs for BOTH
@@ -340,26 +345,26 @@ class TestValidateArchetypeConfig(FrappeTestCase):
         batch_name = _ensure_batch("ACVMultiArms", grace_days=14, total_weeks=4)
         self._wipe_batch_data(batch_name)
 
-        s_default = _ensure_student("V07", archetype="Submitter", arm="default")
-        s_arm_a = _ensure_student("V08", archetype="Submitter", arm="arm_a")
+        s_default = _ensure_student("V07", archetype="submitter", arm="default")
+        s_arm_a = _ensure_student("V08", archetype="submitter", arm="arm_a")
         _make_pe(batch_name, s_default, "V07")
         _make_pe(batch_name, s_arm_a, "V08")
 
         # Author configs for default only — arm_a missing.
-        _make_ac(batch_name, [24, 24, 24], archetype="Submitter",
+        _make_ac(batch_name, [24, 24, 24], archetype="submitter",
                  arm="default", path="Core", total_weeks=4)
-        _make_ac(batch_name, [24, 24, 24], archetype="Submitter",
+        _make_ac(batch_name, [24, 24, 24], archetype="submitter",
                  arm="default", path="Remedial", total_weeks=4)
 
         result = validate_archetype_config(batch_name)
         self.assertFalse(result["valid"])
-        # 2 missing tuples expected: (Submitter, arm_a, Core) and
-        # (Submitter, arm_a, Remedial).
+        # 2 missing tuples expected: (submitter, arm_a, Core) and
+        # (submitter, arm_a, Remedial).
         missing = [
             i for i in result["issues"]
             if i["severity"] == "error" and "No active ArchetypeConfig" in i["problem"]
         ]
         self.assertEqual(len(missing), 2)
         missing_tuples = {i["tuple"] for i in missing}
-        self.assertIn(("Submitter", "arm_a", "Core"), missing_tuples)
-        self.assertIn(("Submitter", "arm_a", "Remedial"), missing_tuples)
+        self.assertIn(("submitter", "arm_a", "Core"), missing_tuples)
+        self.assertIn(("submitter", "arm_a", "Remedial"), missing_tuples)

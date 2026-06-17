@@ -10,7 +10,6 @@ frappe.set_user("Administrator")
 print("\n=== Starting Feedback Consumer ===\n")
 consumer = FeedbackConsumer()
 consumer.setup_rabbitmq()
-
 # Check queue state (just for info)
 queue_state = consumer.channel.queue_declare(
     queue=consumer.settings.feedback_results_queue, passive=True

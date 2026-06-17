@@ -13,6 +13,7 @@ contract.
 Reference: docs/api-standard-glific.md sections 2, 3, 6.
 """
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 
@@ -143,16 +144,19 @@ class TestFlatResponsePredicate(unittest.TestCase):
 class TestStartQuizFlatShape(unittest.TestCase):
     """start_quiz must produce flat responses for new + resume variants."""
 
+    @patch("tap_lms.summer_program.student_progression_sp._get_language_for_student")
     @patch("tap_lms.summer_program.student_progression_sp._get_question_details")
     @patch("tap_lms.summer_program.student_progression_sp._get_quiz_questions")
     @patch("tap_lms.summer_program.student_progression_sp._resolve_student_id")
     @patch("tap_lms.summer_program.student_progression_sp.frappe")
     def test_new_quiz_response_is_flat(
-        self, mock_frappe, mock_resolve, mock_get_questions, mock_get_q_details
+        self, mock_frappe, mock_resolve, mock_get_questions, mock_get_q_details,
+        mock_get_language
     ):
         from tap_lms.summer_program import student_progression_sp as api
 
         mock_resolve.return_value = "STU-001"
+        mock_get_language.return_value = "Hindi"
         mock_frappe.db.exists.return_value = True
         mock_frappe.db.get_value.return_value = {
             "name": "PROG-1",
@@ -179,7 +183,6 @@ class TestStartQuizFlatShape(unittest.TestCase):
             "option_a": "A",
             "option_b": "B",
             "option_c": "C",
-            "option_d": "D",
             "correct_option": "A",
         }
 
@@ -193,33 +196,227 @@ class TestStartQuizFlatShape(unittest.TestCase):
         # The function does pe.insert(); make sure insert is a no-op on attempt
         attempt.insert = MagicMock()
 
-        resp = api.start_quiz.__wrapped__("STU-001", "CL-1", "Q1")
+        resp = api.start_quiz.__wrapped__("STU-001", "CL-1", "Q1", language="English")
         assert_flat_response(resp)
         self.assertTrue(resp["success"])
         self.assertEqual(resp["status"], "quiz_started")
         # Spot-check the flattened option fields
         self.assertEqual(resp["option_a"], "A")
+        self.assertNotIn("option_d", resp)
         self.assertEqual(resp["question_index"], 1)
+        mock_get_language.assert_called_once_with("STU-001", "CL-1")
+        mock_get_q_details.assert_called_once_with("QN001", "Hindi")
+
+    @patch("tap_lms.summer_program.student_progression_sp._get_question_details")
+    @patch("tap_lms.summer_program.student_progression_sp._get_quiz_questions")
+    @patch("tap_lms.summer_program.student_progression_sp.frappe")
+    def test_resume_quiz_omits_absent_option_fields(
+        self, mock_frappe, mock_get_questions, mock_get_q_details
+    ):
+        from tap_lms.summer_program import student_progression_sp as api
+
+        attempt = MagicMock()
+        attempt.quiz = "Q1"
+        attempt.name = "QA-1"
+        attempt.quizname = "Q1"
+        attempt.total_questions = 2
+        attempt.answers = [SimpleNamespace(question_index=1, is_correct=1)]
+
+        q1 = MagicMock()
+        q1.question = "QN001"
+        q2 = MagicMock()
+        q2.question = "QN002"
+        mock_get_questions.return_value = [q1, q2]
+        mock_get_q_details.return_value = {
+            "question": "What is next?",
+            "question_type": "Multiple Choice",
+            "option_a": "A",
+            "option_b": "B",
+            "option_c": "C",
+            "correct_option": "A",
+        }
+
+        resp = api._resume_quiz(attempt, {"name": "PROG-1"}, "Hindi")
+
+        assert_flat_response(resp)
+        self.assertEqual(resp["status"], "quiz_resumed")
+        self.assertEqual(resp["option_c"], "C")
+        self.assertNotIn("option_d", resp)
+
+
+class TestQuestionDetailsTranslations(unittest.TestCase):
+    """_get_question_details should translate question and option text."""
+
+    def test_question_details_uses_option_translations_for_language(self):
+        from tap_lms.summer_program import student_progression_sp as api
+
+        question = SimpleNamespace(
+            question="Which is an example of a need?",
+            question_type="Multiple Choice",
+            correct_option=3,
+            question_translations=[
+                SimpleNamespace(
+                    language="Hindi",
+                    translated_question="Hindi question text",
+                )
+            ],
+            options=[
+                SimpleNamespace(options="OPT-1"),
+                SimpleNamespace(options="OPT-2"),
+                SimpleNamespace(options="OPT-3"),
+                SimpleNamespace(options="OPT-4"),
+            ],
+        )
+        option_docs = {
+            "OPT-1": SimpleNamespace(
+                option_text="Chocolate",
+                option_translations=[
+                    SimpleNamespace(language="Hindi", translated_option="Hindi Chocolate")
+                ],
+            ),
+            "OPT-2": SimpleNamespace(
+                option_text="Video game",
+                option_translations=[
+                    SimpleNamespace(language="Hindi", translated_option="Hindi Video game")
+                ],
+            ),
+            "OPT-3": SimpleNamespace(
+                option_text="Food",
+                option_translations=[
+                    SimpleNamespace(language="Hindi", translated_option="Hindi Food")
+                ],
+            ),
+            "OPT-4": SimpleNamespace(
+                option_text="Movie ticket",
+                option_translations=[
+                    SimpleNamespace(language="Hindi", translated_option="Hindi Movie ticket")
+                ],
+            ),
+        }
+
+        def get_doc(doctype, name):
+            if doctype == "QuizQuestion":
+                return question
+            if doctype == "QuizOption":
+                return option_docs[name]
+            raise AssertionError(f"Unexpected get_doc({doctype!r}, {name!r})")
+
+        with patch.object(api, "frappe") as mock_frappe:
+            mock_frappe.get_doc.side_effect = get_doc
+
+            resp = api._get_question_details("QN-1", "Hindi")
+
+        self.assertEqual(resp["question"], "Hindi question text")
+        self.assertEqual(resp["option_a"], "Hindi Chocolate")
+        self.assertEqual(resp["option_b"], "Hindi Video game")
+        self.assertEqual(resp["option_c"], "Hindi Food")
+        self.assertEqual(resp["option_d"], "Hindi Movie ticket")
+        self.assertEqual(resp["correct_option"], "C")
+
+    def test_question_details_omits_absent_option_fields(self):
+        from tap_lms.summer_program import student_progression_sp as api
+
+        question = SimpleNamespace(
+            question="Pick one",
+            question_type="Multiple Choice",
+            correct_option=2,
+            question_translations=[],
+            options=[
+                SimpleNamespace(options="OPT-1"),
+                SimpleNamespace(options="OPT-2"),
+                SimpleNamespace(options="OPT-3"),
+            ],
+        )
+        option_docs = {
+            "OPT-1": SimpleNamespace(option_text="One", option_translations=[]),
+            "OPT-2": SimpleNamespace(option_text="Two", option_translations=[]),
+            "OPT-3": SimpleNamespace(option_text="Three", option_translations=[]),
+        }
+
+        def get_doc(doctype, name):
+            if doctype == "QuizQuestion":
+                return question
+            if doctype == "QuizOption":
+                return option_docs[name]
+            raise AssertionError(f"Unexpected get_doc({doctype!r}, {name!r})")
+
+        with patch.object(api, "frappe") as mock_frappe:
+            mock_frappe.get_doc.side_effect = get_doc
+
+            resp = api._get_question_details("QN-1", "English")
+
+        self.assertEqual(resp["option_a"], "One")
+        self.assertEqual(resp["option_b"], "Two")
+        self.assertEqual(resp["option_c"], "Three")
+        self.assertNotIn("option_d", resp)
+        self.assertEqual(resp["correct_option"], "B")
+
+    def test_question_details_ignores_options_after_d(self):
+        from tap_lms.summer_program import student_progression_sp as api
+
+        question = SimpleNamespace(
+            question="Pick one",
+            question_type="Multiple Choice",
+            correct_option=5,
+            question_translations=[],
+            options=[
+                SimpleNamespace(options="OPT-1"),
+                SimpleNamespace(options="OPT-2"),
+                SimpleNamespace(options="OPT-3"),
+                SimpleNamespace(options="OPT-4"),
+                SimpleNamespace(options="OPT-5"),
+            ],
+        )
+        option_docs = {
+            "OPT-1": SimpleNamespace(option_text="One", option_translations=[]),
+            "OPT-2": SimpleNamespace(option_text="Two", option_translations=[]),
+            "OPT-3": SimpleNamespace(option_text="Three", option_translations=[]),
+            "OPT-4": SimpleNamespace(option_text="Four", option_translations=[]),
+            "OPT-5": SimpleNamespace(option_text="Five", option_translations=[]),
+        }
+
+        def get_doc(doctype, name):
+            if doctype == "QuizQuestion":
+                return question
+            if doctype == "QuizOption":
+                return option_docs[name]
+            raise AssertionError(f"Unexpected get_doc({doctype!r}, {name!r})")
+
+        with patch.object(api, "frappe") as mock_frappe:
+            mock_frappe.get_doc.side_effect = get_doc
+
+            resp = api._get_question_details("QN-1", "English")
+
+        self.assertEqual(resp["option_a"], "One")
+        self.assertEqual(resp["option_b"], "Two")
+        self.assertEqual(resp["option_c"], "Three")
+        self.assertEqual(resp["option_d"], "Four")
+        self.assertNotIn("option_e", resp)
+        self.assertEqual(resp["correct_option"], "A")
 
 
 class TestSubmitAnswerFlatShape(unittest.TestCase):
     """submit_answer must produce flat responses for both 'next_question'
     and 'quiz complete' variants."""
 
+    @patch("tap_lms.summer_program.student_progression_sp._get_language_for_student")
     @patch("tap_lms.summer_program.student_progression_sp._get_question_details")
     @patch("tap_lms.summer_program.student_progression_sp._get_quiz_questions")
     @patch("tap_lms.summer_program.student_progression_sp._resolve_student_id")
     @patch("tap_lms.summer_program.student_progression_sp.frappe")
     def test_next_question_response_is_flat(
-        self, mock_frappe, mock_resolve, mock_get_questions, mock_get_q_details
+        self, mock_frappe, mock_resolve, mock_get_questions, mock_get_q_details,
+        mock_get_language
     ):
         from tap_lms.summer_program import student_progression_sp as api
 
         mock_resolve.return_value = "STU-001"
+        mock_get_language.return_value = "Hindi"
         mock_frappe.db.exists.return_value = True
 
         attempt = MagicMock()
         attempt.student = "STU-001"
+        attempt.course_level = "CL-1"
         attempt.status = "in_progress"
         attempt.total_questions = 3
         attempt.quiz = "Q1"
@@ -257,11 +454,77 @@ class TestSubmitAnswerFlatShape(unittest.TestCase):
             },
         ]
 
-        resp = api.submit_answer.__wrapped__("STU-001", "QA-1", 1, "A")
+        resp = api.submit_answer.__wrapped__("STU-001", "QA-1", 1, "A", language="English")
         assert_flat_response(resp)
         self.assertEqual(resp["status"], "next_question")
         self.assertEqual(resp["question_index"], 2)
         self.assertEqual(resp["option_b"], "X")
+        mock_get_language.assert_called_once_with("STU-001", "CL-1")
+        mock_get_q_details.assert_any_call("QN002", "Hindi")
+
+    @patch("tap_lms.summer_program.student_progression_sp._get_language_for_student")
+    @patch("tap_lms.summer_program.student_progression_sp._get_question_details")
+    @patch("tap_lms.summer_program.student_progression_sp._get_quiz_questions")
+    @patch("tap_lms.summer_program.student_progression_sp._resolve_student_id")
+    @patch("tap_lms.summer_program.student_progression_sp.frappe")
+    def test_next_question_omits_absent_option_fields(
+        self, mock_frappe, mock_resolve, mock_get_questions, mock_get_q_details,
+        mock_get_language
+    ):
+        from tap_lms.summer_program import student_progression_sp as api
+
+        mock_resolve.return_value = "STU-001"
+        mock_get_language.return_value = "Hindi"
+        mock_frappe.db.exists.return_value = True
+
+        attempt = MagicMock()
+        attempt.student = "STU-001"
+        attempt.course_level = "CL-1"
+        attempt.status = "in_progress"
+        attempt.total_questions = 3
+        attempt.quiz = "Q1"
+        attempt.question_started_at = None
+        attempt.started_at = None
+        attempt.answers = []
+        attempt.correct_answers = 0
+        attempt.student_progress = None
+        attempt.append = MagicMock()
+        attempt.save = MagicMock()
+
+        quiz_doc = MagicMock()
+        mock_frappe.get_doc.side_effect = [attempt, quiz_doc]
+
+        q1 = MagicMock()
+        q1.question = "QN001"
+        q2 = MagicMock()
+        q2.question = "QN002"
+        mock_get_questions.return_value = [q1, q2, MagicMock()]
+
+        mock_get_q_details.side_effect = [
+            {
+                "correct_option": "A",
+                "option_a": "A",
+                "option_b": "B",
+                "option_c": "C",
+                "question": "Q1?",
+                "question_type": "Multiple Choice",
+            },
+            {
+                "correct_option": "B",
+                "option_a": "W",
+                "option_b": "X",
+                "option_c": "Y",
+                "question": "Q2?",
+                "question_type": "Multiple Choice",
+            },
+        ]
+
+        resp = api.submit_answer.__wrapped__("STU-001", "QA-1", 1, "A", language="English")
+
+        assert_flat_response(resp)
+        self.assertEqual(resp["status"], "next_question")
+        self.assertEqual(resp["option_c"], "Y")
+        self.assertNotIn("option_d", resp)
 
 
 class TestGetContentDetailsFlatShape(unittest.TestCase):
@@ -630,6 +893,61 @@ class TestGetContentDetailsAssessmentsPreserved(unittest.TestCase):
         self.assertNotIn("assessment_1_id", resp)
 
 
+class TestGetContentDetailsLanguageResolution(unittest.TestCase):
+    """Language for content details is resolved once at the endpoint boundary."""
+
+    def test_resolves_language_from_input_then_pe_then_english(self):
+        from tap_lms.summer_program import student_progression_sp as api
+
+        with patch.object(api, "resolve_student") as mock_resolve, \
+                patch.object(api, "get_active_pe") as mock_get_active_pe:
+            self.assertEqual(
+                api._resolve_content_language("Marathi", "GLIFIC-1"),
+                "Marathi",
+            )
+            mock_resolve.assert_not_called()
+            mock_get_active_pe.assert_not_called()
+
+            mock_resolve.return_value = "STU-001"
+            pe = MagicMock()
+            pe.language = "Hindi"
+            mock_get_active_pe.return_value = pe
+            self.assertEqual(
+                api._resolve_content_language(None, "GLIFIC-1"),
+                "Hindi",
+            )
+
+            pe.language = None
+            self.assertEqual(
+                api._resolve_content_language(None, "GLIFIC-1"),
+                "English",
+            )
+
+    def test_unguided_message_requires_resolved_language_argument(self):
+        from tap_lms.summer_program import student_progression_sp as api
+
+        with patch.object(api, "resolve_student") as mock_resolve, \
+                patch.object(api, "get_active_pe") as mock_get_active_pe, \
+                patch.object(api, "frappe") as mock_frappe:
+            mock_resolve.return_value = "STU-001"
+            pe = MagicMock()
+            pe.language = "Hindi"
+            pe.current_expected_submission_type = "video"
+            mock_get_active_pe.return_value = pe
+
+            response = api._get_video_unguided_submission_message(
+                "GLIFIC-1",
+                [{"assessment_type": "Assignment", "assessment_id": "ASN-001"}],
+                language=None,
+            )
+
+            self.assertEqual(
+                response,
+                {"unguided_text": "Not Found", "unguided_text_url": "Not Found"},
+            )
+            mock_frappe.get_all.assert_not_called()
+
+
 class TestGetNextContentFlatShape(unittest.TestCase):
     """Task #68 — `get_next_content` previously returned nested `position` and
     `content` objects (plus `assessments[]` array inside content) for 3 variants
@@ -805,6 +1123,7 @@ class TestGetStudentStateCR002V2FlatShape(unittest.TestCase):
         "weekly_submission_points",
         "special_gems",
         "weekly_submission_done",
+        "bonus_quiz_points",
     }
 
     @patch("tap_lms.summer_program.program_enrollment_api._resolve_student")
@@ -834,6 +1153,7 @@ class TestGetStudentStateCR002V2FlatShape(unittest.TestCase):
             "total_quiz_points": 5, "weekly_quiz_points": 5,
             "total_submission_points": 25, "weekly_submission_points": 25,
             "special_gems": 1, "weekly_submission_done": 1,
+            "bonus_quiz_points": 0,
         }
         mock_frappe.db.get_value.return_value = pe_data
 
@@ -893,6 +1213,7 @@ class TestGetStudentStateCR002V2FlatShape(unittest.TestCase):
             "total_quiz_points": 0, "weekly_quiz_points": 0,
             "total_submission_points": 0, "weekly_submission_points": 0,
             "special_gems": 0, "weekly_submission_done": 0,
+            "bonus_quiz_points": 0,
         }
         captured = {}
         mock_frappe.local.response = captured
@@ -920,6 +1241,49 @@ class TestGetStudentStateCR002V2FlatShape(unittest.TestCase):
         # New field uses its natural name — that one is fresh contract surface
         self.assertIn("current_escalation_type", captured)
         self.assertEqual(captured["current_escalation_type"], "voice_note")
+
+    @patch("tap_lms.summer_program.program_enrollment_api._resolve_student")
+    @patch("tap_lms.summer_program.program_enrollment_api.frappe")
+    def test_response_total_points_includes_bonus_quiz_points(
+        self, mock_frappe, mock_resolve,
+    ):
+        """get_student_state is the Glific fallback; its public total must
+        include bonus_quiz_points even if the stored total_points column is
+        stale or was written before the bonus stream existed."""
+        from tap_lms.summer_program import program_enrollment_api as api
+
+        mock_resolve.return_value = "STU-001"
+        mock_frappe.db.get_value.side_effect = [
+            {
+                "name": "PE-1", "batch": "BATCH-1", "program_type": "Summer",
+                "archetype": "Submitter", "experiment_arm": "default",
+                "resolved_flow_state": "normal_content_delivery",
+                "journey_label": "content_delivered", "program_status": "active",
+                "current_week": 1, "current_path": "Core", "current_tier": "Basic",
+                # Stale stored total: 20 + 5 + 25, missing +10 bonus.
+                "total_points": 50, "current_streak": 0, "in_grace_window": 0,
+                "grace_window_end_at": None,
+                "current_expected_submission_type": "photo",
+                "submission_count": 0,
+                "current_escalation_step": 0,
+                "current_escalation_type": "",
+                "course_level": "CL-1", "language": None, "glific_id": "G-1",
+                "total_activity_points": 20, "weekly_activity_points": 0,
+                "total_quiz_points": 5, "weekly_quiz_points": 0,
+                "total_submission_points": 25, "weekly_submission_points": 0,
+                "special_gems": 0, "weekly_submission_done": 0,
+                "bonus_quiz_points": 10,
+            },
+            "Student One",
+            "BATCH01",
+        ]
+        captured = {}
+        mock_frappe.local.response = captured
+
+        api.get_student_state("STU-001")
+
+        self.assertEqual(captured["bonus_quiz_points"], 10)
+        self.assertEqual(captured["total_points"], 60)
 
 
 if __name__ == "__main__":

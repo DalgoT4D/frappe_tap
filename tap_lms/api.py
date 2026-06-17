@@ -1372,7 +1372,14 @@ def verify_otp():
                     frappe.logger().warning(f"Teacher {teacher_id} has no Glific ID. Attempting to create/link.")
 
                     # Try to find existing Glific contact by phone
-                    glific_contact = get_contact_by_phone(teacher.phone_number)
+                    try:
+                        glific_contact = get_contact_by_phone(teacher.phone_number)
+                    except requests.exceptions.RequestException as e:
+                        frappe.log_error(
+                            title="Glific timeout (degraded)",
+                            message=f"verify_otp update_batch: get_contact_by_phone timed out for {teacher.phone_number}: {e}",
+                        )
+                        glific_contact = None
 
                     if glific_contact and 'id' in glific_contact:
                         # Found existing contact, link it
@@ -1395,14 +1402,21 @@ def verify_otp():
                             frappe.logger().warning("No English language found in TAP Language. Using None for language_id.")
                             language_id = None
 
-                        new_contact = create_contact(
-                            teacher.first_name or "Teacher",  # Fallback if first_name is empty
-                            teacher.phone_number,
-                            school_name,
-                            model_name,
-                            language_id,
-                            batch_info["batch_id"]
-                        )
+                        try:
+                            new_contact = create_contact(
+                                teacher.first_name or "Teacher",  # Fallback if first_name is empty
+                                teacher.phone_number,
+                                school_name,
+                                model_name,
+                                language_id,
+                                batch_info["batch_id"]
+                            )
+                        except requests.exceptions.RequestException as e:
+                            frappe.log_error(
+                                title="Glific timeout (degraded)",
+                                message=f"verify_otp update_batch: create_contact timed out for {teacher.phone_number}: {e}",
+                            )
+                            new_contact = None
 
                         if new_contact and 'id' in new_contact:
                             teacher.glific_id = new_contact['id']
@@ -1434,7 +1448,14 @@ def verify_otp():
                     )
 
                     if teacher_group:
-                        group_added = add_contact_to_group(teacher.glific_id, teacher_group["group_id"])
+                        try:
+                            group_added = add_contact_to_group(teacher.glific_id, teacher_group["group_id"])
+                        except requests.exceptions.RequestException as e:
+                            frappe.log_error(
+                                title="Glific timeout (degraded)",
+                                message=f"verify_otp update_batch: add_contact_to_group timed out for teacher {teacher_id}: {e}",
+                            )
+                            group_added = False
                         if group_added:
                             frappe.logger().info(f"Teacher {teacher_id} added to group {teacher_group['label']}")
                         else:
@@ -1580,8 +1601,15 @@ def create_teacher_web():
             batch_name = ""  # Also set batch_name to empty string
 
         # Check if the phone number already exists in Glific
-        glific_contact = get_contact_by_phone(data['phone'])
-        
+        try:
+            glific_contact = get_contact_by_phone(data['phone'])
+        except requests.exceptions.RequestException as e:
+            frappe.log_error(
+                title="Glific timeout (degraded)",
+                message=f"create_teacher_web: get_contact_by_phone timed out for {data['phone']}: {e}",
+            )
+            glific_contact = None
+
         if glific_contact and 'id' in glific_contact:
             # Contact exists in Glific, update fields
             frappe.logger().info(f"Existing Glific contact found with ID: {glific_contact['id']}. Updating fields.")
@@ -1636,14 +1664,21 @@ def create_teacher_web():
         if not (glific_contact and 'id' in glific_contact):
             # No existing contact found, create a new one
             frappe.logger().info(f"Creating new Glific contact for teacher {new_teacher.name}")
-            glific_contact = create_contact(
-                data['firstName'],
-                data['phone'],
-                school_name,
-                model_name,
-                language_id,
-                batch_id
-            )
+            try:
+                glific_contact = create_contact(
+                    data['firstName'],
+                    data['phone'],
+                    school_name,
+                    model_name,
+                    language_id,
+                    batch_id
+                )
+            except requests.exceptions.RequestException as e:
+                frappe.log_error(
+                    title="Glific timeout (degraded)",
+                    message=f"create_teacher_web: create_contact timed out for {data['phone']}: {e}",
+                )
+                glific_contact = None
 
             if glific_contact and 'id' in glific_contact:
                 new_teacher.glific_id = glific_contact['id']

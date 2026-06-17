@@ -155,7 +155,7 @@
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-05-13 15:16:22.479972",
+ "modified": "2026-05-26 13:56:19.654062",
  "modified_by": "Administrator",
  "module": "Tap Lms",
  "name": "StudentQuizAttempt",
@@ -176,5 +176,6 @@
  ],
  "sort_field": "modified",
  "sort_order": "DESC",
- "states": []
+ "states": [],
+ "track_changes": 1
 }

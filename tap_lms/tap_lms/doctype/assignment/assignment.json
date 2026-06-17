@@ -161,6 +161,7 @@
    "options": "Rubric Grade"
   },
   {
+   "default": "25",
    "description": "PAL uses ArchetypeConfig escalation step points instead.",
    "fieldname": "points_per_item",
    "fieldtype": "Int",

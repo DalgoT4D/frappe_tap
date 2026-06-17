@@ -1,9 +1,13 @@
 """
-DEPRECATED — see tap_lms/hooks.py.
+DEAD STUB. Do not import.
 
-This file was a reference stub that documented the SP scheduler entries before
-they were merged into the real `hooks.py`. As of 2026-05-11 (task #20), all
-entries listed here have been added to `tap_lms/hooks.py` and this stub is
-no longer authoritative. Kept as an empty module rather than deleted only
-because the Cowork sandbox can't remove files; safe to `git rm` from the bench.
+This module was an intermediate parking lot during the hooks consolidation
+work (task #20, completed 2026-XX-XX). The actual hooks live in
+`app/tap_lms/hooks.py`. Importing this file in production code is a bug —
+anything you find here is dead. If you need to register a new hook, edit
+hooks.py directly.
 """
+raise ImportError(
+    "tap_lms.summer_program.hooks_additions is DEAD. "
+    "Use tap_lms.hooks instead. See task #65 / CLAUDE.md L-020."
+)

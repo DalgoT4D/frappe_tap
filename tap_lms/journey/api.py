@@ -4,12 +4,28 @@ from frappe import _
 from frappe.utils import now_datetime, today, get_datetime
 import traceback
 
+# Task #1 (2026-05-28): journey APIs deprecated pre-launch — see
+# tap_lms/journey/_deprecation.py for the shared response helper. Old
+# function bodies are preserved below `_DEPRECATED_*` markers so the
+# legacy code is still readable but no longer reachable by Glific
+# callers. Internal helpers like handle_stage_event, find_student, etc.
+# are left intact because they may be imported elsewhere.
+from tap_lms.journey._deprecation import journey_deprecated_response
+
+
 @frappe.whitelist(allow_guest=False)
-def track_interaction():
-    """
-    Stage-based webhook handler for tracking student interactions
-    Requires stage_id (OnboardingStage.stage_name) and stage_type to be provided directly
-    """
+def track_interaction(**_kw):
+    """[DEPRECATED 2026-05-28] Was a stage-based webhook handler for
+    tracking student interactions. Replaced by state-machine transitions
+    in summer_program/state_machine.py. Returns a deprecation envelope
+    immediately — no side effects."""
+    return journey_deprecated_response("track_interaction", _kw)
+
+
+# _DEPRECATED_track_interaction_original ============================
+# Original body preserved for one release cycle in case any helper
+# below needs to be lifted out. Not callable from Glific anymore.
+def _DEPRECATED_track_interaction_original():
     try:
         # Get the request data
         if frappe.request.method != "POST":
@@ -92,20 +108,19 @@ def track_interaction():
         return {"success": False, "message": str(e)}
 
 @frappe.whitelist(allow_guest=False)
-def update_student_stage(student_id, stage_name, event_type="manual_assignment", course_context=None):
-    """
-    Direct API endpoint for external apps to update student stages
-    Status is automatically derived from event_type
-    
-    Args:
-        student_id: Student identifier (Glific ID, phone, or Frappe ID)
-        stage_name: Target OnboardingStage.stage_name or LearningStage name
-        event_type: Type of event (determines the status)
-        course_context: Course context if applicable
-        
-    Returns:
-        API response with success/failure and transition information
-    """
+def update_student_stage(**_kw):
+    """[DEPRECATED 2026-05-28] Was a direct API endpoint for external apps
+    to update student stages. Replaced by summer_program/dev_tools.update_student_state
+    for QA use and by canonical state-machine transitions for production.
+    Returns a deprecation envelope immediately — no side effects."""
+    return journey_deprecated_response("update_student_stage", _kw)
+
+
+# _DEPRECATED_update_student_stage_original =========================
+# Original body preserved for one release cycle. Not callable from Glific.
+def _DEPRECATED_update_student_stage_original(student_id, stage_name,
+                                                event_type="manual_assignment",
+                                                course_context=None):
     try:
         # Find student
         if isinstance(student_id, dict):

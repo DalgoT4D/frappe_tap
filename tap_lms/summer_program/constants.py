@@ -188,16 +188,31 @@ VALIDATION_FAILED = "failed"
 
 
 # ── Glific Contact Field Keys ─────────────────────────────
-# These are the 26 contact field names set on Glific contacts.
-# CR-002 v2 expands the baseline from 18 to 26 by adding the 8 gamification
-# fields below (activity/quiz/submission points split + special_gems +
-# weekly_submission_done sticky flag). `weekly_video_done` is intentionally
-# NOT added — it is an internal-only state-machine flag and is never pushed
-# to Glific (see CR-002 v2 §"Five gamification dimensions on PE").
+# These are the 28 contact field names set on Glific contacts (post CR-003).
+# Cache size evolution:
+#   - Original baseline: 18 fields
+#   - +CR-002 v2: +8 gamification fields (activity/quiz/submission points split,
+#     special_gems, weekly_submission_done sticky flag) → 26
+#   - +CR-003: +2 escalation routing fields (escalation_order, escalation_type)
+#     → 28
+# `weekly_video_done` is intentionally NOT pushed — internal-only state-machine
+# flag (see CR-002 v2 §"Five gamification dimensions on PE").
+# `bonus_quiz_points` is recorded on ProgramEnrollment but is intentionally
+# excluded from the standard contact-field sync payload in this version.
+# See state_machine._enqueue_contact_field_sync for the canonical field
+# provenance docstring listing all 28 fields and their sources.
 CF_STUDENT_ID = "student_id"
 CF_BATCH_ID = "batch_id"
 CF_ARCHETYPE = "archetype"
-CF_LANGUAGE = "language"
+# CF_LANGUAGE_ID (2026-05-19 rename, was CF_LANGUAGE="language"):
+#   Avoids name collision with Glific's CORE `language` field (a built-in
+#   that stores the Glific language integer ID and is set via the
+#   updateContact mutation's `languageId` input, NOT via `fields`).
+#   Our custom `language_id` field acts as a flow-readable BACKUP/cache;
+#   the authoritative value lives on Glific CORE.
+#   Value is the Glific INTEGER language ID resolved from
+#   TAP Language.glific_language_id at push time — NOT the language NAME.
+CF_LANGUAGE_ID = "language_id"
 CF_RESOLVED_FLOW_STATE = "resolved_flow_state"
 CF_CURRENT_WEEK = "current_week"
 CF_CURRENT_PATH = "current_path"
@@ -215,7 +230,9 @@ CF_SUBMISSION_COUNT = "submission_count"
 
 # ── CR-002 v2 gamification fields ─────────────────────────
 # 8 new contact fields pushed alongside the existing 18 (cache size 26 after
-# this CR; 28 after CR-003 also ships escalation_order + escalation_type).
+# this CR; 28 after CR-003 also ships escalation_order + escalation_type;
+# 29 after task #98 also ships bonus_quiz_points — 2026-05-25;
+# 30 after task #7 ships weekly_engagement_points — 2026-05-26).
 # Glific gamification rendering reads these directly via @contact.<field_name>;
 # per L-008 the names are public contract — do not rename.
 CF_TOTAL_ACTIVITY_POINTS = "total_activity_points"
@@ -228,10 +245,41 @@ CF_WEEKLY_SUBMISSION_POINTS = "weekly_submission_points"
 CF_SPECIAL_GEMS = "special_gems"
 CF_WEEKLY_SUBMISSION_DONE = "weekly_submission_done"
 
+# CF_WEEKLY_ENGAGEMENT_POINTS (2026-05-26):
+# Computed (NOT stored on PE) — `weekly_submission_points + weekly_activity_points`.
+# Pushed alongside the canonical weekly_* fields so Glific flow templates can
+# render a single "engagement" stat without computing the sum in the flow.
+# Resets naturally with the source columns at the CR-008 lazy reset (first
+# VideoClass of new week) because both addends reset to 0 in the same SQL
+# UPDATE — no separate column for this handler chain to maintain.
+CF_WEEKLY_ENGAGEMENT_POINTS = "weekly_engagement_points"
+
+# IMPORTANT — multi-tenant Glific boundary (2026-05-26):
+# Legacy Glific contact fields like `streak`, `gems`, `bonus_points`,
+# `current_activity_points`, `recent_quiz_points`, `streak_v1`,
+# `orginal_streak`, `total_p`, etc. exist on the shared Glific organisation
+# and are OWNED BY OTHER PROGRAMS (TLM, scert, pocflow, …). The Glific org
+# has ~470 contact field definitions across all programs that share it.
+#
+# **The SP backend must NEVER write to a contact field it didn't create.**
+# Writing to `streak` or `gems` from SP would silently clobber values that
+# other programs depend on for their own flow logic. Treat the SP namespace
+# as exactly the 29 fields registered by `dev_tools.bootstrap_sp_contact_fields()`
+# — anything else on the contact is out of bounds.
+#
+# Therefore: SP writes to `current_streak` and `special_gems` (our canonical,
+# SP-owned keys); we do NOT alias-bridge to the legacy `streak`/`gems` keys
+# even if pre-CR-002 SP flows still reference them. The fix for any
+# SP-owned flow still reading legacy keys is to update the flow to point
+# at the SP-owned key. Other programs' flows reading their own legacy keys
+# are untouched, as intended.
+
 # ── CR-003 escalation channel routing fields ──────────────
 # Pushed before the SP_Escalation flow trigger so Glific can branch on the
 # current step's escalation_order and escalation_type (help_note_a /
-# help_note_b / voice_note / parent_call). Cache size 26 → 28 after CR-003.
+# help_note_b / voice_note / parent_call). Cache size 26 → 28 after CR-003;
+# → 29 after task #98 (bonus_quiz_points, 2026-05-25);
+# → 30 after task #7 (weekly_engagement_points, 2026-05-26).
 # Per L-008, these names are public contract — do not rename.
 CF_ESCALATION_ORDER = "escalation_order"
 CF_ESCALATION_TYPE = "escalation_type"
@@ -263,7 +311,13 @@ FEEDBACK_PIPELINE_DLQ_LOG_TITLE = "SP Feedback Pipeline DLQ — manual replay re
 
 
 # ── Tier mapping ──────────────────────────────────────────
-TIER_BY_WEEK = {1: "Basic", 2: "Intermediate"}
+TIER_BY_WEEK = {
+    1: "Basic",
+    2: "Basic",
+    3: "Intermediate",
+    4: "Intermediate",
+    5: "Advanced",
+}
 DEFAULT_TIER = "Advanced"
 REMEDIAL_TIER = "Remedial"
 
@@ -296,6 +350,38 @@ MAX_DELIVERY_FAILURES = 3
 VOCALLABS_MAX_RETRIES = 5
 VOCALLABS_RETRY_LOG_TITLE = "SP Vocallabs Retry"
 VOCALLABS_DLQ_LOG_TITLE = "SP Vocallabs DLQ — manual replay required"
+# Task #80: distinct title for permanent (no-retry) failures where the parent
+# phone is already in the Vocallabs prospect group. These are NOT real outages
+# — they're a known limitation of addMultipleContactsToGroup (Hasura uniqueness
+# constraint on client_id+prospect_group_id+phone). Logging under a separate
+# title lets ops filter them from real transient failures and surfaces the
+# scale of the problem until task #81 (Vocallabs lookup endpoint) ships.
+VOCALLABS_DUPLICATE_PROSPECT_LOG_TITLE = "SP Vocallabs Duplicate Prospect (lookup required)"
+# Sentinel constraint name returned by Vocallabs Hasura when the parent's
+# (client_id, prospect_group_id, phone) tuple already exists in the
+# vocallabs_prospects table. Matched as a substring against the error message
+# so a future Vocallabs constraint rename only requires updating this constant.
+VOCALLABS_DUPLICATE_PROSPECT_CONSTRAINT = (
+    "prospects_client_id_prospect_group_id_phone_key"
+)
 VOCALLABS_HTTP_TIMEOUT_SECONDS = 10
 VOCALLABS_TOKEN_CACHE_KEY = "vocallabs:auth_token"
 VOCALLABS_DEFAULT_TOKEN_TTL = 3600  # seconds; used if VoiceAgentSettings.auth_token_cache_ttl unset
+
+# ── Vocallabs auto-backfill (task #81) ──────────────────
+# When addMultipleContactsToGroup returns the uniqueness-constraint error
+# (parent phone already in the prospect group AND Student.vocallabs_prospect_id
+# is empty), the wrapper paginates GET /b2b/vocallabs/getContacts to find
+# the existing prospect_id by phone, caches it on Student, then proceeds
+# with the call. Without this, every cold-cache encounter with a previously
+# inserted phone would require manual operator backfill.
+#
+# Cost: each lookup is a sequential pagination over getContacts. PAGE_SIZE
+# tuned to balance HTTP roundtrips against payload size; MAX_PAGES caps the
+# worst-case at 10k contacts scanned (≈1-2 min wall-clock at typical
+# Vocallabs response times) so a misconfigured matcher can't hang a worker
+# indefinitely. The lookup is rare in steady state — only fires on the very
+# first call for a parent whose phone Vocallabs already has on file.
+VOCALLABS_LOOKUP_PAGE_SIZE = 200
+VOCALLABS_LOOKUP_MAX_PAGES = 50
+VOCALLABS_LOOKUP_LOG_TITLE = "SP Vocallabs Lookup"

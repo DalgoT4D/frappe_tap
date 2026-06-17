@@ -245,5 +245,108 @@ class TestGlificSyncRetry(unittest.TestCase):
         self.assertEqual(mock_enqueue.call_args.kwargs["retry_count"], 1)
 
 
+# ════════════════════════════════════════════════════════════
+# Task #5 regression — False-return silent drop
+# ════════════════════════════════════════════════════════════
+
+class TestGlificSyncFalseReturnTriggersRetry(unittest.TestCase):
+    """Pin task #5: update_contact_fields never raises, it returns False on
+    every failure mode (Glific GraphQL errors, contact-not-found, mutation
+    errors, network errors, catch-all). The pre-2026-05-22 wrapper ignored
+    the return value and silently exited cleanly on False — the retry+DLQ
+    machinery NEVER fired. After the fix, the wrapper raises a marker
+    RuntimeError on False so the existing exception-driven retry path picks
+    it up.
+
+    Tests:
+      1. False return triggers retry (was silently dropped before).
+      2. False return through retry budget exhausts → DLQ entry written.
+      3. True return is unchanged happy path (no regression).
+    """
+
+    @patch("tap_lms.summer_program.state_machine.update_contact_fields")
+    @patch("tap_lms.summer_program.state_machine.frappe.enqueue")
+    @patch("tap_lms.summer_program.state_machine.frappe.log_error")
+    def test_false_return_triggers_retry_not_silent_drop(
+        self, mock_log_error, mock_enqueue, mock_update
+    ):
+        """The core regression. Before the fix, this scenario:
+          - update_contact_fields returns False (e.g., Glific 503 swallowed)
+          - wrapper exits cleanly, no retry, no DLQ
+        After the fix:
+          - wrapper detects False, raises RuntimeError, retry machinery fires
+        """
+        mock_update.return_value = False
+
+        _sync_contact_fields_job(GLIFIC_ID, FIELDS, PE_NAME, retry_count=0,
+                                  student_id=STUDENT_ID)
+
+        # Update was attempted once
+        mock_update.assert_called_once_with(GLIFIC_ID, FIELDS)
+        # The bug was: this assertion would FAIL pre-fix (enqueue not called
+        # because wrapper exited cleanly). Post-fix it passes.
+        mock_enqueue.assert_called_once()
+        self.assertEqual(
+            mock_enqueue.call_args.kwargs["retry_count"],
+            1,
+            "False return must trigger retry with incremented counter",
+        )
+        # And a retry-tier log entry was written
+        log_titles = [c.kwargs.get("title") for c in mock_log_error.call_args_list]
+        self.assertIn(GLIFIC_SYNC_RETRY_LOG_TITLE, log_titles)
+
+    @patch("tap_lms.summer_program.state_machine.update_contact_fields")
+    @patch("tap_lms.summer_program.state_machine.frappe.enqueue")
+    @patch("tap_lms.summer_program.state_machine.frappe.log_error")
+    def test_false_return_through_budget_writes_dlq(
+        self, mock_log_error, mock_enqueue, mock_update
+    ):
+        """Last-attempt False return must land in the DLQ Error Log entry
+        with structured payload, not silently disappear."""
+        mock_update.return_value = False
+
+        _sync_contact_fields_job(
+            GLIFIC_ID, FIELDS, PE_NAME,
+            retry_count=GLIFIC_SYNC_MAX_RETRIES,
+            student_id=STUDENT_ID,
+        )
+
+        # NO re-enqueue (budget exhausted)
+        mock_enqueue.assert_not_called()
+        # DLQ entry written with the marker exception text
+        dlq_calls = [
+            c for c in mock_log_error.call_args_list
+            if c.kwargs.get("title") == GLIFIC_SYNC_DLQ_LOG_TITLE
+        ]
+        self.assertEqual(len(dlq_calls), 1,
+                         "Exactly one DLQ entry must be written when False "
+                         "return exhausts the retry budget")
+        payload = json.loads(dlq_calls[0].kwargs["message"])
+        self.assertEqual(payload["pe_name"], PE_NAME)
+        self.assertEqual(payload["student_id"], STUDENT_ID)
+        self.assertEqual(payload["glific_id"], GLIFIC_ID)
+        self.assertEqual(payload["fields"], FIELDS)
+        # The marker exception text must include the contact_id and PE_NAME
+        # so operators can grep for the specific failure.
+        self.assertIn("returned False", payload["final_error"])
+        self.assertIn(GLIFIC_ID, payload["final_error"])
+
+    @patch("tap_lms.summer_program.state_machine.update_contact_fields")
+    @patch("tap_lms.summer_program.state_machine.frappe.enqueue")
+    @patch("tap_lms.summer_program.state_machine.frappe.log_error")
+    def test_true_return_remains_silent_happy_path(
+        self, mock_log_error, mock_enqueue, mock_update
+    ):
+        """Regression guard: the True return path must remain unchanged.
+        No retry, no log, no DLQ — just a clean success exit."""
+        mock_update.return_value = True
+
+        _sync_contact_fields_job(GLIFIC_ID, FIELDS, PE_NAME, retry_count=0)
+
+        mock_update.assert_called_once_with(GLIFIC_ID, FIELDS)
+        mock_enqueue.assert_not_called()
+        mock_log_error.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

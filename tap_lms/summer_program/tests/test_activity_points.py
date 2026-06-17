@@ -16,6 +16,7 @@ import frappe
 from frappe.tests.utils import FrappeTestCase
 from unittest.mock import patch
 
+from tap_lms.summer_program.tests.factories import make_batch
 from tap_lms.summer_program.activity_points import (
     handle_content_log,
     award_activity_points,
@@ -33,20 +34,9 @@ from tap_lms.summer_program.constants import (
 # ════════════════════════════════════════════════════════════
 
 def _ensure_batch():
-    name = frappe.get_value("Batch", {"name1": "ActivityPointsTestBatch"}, "name")
-    if name:
-        return name
-    batch = frappe.new_doc("Batch")
-    batch.name1 = "ActivityPointsTestBatch"
-    batch.start_date = "2026-01-01"
-    batch.end_date = "2026-04-30"
-    batch.batch_id = "APT01"
-    batch.program_type = "Summer"
-    batch.total_weeks = 12
-    batch.current_calendar_week = 1
-    batch.grace_window_days = 14
-    batch.insert(ignore_permissions=True)
-    return batch.name
+    # Delegates to the shared factory (L-037) so this fixture inherits future
+    # mandatory-field additions instead of breaking with MandatoryError.
+    return make_batch(label="ActivityPointsTestBatch", batch_id="APT01")
 
 
 def _ensure_student(suffix):
@@ -119,9 +109,8 @@ class TestActivityPoints(FrappeTestCase):
 
     @patch("tap_lms.summer_program.activity_points._enqueue_contact_field_sync")
     def test_video_completion_awards_activity_points(self, mock_sync):
-        """First VideoClass completion: PE.total_activity_points += 10,
-        weekly_activity_points += 10, total_points += 10, weekly_video_done = 1.
-        scl.points_awarded = 10."""
+        """First VideoClass completion bumps weekly and eager total counters,
+        flips weekly_video_done, and writes scl.points_awarded."""
         student = _ensure_student("01")
         pe_name = _make_pe(self.batch_name, student, "01")
         video_id = _make_video("01", 10)
@@ -177,8 +166,7 @@ class TestActivityPoints(FrappeTestCase):
             handle_content_log(scl)
 
         pe = frappe.get_doc("ProgramEnrollment", pe_name)
-        self.assertEqual(pe.total_activity_points, 30,
-                         "Three 10-point videos must award 30 total")
+        self.assertEqual(pe.total_activity_points, 30)
         self.assertEqual(pe.weekly_activity_points, 30)
         self.assertEqual(pe.total_points, 30)
         self.assertEqual(pe.weekly_video_done, 1,

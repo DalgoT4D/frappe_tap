@@ -385,7 +385,7 @@
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-05-15 01:48:57.575744",
+ "modified": "2026-05-26 13:55:31.455688",
  "modified_by": "Administrator",
  "module": "TAP LMS",
  "name": "ProgramEnrollment",
@@ -406,5 +406,6 @@
  ],
  "sort_field": "modified",
  "sort_order": "DESC",
- "states": []
+ "states": [],
+ "track_changes": 1
 }

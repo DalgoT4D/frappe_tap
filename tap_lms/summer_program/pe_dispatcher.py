@@ -44,6 +44,7 @@ from tap_lms.summer_program.constants import (
     STATE_SUBMITTED_AWAITING,
     STATE_GRACE_WAITING, STATE_WEEK_COMPLETED,
     STATE_PAUSED_BINGE,
+    PATH_CORE,
 )
 from tap_lms.summer_program.event_log import log_event
 
@@ -64,6 +65,24 @@ def process_program_actions():
     """
     Main dispatcher entry point. Called every 1 minute by Frappe scheduler
     (cron `*/1 * * * *`). v4.1 §7.2 spec; architecture.md §8.1 / §8.8.
+
+    Finds all PEs where:
+      - next_action_at <= now
+      - program_status is active OR paused (paused PEs need pause_check
+        to be reachable for binge-resume; B3 fix)
+      - next_action_type is a per-PE individual-timer action
+
+    Routes each PE to the appropriate handler based on next_action_type.
+
+    Renamed from `dispatch_pending_actions` (task #15, 2026-05-13). The
+    legacy name is preserved below as a thin alias for one release cycle
+    so any cron entry that wasn't yet updated keeps working through the
+    cutover.
+
+    Note: there is no batch-level partition. Collection-mode batchers (when
+    built) filter on different next_action_type values; this dispatcher and
+    those batchers are partitioned by action type, not by Batch. See
+    architecture §8.
     """
     import time as _time
     from tap_lms.monitoring import record_dispatcher_cycle
@@ -78,8 +97,10 @@ def process_program_actions():
     # the atomic claim below can guard against state moving under us.
     #
     # program_status filter includes both ACTIVE and PAUSED so paused-state
-    # handlers (handle_pause_check for binge-resume, handle_re_engagement)
-    # are reachable. Earlier ACTIVE-only filter excluded them entirely (B3).
+    # handlers (handle_pause_check for binge-resume) are reachable. Earlier
+    # ACTIVE-only filter excluded them entirely (B3). Post-CR-003 the
+    # re-engagement handler is gone; only binge-pause keeps PAUSED status
+    # alive on the read.
     # Per L-005: avoid `= ANY(%s)` with a list-in-tuple — Frappe's
     # modify_values mangles a 2-element list into a Postgres record
     # `('active','paused')` instead of a `text[]` array, producing the
@@ -140,6 +161,18 @@ def process_program_actions():
             processed += 1
         except Exception as e:
             errors += 1
+            # Postgres aborts the entire transaction on the first failed
+            # query. Without a rollback here, frappe.log_error itself fails
+            # with InFailedSqlTransaction (it does its own SELECT to fetch
+            # the Error Log doctype meta), which means the dispatcher
+            # silently swallows BOTH the original error AND the log call.
+            # Rolling back first ensures the log entry actually lands.
+            # See 2026-05-19 incident: _get_week_rule schema-mismatch
+            # crashed every cron tick for an hour with zero visible errors.
+            try:
+                frappe.db.rollback()
+            except Exception:
+                pass
             frappe.log_error(
                 f"Dispatcher error for PE {pe_row.name} "
                 f"(action={pe_row.next_action_type}): {str(e)}",
@@ -200,7 +233,6 @@ def process_program_actions():
 # cron entry that still references the pre-rename name through one release
 # cycle. Delete once `bench show-scheduler-events` confirms no remaining
 # call site uses the old name.
-dispatch_pending_actions = process_program_actions
 
 
 def _dispatch_single(pe_row):
@@ -233,6 +265,12 @@ def _clear_action(pe_name):
 # ════════════════════════════════════════════════════════════
 
 
+# CR-005 (2026-05-15): preserved for future use; NOT reached in the normal flow.
+# Weekly content delivery now fires via `weekly_content_delivery_trigger` on the
+# BPR's `main` Glific collection — `t0_enrollment` and `t14_week_advance` no
+# longer arm `ACTION_CONTENT_DELIVERY` on individual PEs. This handler stays in
+# place as: (1) an operator escape hatch for per-PE re-delivery, (2) rollback
+# safety, and (3) future per-student catch-up flows. See CR-005 §4.
 def handle_content_delivery(pe_row):
     """
     Handler: content_delivery
@@ -243,7 +281,17 @@ def handle_content_delivery(pe_row):
 
     After triggering, clears next_action since the flow callback
     will set the next one.
+
+    CR-005: under normal operation no PE has `next_action_type =
+    content_delivery` armed (the weekly cron drives delivery via the main
+    collection). An unexpected fire here surfaces in logs.
     """
+    frappe.logger().info(
+        f"handle_content_delivery fired for PE {pe_row.name} "
+        f"(CR-005: this handler is preserved but not part of the normal flow; "
+        f"check whether someone manually armed content_delivery on this PE)"
+    )
+
     flow_id = _get_flow_id(pe_row.batch, ACTION_CONTENT_DELIVERY)
     if not flow_id:
         _clear_action(pe_row.name)
@@ -277,7 +325,7 @@ def handle_escalation(pe_row):
     """
     from tap_lms.summer_program.state_machine import (
         t2_start_escalation, t4_next_escalation_step,
-        t5_escalation_to_grace, t6_escalation_to_remedial,
+        t5_escalation_to_grace,
         t8_start_remedial_escalation, t10_next_remedial_escalation,
         t11_remedial_to_grace,
     )
@@ -301,14 +349,14 @@ def handle_escalation(pe_row):
     next_step = current_step + 1
 
     if next_step > len(steps):
-        # All steps exhausted — transition to grace or remedial.
+        # All steps exhausted — route to grace regardless of submission history.
+        # CR-006 (2026-05-15): T6 (escalation_to_remedial) is removed.
+        # Remedial is now reserved for failed-feedback students (T6b, CR-004).
+        # Students who never submitted go to grace, then drop per CR-001.
         # CR-003: the grace clock is already armed at the week start; T5/T11
-        # preserve it. T6 (zero-activity → remedial) is unchanged.
+        # preserve it.
         if state in (STATE_NORMAL_CONTENT, STATE_NORMAL_ESCALATION):
-            if pe.submission_count and pe.submission_count > 0:
-                t5_escalation_to_grace(pe, "dispatcher")
-            else:
-                t6_escalation_to_remedial(pe, trigger_source="dispatcher")
+            t5_escalation_to_grace(pe, "dispatcher")
         elif state in (STATE_REMEDIAL_CONTENT, STATE_REMEDIAL_ESCALATION):
             t11_remedial_to_grace(pe, "dispatcher")
         else:
@@ -316,7 +364,16 @@ def handle_escalation(pe_row):
         return
 
     # ── Fire escalation step (CR-003 branch on escalation_type) ─────
-    step_config = steps[next_step - 1]
+    step_config = None
+    for step in steps:
+        try:
+            if int(step.get("escalation_order")) == next_step:
+                step_config = step
+                break
+        except (TypeError, ValueError):
+            step_config = steps[next_step - 1]
+
+
     next_hours = step_config.get("hours_after_previous", 24)
     escalation_type = step_config.get("escalation_type") or "help_note_a"
 
@@ -335,11 +392,16 @@ def handle_escalation(pe_row):
     # the resolved step config. The flow trigger (or Vocallabs enqueue)
     # happens below, after the state transition.
     if state == STATE_NORMAL_CONTENT:
-        t2_start_escalation(pe, next_step, escalation_type, "dispatcher")
+        # CR-009 follow-up (2026-05-23): pass next_hours so T2 re-arms
+        # next_action_at for step 2 — otherwise the chain stuck at step 1.
+        t2_start_escalation(pe, next_step, escalation_type,
+                            next_hours=next_hours, trigger_source="dispatcher")
     elif state == STATE_NORMAL_ESCALATION:
         t4_next_escalation_step(pe, next_step, next_hours, escalation_type, "dispatcher")
     elif state == STATE_REMEDIAL_CONTENT:
-        t8_start_remedial_escalation(pe, next_step, escalation_type, "dispatcher")
+        # Same CR-009 follow-up — T8 mirror of T2.
+        t8_start_remedial_escalation(pe, next_step, escalation_type,
+                                       next_hours=next_hours, trigger_source="dispatcher")
     elif state == STATE_REMEDIAL_ESCALATION:
         t10_next_remedial_escalation(pe, next_step, next_hours, escalation_type, "dispatcher")
     else:
@@ -352,6 +414,8 @@ def handle_escalation(pe_row):
         # SP_Escalation entirely — Glific is not involved for parent calls.
         # The Vocallabs module handles its own retry/DLQ; the dispatcher
         # tick continues without waiting on the actual call.
+
+
         frappe.enqueue(
             "tap_lms.summer_program.vocallabs.initiate_parent_call",
             queue="long",
@@ -360,14 +424,19 @@ def handle_escalation(pe_row):
             pe_name=pe.name,
             escalation_step=step_config,
         )
+
+
         log_event(pe, "escalation_sent", trigger_source="dispatcher",
                   details={"step": next_step, "escalation_type": "parent_call"})
         return
 
     # Text or voice-note channels → fire SP_Escalation flow.
+
     flow_id = _get_flow_id(pe_row.batch, ACTION_ESCALATION)
     if flow_id and pe.glific_id:
         _trigger_flow(flow_id, pe.glific_id, pe.name, "escalation")
+
+    return
 
 
 # CR-003 follow-up: `_push_escalation_contact_fields` removed. The two
@@ -412,15 +481,33 @@ def handle_feedback_timeout(pe_row):
 
     if has_feedback:
         # Feedback arrived but state wasn't updated — trigger T12 as fallback
-        t12_feedback_ready(pe, "feedback_timeout_fallback")
+        t12_feedback_ready(pe, "scheduler")
     else:
         # Retry: schedule another check in 1 hour (max 3 retries)
+        # Task #19 (2026-05-28, L-011): replaced `pe.save(ignore_permissions=True)`
+        # with targeted `frappe.db.set_value` + atomic COALESCE increment for
+        # delivery_failure_count. The previous pe.save would write every PE
+        # column from this possibly-stale doc, clobbering concurrent point-
+        # handler bumps to total_*/weekly_* that ran between the dispatch
+        # claim and this branch. The atomic increment (P-002) is race-safe.
         retry_count = pe.delivery_failure_count or 0
         if retry_count < 3:
-            pe.delivery_failure_count = retry_count + 1
-            pe.next_action_at = add_to_date(now_datetime(), hours=1)
-            pe.next_action_type = ACTION_FEEDBACK_TIMEOUT
-            pe.save(ignore_permissions=True)
+            frappe.db.sql(
+                """
+                UPDATE "tabProgramEnrollment"
+                   SET delivery_failure_count = COALESCE(delivery_failure_count, 0) + 1
+                 WHERE name = %s
+                """,
+                (pe.name,),
+            )
+            frappe.db.set_value(
+                "ProgramEnrollment", pe.name,
+                {
+                    "next_action_at": add_to_date(now_datetime(), hours=1),
+                    "next_action_type": ACTION_FEEDBACK_TIMEOUT,
+                },
+                update_modified=False,
+            )
         else:
             # Give up — alert admin, clear action
             frappe.log_error(
@@ -517,11 +604,19 @@ def handle_grace_check(pe_row):
     # Defensive: if the clock hasn't actually expired yet, re-schedule the
     # tick for the proper expiry time rather than dropping early. Should
     # match exactly under normal scheduling but absorbs minor clock skew.
+    # Task #19 (2026-05-28, L-011): targeted set_value instead of pe.save —
+    # avoids clobbering concurrent point-handler bumps that ran between the
+    # dispatcher's atomic claim and this branch.
     now = now_datetime()
     if pe.grace_window_end_at and get_datetime(pe.grace_window_end_at) > now:
-        pe.next_action_at = pe.grace_window_end_at
-        pe.next_action_type = ACTION_GRACE_CHECK
-        pe.save(ignore_permissions=True)
+        frappe.db.set_value(
+            "ProgramEnrollment", pe.name,
+            {
+                "next_action_at": pe.grace_window_end_at,
+                "next_action_type": ACTION_GRACE_CHECK,
+            },
+            update_modified=False,
+        )
         return
 
     # Clock expired AND no submission this week → drop.
@@ -558,10 +653,21 @@ def handle_pause_check(pe_row):
         # Calendar caught up — resume
         t21_binge_resume(pe, "dispatcher")
     else:
-        # Still ahead of calendar — check again next Monday
-        pe.next_action_at = add_to_date(now_datetime(), days=7)
-        pe.next_action_type = ACTION_PAUSE_CHECK
-        pe.save(ignore_permissions=True)
+        # Still ahead of calendar — check again next Monday.
+        # Task #19 (2026-05-28, L-011): targeted set_value instead of
+        # pe.save — avoids clobbering any column written by a concurrent
+        # path (the binge-paused state doesn't normally race with point
+        # bumps because award handlers gate on get_active_pe → would skip
+        # a paused student, but defensive consistency with the rest of the
+        # dispatcher matters more than the 1-line shortcut).
+        frappe.db.set_value(
+            "ProgramEnrollment", pe.name,
+            {
+                "next_action_at": add_to_date(now_datetime(), days=7),
+                "next_action_type": ACTION_PAUSE_CHECK,
+            },
+            update_modified=False,
+        )
 
 
 # ════════════════════════════════════════════════════════════
@@ -625,33 +731,118 @@ def _trigger_flow(flow_id, glific_id, pe_name, action_label):
 
 
 def _get_escalation_steps_for_pe(pe):
-    """Get escalation step configs for a PE's archetype."""
+    """Get escalation step configs for a PE's archetype × current_path.
+
+    Path-aware lookup (task #68 / 2026-05-22):
+      - Pass `pe.current_path` (Core | Remedial) to `_get_escalation_steps`.
+      - If the PE is on Remedial AND the Remedial ArchetypeConfig has no
+        active escalation steps configured, fall back to Core's chain so
+        the dispatcher still has work to do. This prevents a misconfigured
+        Remedial config from silently breaking the escalation handler — a
+        fallback is a better failure mode than "student receives no
+        escalation messages at all and silently drops at grace."
+      - Defaults to PATH_CORE if pe.current_path is empty (defensive — the
+        field is set at enrollment and on T14/T6b, but legacy PEs may
+        have it null).
+    """
     from tap_lms.summer_program.student_progression_sp import _get_escalation_steps
+    from tap_lms.summer_program.constants import PATH_CORE, PATH_REMEDIAL
 
     try:
         student = frappe.get_doc("Student", pe.student)
         batch = frappe.get_doc("Batch", pe.batch)
-        return _get_escalation_steps(student, batch)
+        path = pe.current_path or PATH_CORE
+
+        steps = _get_escalation_steps(student, batch, path=path)
+
+        # Fallback: Remedial config is empty → use Core's chain so the
+        # student still gets nudged. Log so operators notice missing config.
+        if not steps and path == PATH_REMEDIAL:
+            frappe.logger().warning(
+                f"_get_escalation_steps_for_pe: PE {pe.name} is on Remedial "
+                f"but archetype={student.archetype}, arm={student.experiment_arm} "
+                f"has no Remedial escalation_steps configured — falling back "
+                f"to Core's chain. Populate the Remedial ArchetypeConfig to "
+                f"silence this warning."
+            )
+            steps = _get_escalation_steps(student, batch, path=PATH_CORE)
+
+        return steps
     except Exception:
         return []
 
 
 def _get_week_rule(pe, batch, week):
-    """Get the WeekRule/ArchetypeConfig for a specific week."""
+    """Get the WeekRule for a specific (PE, week).
+
+    WeekRule is a CHILD table on ArchetypeConfig (istable=1). The canonical
+    lookup, mirroring _get_week1_submission_type in program_enrollment_api.py:
+
+      1. Find parent ArchetypeConfig matching the PE's
+         (batch, archetype, experiment_arm, path, is_active=1) tuple.
+      2. Fall back to the "default" experiment_arm if the PE's arm has no
+         active config — same fallback pattern as enrollment-time.
+      3. Read the WeekRule child row for the requested week.
+
+    Returns a dict with `expected_submission_type` (and any other WeekRule
+    fields the callers want) — or None if no config or no matching week.
+
+    Historical bug (fixed 2026-05-19): this helper used to call
+    frappe.db.get_value("ArchetypeConfig", ..., ["expected_submission_type",
+    "core_learning_unit", "remedial_learning_unit"]) directly on the parent
+    table. None of those columns live on ArchetypeConfig itself —
+    expected_submission_type is on the WeekRule child table, and
+    core_learning_unit / remedial_learning_unit are phantom field names that
+    don't exist on any doctype. Every dispatcher tick that reached this
+    function crashed, silently failing week_advancement for the whole cohort
+    (the silence was compounded by the except branch's frappe.log_error
+    running inside the aborted Postgres transaction).
+    """
     try:
-        config = frappe.db.get_value(
+        config_path = pe.current_path or PATH_CORE
+        config_name = frappe.db.get_value(
             "ArchetypeConfig",
             {
                 "batch": batch.name,
                 "archetype": pe.archetype,
                 "experiment_arm": pe.experiment_arm or "default",
+                "path": config_path,
+                "is_active": 1,
+            },
+            "name",
+        )
+        if not config_name:
+            # Fallback: same arm not found → try the "default" arm.
+            config_name = frappe.db.get_value(
+                "ArchetypeConfig",
+                {
+                    "batch": batch.name,
+                    "archetype": pe.archetype,
+                    "experiment_arm": "default",
+                    "path": config_path,
+                    "is_active": 1,
+                },
+                "name",
+            )
+        if not config_name:
+            return None
+
+        rule = frappe.db.get_value(
+            "WeekRule",
+            {
+                "parent": config_name,
+                "parenttype": "ArchetypeConfig",
                 "week": week,
             },
-            ["expected_submission_type", "core_learning_unit", "remedial_learning_unit"],
+            ["expected_submission_type", "submission_validation_enabled"],
             as_dict=True,
         )
-        return config
-    except Exception:
+        return rule
+    except Exception as e:
+        frappe.logger().warning(
+            f"_get_week_rule failed for pe={pe.name} batch={batch.name} "
+            f"week={week}: {e}"
+        )
         return None
 
 

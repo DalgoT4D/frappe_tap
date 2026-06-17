@@ -1,7 +1,7 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "format:{language}-{translated_name}-{####}",
+ "autoname": "format:{#####}",
  "creation": "2025-08-09 12:56:18.006331",
  "doctype": "DocType",
  "editable_grid": 1,
@@ -62,7 +62,7 @@
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2026-03-18 16:51:30.693514",
+ "modified": "2026-05-27 17:14:30.962665",
  "modified_by": "Administrator",
  "module": "TAP LMS",
  "name": "VideoTranslation",
