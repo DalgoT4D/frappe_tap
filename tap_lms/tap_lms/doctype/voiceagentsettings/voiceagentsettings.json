@@ -15,6 +15,7 @@
   "agent_id",
   "default_parent_call_config",
   "auth_token_cache_ttl",
+  "webhook_secret",
   "agents_section",
   "agents"
  ],
@@ -69,6 +70,12 @@
    "fieldname": "auth_token_cache_ttl",
    "fieldtype": "Int",
    "label": "Auth Token Cache TTL"
+  },
+  {
+   "description": "Shared secret for the inbound Vocallabs webhook receiver (CR-030 / ADR-007). Embedded in the configured Webhook URL as `?token=<secret>`; the receiver compares it constant-time. Stored encrypted; access via `settings.get_password(\"webhook_secret\")`. Falls back to site_config `vocallabs_webhook_secret` if unset.",
+   "fieldname": "webhook_secret",
+   "fieldtype": "Password",
+   "label": "Webhook Secret"
   },
   {
    "fieldname": "agents_section",
