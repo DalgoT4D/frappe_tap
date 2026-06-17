@@ -319,7 +319,7 @@ def retry_failed_content_logs():
         SELECT name, error, creation
         FROM `tabError Log`
         WHERE method LIKE '%job_log_content_completion%'
-          AND creation > DATE_SUB(NOW(), INTERVAL 24 HOUR)
+          AND creation > NOW() - INTERVAL '24 hours'
         ORDER BY creation DESC
         LIMIT 100
     """, as_dict=True)
