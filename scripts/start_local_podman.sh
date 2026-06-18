@@ -351,12 +351,12 @@ Next steps:
    Frappe desk → API Key → New → key: local-test-key-001 → Save
 
 4. Send a test submission (ensure auth token matches one declared in seed script or one created above manually):
-    curl -v -X POST "http://tap_lms.localhost:8000/api/method/tap_lms.imgana.submission.submit_artwork" -H "Content-Type: application/json" -H "Authorization: token local-dev-api-key-001:local-secret-key" -d '{
+    curl -v -X POST "http://tap_lms.localhost:8000/api/method/tap_lms.imgana.submission.assignment_submission" -H "Content-Type: application/json" -H "Authorization: token local-dev-api-key-001:local-secret-key" -d '{
         "api_key":   "local-dev-api-key-001",
         "assign_id": "MockAssign-Basic",
         "name1":     "LocalDevStudent",
         "glific_id": "LOCAL_GLIFIC_001",
-        "img_url":   "https://picsum.photos/200/300"
+        "submission": "https://picsum.photos/200/300"
     }'
 
 5. Verify the pipeline:
