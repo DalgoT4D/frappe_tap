@@ -8,7 +8,7 @@ import frappe
 import pika
 
 from ..glific_integration import start_contact_flow
-from ..monitoring import emit
+from ..monitoring import emit, record_glific_notification
 from .feedback_processor import FeedbackProcessor
 
 
@@ -534,9 +534,10 @@ class FeedbackConsumer:
 
             if success:
                 frappe.logger().info(
-                    f"Sent Glific notification for submission: {submission_id}"
+                    f"Sent Glific notification for submission: {submission_id} "
                     f"to glific_id={glific_id} (student={student_id})"
                 )
+                record_glific_notification(submission_id=submission_id, success=True)
             else:
                 frappe.logger().warning(
                     f"Failed to send Glific notification for submission "
