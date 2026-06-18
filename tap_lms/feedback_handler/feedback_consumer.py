@@ -8,30 +8,8 @@ import frappe
 import pika
 
 from ..glific_integration import start_contact_flow
+from ..monitoring import _emit
 from .feedback_processor import FeedbackProcessor
-
-
-def _emit(severity: str, message: str, **kwargs) -> None:
-    """
-    Safe wrapper around emit_structured_log.
-
-    - Imports monitoring lazily so this file is importable even before
-      monitoring.py exists (e.g. during early migration or unit tests).
-    - Swallows ALL exceptions — monitoring must never crash the consumer.
-    - Falls back to frappe.logger() so nothing is silently lost if the
-      import fails.
-    - Prints to stdout on any failure so it shows up in docker compose logs.
-    """
-    try:
-        from tap_lms.monitoring import emit_structured_log
-
-        emit_structured_log(severity=severity, message=message, **kwargs)
-    except Exception as e:
-        try:
-            frappe.logger().info(f"[{severity}] {message} {kwargs}")
-        except Exception:
-            pass
-        print(f"[monitoring] _emit failed for '{message}': {e}", flush=True)
 
 
 class FeedbackConsumer:
@@ -202,7 +180,6 @@ class FeedbackConsumer:
                 frappe.db.rollback()
                 ch.basic_reject(delivery_tag=method.delivery_tag, requeue=False)
                 return
-            
 
             print(f"Received feedback for submission: {submission_id}")
             frappe.logger().info(f"Processing feedback for submission: {submission_id}")
@@ -294,9 +271,22 @@ class FeedbackConsumer:
                         "consumer process (it is not supervisor-managed) so it "
                         "reloads current code."
                     )
+                failure_reason = (
+                    f"Error processing submission {submission_id}: {error_msg}{hint}"
+                )
                 frappe.log_error(
-                    message=f"Error processing submission {submission_id}: {error_msg}{hint}",
+                    message=failure_reason,
                     title="Feedback Consumer Failure",
+                )
+                _emit(
+                    severity="ERROR",
+                    message="feedback_processing_failed",
+                    submission_id=submission_id or "unknown",
+                    student_id=message_data.get("student_id") if message_data else None,
+                    error=error_msg,
+                    error_type=type(e).__name__,
+                    failure_reason=failure_reason,
+                    retry_count=getattr(properties, "delivery_count", None),
                 )
                 frappe.db.commit()
             except Exception:
@@ -305,12 +295,34 @@ class FeedbackConsumer:
 
             # Determine if error is retryable
             if self.processor.is_retryable_error(e):
-                frappe.logger().warning(f"Retryable error for submission {submission_id}, will retry")
+                failure_reason = (
+                    f"Retryable error for submission {submission_id}, will retry"
+                )
+                frappe.logger().warning(failure_reason)
+                _emit(
+                    severity="WARN",
+                    message="feedback_processing_failed",
+                    submission_id=submission_id or "unknown",
+                    student_id=message_data.get("student_id") if message_data else None,
+                    error=error_msg,
+                    error_type=type(e).__name__,
+                    failure_reason=failure_reason,
+                    retry_count=getattr(properties, "delivery_count", None),
+                )
                 ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
             else:
                 frappe.logger().error(
-                    f"Non-retryable error ({failure_reason}) for submission "
+                    f"Non-retryable error ({error_msg}) for submission "
                     f"{submission_id}, rejecting to DLQ"
+                )
+                _emit(
+                    severity="ERROR",
+                    message="feedback_processing_failed",
+                    submission_id=submission_id or "unknown",
+                    student_id=message_data.get("student_id") if message_data else None,
+                    error=error_msg,
+                    error_type=type(e).__name__,
+                    retry_count=getattr(properties, "delivery_count", None),
                 )
                 try:
                     if submission_id:
@@ -323,8 +335,7 @@ class FeedbackConsumer:
 
     def _is_feedback_requested(self, submission_id):
         return (
-            frappe.db.get_value("Submission", submission_id, "send_feedback")
-            == "yes"
+            frappe.db.get_value("Submission", submission_id, "send_feedback") == "yes"
         )
 
     def _claim_feedback_flow(self, submission_id):
@@ -386,7 +397,9 @@ class FeedbackConsumer:
             return True
         except Exception as sp_error:
             frappe.db.rollback()
-            frappe.logger().warning(f"SP state update failed for {submission_id}: {str(sp_error)}")
+            frappe.logger().warning(
+                f"SP state update failed for {submission_id}: {str(sp_error)}"
+            )
             raise
 
     def trigger_feedback_flow(self, submission_id, message_data):
@@ -394,7 +407,21 @@ class FeedbackConsumer:
         try:
             self.send_glific_notification(message_data)
         except Exception as glific_error:
-            frappe.logger().warning(f"Glific notification failed for {submission_id}: {str(glific_error)}")
+            frappe.logger().warning(
+                f"Glific notification failed for {submission_id}: {str(glific_error)}"
+            )
+            _emit(
+                severity="WARNING",
+                message="glific_notification_sent",
+                submission_id=submission_id,
+                student_id=message_data.get("student_id"),
+                glific_id=frappe.db.get_value(
+                    "Student", message_data.get("student_id"), "glific_id"
+                )
+                if message_data.get("student_id")
+                else None,
+                error=str(glific_error),
+            )
             # Continue processing - notification failure shouldn't fail the entire message
 
     def _update_sp_state(self, submission_id, message_data):

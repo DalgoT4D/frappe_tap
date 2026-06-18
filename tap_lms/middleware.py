@@ -11,13 +11,15 @@
 
 import time
 import traceback
+
 import frappe
-from tap_lms.monitoring import record_request, emit_structured_log
+
+from tap_lms.monitoring import _emit, record_request
 
 # Fields Glific sends that identify a student.
 # Checked in order — first one found is used.
 _STUDENT_ID_FIELDS = ("student_id", "glific_id", "phone", "name1")
-_GLIFIC_ID_FIELDS  = ("glific_id",)
+_GLIFIC_ID_FIELDS = ("glific_id",)
 
 
 def _extract_student_context():
@@ -105,7 +107,7 @@ def on_exception() -> None:
         req = getattr(frappe.local, "request", None)
         student_id, glific_id = _extract_student_context()
 
-        emit_structured_log(
+        _emit(
             severity="ERROR",
             message="unhandled_exception",
             path=req.path if req else "unknown",
