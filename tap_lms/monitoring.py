@@ -56,7 +56,7 @@ def emit_structured_log(severity: str, message: str, **kwargs) -> None:
         pass
 
 
-def _emit(severity: str, message: str, **kwargs) -> None:
+def emit(severity: str, message: str, **kwargs) -> None:
     try:
         emit_structured_log(severity=severity, message=message, **kwargs)
     except Exception as e:
@@ -90,7 +90,7 @@ def record_request(
     them out of long-term Cloud Logging storage. Only ERROR status requests
     are stored. See infra/ops_agent/frappe_vm_config.yaml.
     """
-    _emit(
+    emit(
         severity="INFO" if status_code < 400 else "ERROR",
         message="http_request",
         http_path=path,
@@ -123,7 +123,7 @@ def record_job(
         error:       exception string if status == "error"
         **extra:     any additional context fields
     """
-    _emit(
+    emit(
         severity="INFO" if status in ("success", "skip") else "ERROR",
         message="background_job",
         job_name=job_name,
@@ -152,7 +152,7 @@ def record_dispatcher_cycle(
     queue_depth: remaining PEs with next_action_at <= now after this cycle.
     Used by the Cloud Monitoring dashboard lag indicator (architecture §8.8).
     """
-    _emit(
+    emit(
         severity="ERROR" if errors > 0 else "INFO",
         message="dispatcher_cycle",
         processed=processed,
@@ -180,7 +180,7 @@ def record_submission_published(
     Accepts both `queue` and `queue_name` so that call sites using either
     keyword work correctly. The value is stored in the log as `queue`.
     """
-    _emit(
+    emit(
         severity="INFO",
         message="submission_published",
         submission_id=submission_id,
@@ -195,7 +195,7 @@ def record_feedback_result_received(
     submission_id: str,
     student_id: str = None,
 ) -> None:
-    _emit(
+    emit(
         severity="INFO",
         message="feedback_result_received",
         submission_id=submission_id,
@@ -204,7 +204,7 @@ def record_feedback_result_received(
 
 
 def record_feedback_processing_complete(submission_id: str) -> None:
-    _emit(
+    emit(
         severity="INFO",
         message="feedback_processing_complete",
         submission_id=submission_id,
@@ -220,7 +220,7 @@ def record_feedback_processing_failed(
     retry_count: int = None,  # RabbitMQ delivery_count if available
     student_id: str = None,
 ) -> None:
-    _emit(
+    emit(
         severity="ERROR",
         message="feedback_processing_failed",
         submission_id=submission_id,
@@ -238,7 +238,7 @@ def record_glific_notification(
     success: bool,
     error: str = None,
 ) -> None:
-    _emit(
+    emit(
         severity="INFO" if success else "WARNING",
         message="glific_notification_sent",
         submission_id=submission_id,

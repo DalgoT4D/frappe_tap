@@ -8,7 +8,7 @@ import frappe
 import pika
 
 from ..glific_integration import start_contact_flow
-from ..monitoring import _emit
+from ..monitoring import emit
 from .feedback_processor import FeedbackProcessor
 
 
@@ -185,7 +185,7 @@ class FeedbackConsumer:
             frappe.logger().info(f"Processing feedback for submission: {submission_id}")
 
             # SRE: pipeline trace — message received from rag_service
-            _emit(
+            emit(
                 severity="INFO",
                 message="feedback_result_received",
                 submission_id=submission_id,
@@ -232,7 +232,7 @@ class FeedbackConsumer:
 
             # SRE: pipeline trace — processing complete (emitted after ack so a crash
             # here cannot affect message acknowledgement)
-            _emit(
+            emit(
                 severity="INFO",
                 message="feedback_processing_complete",
                 submission_id=submission_id,
@@ -278,7 +278,7 @@ class FeedbackConsumer:
                     message=failure_reason,
                     title="Feedback Consumer Failure",
                 )
-                _emit(
+                emit(
                     severity="ERROR",
                     message="feedback_processing_failed",
                     submission_id=submission_id or "unknown",
@@ -299,7 +299,7 @@ class FeedbackConsumer:
                     f"Retryable error for submission {submission_id}, will retry"
                 )
                 frappe.logger().warning(failure_reason)
-                _emit(
+                emit(
                     severity="WARN",
                     message="feedback_processing_failed",
                     submission_id=submission_id or "unknown",
@@ -315,7 +315,7 @@ class FeedbackConsumer:
                     f"Non-retryable error ({error_msg}) for submission "
                     f"{submission_id}, rejecting to DLQ"
                 )
-                _emit(
+                emit(
                     severity="ERROR",
                     message="feedback_processing_failed",
                     submission_id=submission_id or "unknown",
@@ -410,7 +410,7 @@ class FeedbackConsumer:
             frappe.logger().warning(
                 f"Glific notification failed for {submission_id}: {str(glific_error)}"
             )
-            _emit(
+            emit(
                 severity="WARNING",
                 message="glific_notification_sent",
                 submission_id=submission_id,
