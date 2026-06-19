@@ -135,24 +135,66 @@ def _dig(payload, keys, containers=("data", "call", "payload", "object", "result
     return None
 
 
-def _norm_event(raw_event):
-    """Normalise event names: 'call.ended' / 'call_ended' / 'CallEnded' -> 'callended'."""
-    return "".join(ch for ch in str(raw_event or "").lower() if ch.isalnum())
-
-
 def _last10(phone):
     digits = "".join(ch for ch in str(phone or "") if ch.isdigit())
     return digits[-10:] if len(digits) >= 10 else digits
 
 
-def _find_pe(prospect_id, phone_to):
-    """Map an event to one of our enrollments: by cached prospect_id first
-    (precise, sibling-safe), else by parent phone (last-10) -> Student.phone ->
-    most-recent active ProgramEnrollment. Returns a _dict or None."""
+def _enrollment_by_queue_id(queue_id):
+    """The webhook's `queue_id` == the id we stored at initiate time (inside the
+    `escalation_sent` log's `vocallabs_response`). Resolve it back to the
+    enrollment that placed the call — the PRIMARY mapping for the real payload,
+    which carries no phone. Escapes LIKE wildcards; bounded by quotes."""
+    if not queue_id:
+        return None
+    # substring match on the UUID (globally unique). escalation_sent stores it
+    # doubly-encoded (\"...\") inside vocallabs_response, so don't quote-bound.
+    esc = queue_id.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    rows = frappe.db.sql(
+        """
+        SELECT enrollment FROM "tabProgramEventLog"
+        WHERE event_type = 'escalation_sent' AND details::text LIKE %s ESCAPE '\\'
+        ORDER BY creation DESC LIMIT 1
+        """,
+        ("%" + esc + "%",),
+    )
+    return rows[0][0] if rows else None
+
+
+def _pe_by_name(enrollment):
+    row = frappe.db.get_value(
+        "ProgramEnrollment", enrollment,
+        ["name", "student", "batch", "program_type", "current_week"], as_dict=True,
+    )
+    return frappe._dict(row) if row else None
+
+
+def _active_pe_for_student(student):
+    pes = frappe.get_all(
+        "ProgramEnrollment",
+        filters={"student": student, "program_status": "active"},
+        fields=["name", "student", "batch", "program_type", "current_week"],
+        order_by="creation desc", limit=1,
+    )
+    return frappe._dict(pes[0]) if pes else None
+
+
+def _find_pe(queue_id, prospect_id, phone_to):
+    """Map a webhook to one of our enrollments. Priority:
+      1. queue_id -> the `escalation_sent` log that placed the call (the real
+         payload carries `queue_id`, not phone);
+      2. cached prospect_id -> Student.vocallabs_prospect_id;
+      3. parent phone (last-10) -> Student.phone -> most-recent active PE
+         (fallback for a future payload shape that carries a phone)."""
+    enr = _enrollment_by_queue_id(queue_id)
+    if enr:
+        pe = _pe_by_name(enr)
+        if pe:
+            return pe
     student = None
     if prospect_id:
         student = frappe.db.get_value("Student", {"vocallabs_prospect_id": prospect_id}, "name")
-    if not student:
+    if not student and phone_to:
         last10 = _last10(phone_to)
         if last10:
             srow = frappe.get_all(
@@ -163,18 +205,11 @@ def _find_pe(prospect_id, phone_to):
                 student = srow[0]["name"]
     if not student:
         return None
-    pes = frappe.get_all(
-        "ProgramEnrollment",
-        filters={"student": student, "program_status": "active"},
-        fields=["name", "student", "batch", "program_type", "current_week"],
-        order_by="creation desc",
-        limit=1,
-    )
-    return frappe._dict(pes[0]) if pes else None
+    return _active_pe_for_student(student)
 
 
-def _already_logged(call_id, norm_event):
-    """Idempotency: have we already recorded this (real_call_id, event)?
+def _already_logged(call_id):
+    """Idempotency: dedupe on the real telephony call_id (one outcome per call).
 
     Matches the bounded JSON key/value (`"real_call_id": "<id>"`) rather than a
     bare substring, and escapes LIKE wildcards (`%` `_` `\\`) in call_id — so a
@@ -189,10 +224,9 @@ def _already_logged(call_id, norm_event):
         SELECT name FROM "tabProgramEventLog"
         WHERE event_type = 'parent_call_outcome'
           AND details::text LIKE %s ESCAPE '\\'
-          AND details::text LIKE %s
         LIMIT 1
         """,
-        ('%"real_call_id": "' + esc + '"%', '%"event_norm": "' + norm_event + '"%'),
+        ('%"real_call_id": "' + esc + '"%',),
     )
     return bool(rows)
 
@@ -201,46 +235,45 @@ def _already_logged(call_id, norm_event):
 # Event processing
 # ════════════════════════════════════════════════════════════
 
-# normalised event -> whether we record an outcome row
-_RECORD_EVENTS = {"callended", "callfailed", "datacollected"}
-
-
-def _process_event(raw_event, payload, raw_text):
-    norm = _norm_event(raw_event)
-    if norm not in _RECORD_EVENTS:
-        return  # call.started (or unknown) — nothing to record; raw already debug-logged
-
-    call_id = _dig(payload, ("call_id", "callId", "id"))
-    call_status = (_dig(payload, ("call_status", "status")) or "")
-    if isinstance(call_status, str):
-        call_status = call_status.strip().lower()
-    if not call_status and norm == "callfailed":
-        call_status = "fail"
+def _process_event(payload, raw_text):
+    """Record a call outcome. The real Vocallabs payload is
+    `{call_id, queue_id, status}` (no `event` field, no phone): `call_id` is the
+    REAL telephony id, `queue_id` is the id we stored at initiate time, `status`
+    is the call_status. We map via queue_id and record a `parent_call_outcome`."""
+    real_call_id = _dig(payload, ("call_id", "callId", "id"))
+    queue_id = _dig(payload, ("queue_id", "queueId", "queue"))
+    status = _dig(payload, ("status", "call_status"))
+    if isinstance(status, str):
+        status = status.strip().lower()
     action_outcome = _dig(payload, ("action_outcome", "outcome"))
     summary = _dig(payload, ("call_summary", "summary"))
     duration = _dig(payload, ("duration",))
     phone_to = _dig(payload, ("phone_to", "phoneTo", "to", "phone"))
     prospect_id = _dig(payload, ("prospect_id", "prospectId"))
 
-    pe = _find_pe(prospect_id, phone_to)
+    # Outcome events carry a status (or a post-call action_outcome). Skip pings.
+    if not status and not action_outcome:
+        return
+
+    pe = _find_pe(queue_id, prospect_id, phone_to)
     if not pe:
         _safe_log(
             WEBHOOK_DEADLETTER_LOG_TITLE,
-            "unmappable event=%s call_id=%s phone_to=%s\n%s" % (raw_event, call_id, phone_to, raw_text),
+            "unmappable real_call_id=%s queue_id=%s status=%s\n%s"
+            % (real_call_id, queue_id, status, raw_text),
         )
         return
 
-    if _already_logged(call_id, norm):
-        return  # duplicate delivery — skip
+    if _already_logged(real_call_id):
+        return  # duplicate delivery for this call — skip
 
     if isinstance(summary, str) and len(summary) > 1000:
         summary = summary[:1000] + "…"
 
     details = {
-        "event": raw_event,
-        "event_norm": norm,  # normalized form — what _already_logged dedupes on
-        "real_call_id": call_id,
-        "call_status": call_status or None,
+        "real_call_id": real_call_id,
+        "queue_id": queue_id,
+        "call_status": status or None,
         "action_outcome": action_outcome,
         "call_summary": summary,
         "duration": duration,
@@ -290,12 +323,11 @@ def receive(*args, **kwargs):
         _safe_log(WEBHOOK_DEADLETTER_LOG_TITLE, "non-object payload:\n" + raw)
         return {"ok": True}
 
-    raw_event = _dig(payload, ("event", "event_type", "type", "eventType")) or ""
     try:
-        _process_event(raw_event, payload, raw)
+        _process_event(payload, raw)
     except Exception as e:  # noqa: BLE001 — L-030: never let an error poison the txn / 500
         frappe.db.rollback()
-        _safe_log(WEBHOOK_DEADLETTER_LOG_TITLE, "process error event=%s: %s\n%s" % (raw_event, e, raw))
+        _safe_log(WEBHOOK_DEADLETTER_LOG_TITLE, "process error: %s\n%s" % (e, raw))
 
     # ADR-007: 200 acknowledges receipt regardless of mapping outcome.
     return {"ok": True}

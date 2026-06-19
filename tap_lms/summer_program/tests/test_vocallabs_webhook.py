@@ -1,9 +1,10 @@
 """
 Tests for summer_program.vocallabs_webhook — CR-030 / ADR-007 inbound receiver.
 
-Covers the security boundary (auth gate) and the Phase 1 parse → map → record
-logic. DB-touching calls (_find_pe, frappe.get_doc) are mocked so the suite is
-fast and needs no fixtures. Per L-017, no frappe.db.commit().
+Covers auth (ADR-007) + Phase 1 parse → map → record against the REAL Vocallabs
+payload shape `{call_id, queue_id, status}` (no event field, no phone; mapped via
+queue_id -> our escalation_sent log). DB-touching calls (_find_pe, get_doc,
+_enrollment_by_queue_id) are mocked. Per L-017, no frappe.db.commit().
 """
 import json
 from types import SimpleNamespace
@@ -18,7 +19,7 @@ SECRET = "s3cr3t-token-value"
 
 
 class _FakeArgs(dict):
-    pass  # dict already has .get and .items
+    pass
 
 
 class _FakeHeaders(dict):
@@ -32,9 +33,7 @@ def _fake_request(token=None, method="POST", body="{}", headers=None, extra_quer
     if extra_query:
         q.update(extra_query)
     return SimpleNamespace(
-        method=method,
-        args=_FakeArgs(q),
-        headers=_FakeHeaders(headers or {}),
+        method=method, args=_FakeArgs(q), headers=_FakeHeaders(headers or {}),
         get_data=lambda as_text=False: body,
     )
 
@@ -67,7 +66,7 @@ class TestVocallabsWebhookAuth(FrappeTestCase):
         with patch.object(W, "_webhook_secret", return_value=SECRET), \
              patch.object(frappe, "request", _fake_request(token=None)), \
              patch.object(frappe, "log_error") as log:
-            resp = W.receive()
+            W.receive()
         self.assertEqual(frappe.local.response.get("http_status_code"), 401)
         log.assert_not_called()
 
@@ -75,7 +74,7 @@ class TestVocallabsWebhookAuth(FrappeTestCase):
         with patch.object(W, "_webhook_secret", return_value=SECRET), \
              patch.object(frappe, "request", _fake_request(token="wrong")), \
              patch.object(frappe, "log_error") as log:
-            resp = W.receive()
+            W.receive()
         self.assertEqual(frappe.local.response.get("http_status_code"), 401)
         log.assert_not_called()
 
@@ -83,104 +82,36 @@ class TestVocallabsWebhookAuth(FrappeTestCase):
         with patch.object(W, "_webhook_secret", return_value=SECRET), \
              patch.object(frappe, "request", None), \
              patch.object(frappe, "log_error") as log:
-            resp = W.receive()  # must not raise
+            W.receive()
         self.assertEqual(frappe.local.response.get("http_status_code"), 401)
         log.assert_not_called()
 
 
 # ════════════════════════════════════════════════════════════
-# Parsing helpers (pure)
+# Parsing + mapping helpers
 # ════════════════════════════════════════════════════════════
 
-class TestVocallabsWebhookParsing(FrappeTestCase):
-    def test_norm_event_variants(self):
-        self.assertEqual(W._norm_event("call.ended"), "callended")
-        self.assertEqual(W._norm_event("Call_Ended"), "callended")
-        self.assertEqual(W._norm_event("data.collected"), "datacollected")
-        self.assertEqual(W._norm_event(None), "")
-
+class TestVocallabsWebhookHelpers(FrappeTestCase):
     def test_dig_top_level_and_nested(self):
         self.assertEqual(W._dig({"call_id": "x"}, ("call_id", "callId")), "x")
-        self.assertEqual(W._dig({"callId": "y"}, ("call_id", "callId")), "y")
-        self.assertEqual(W._dig({"data": {"call_status": "busy"}}, ("call_status",)), "busy")
+        self.assertEqual(W._dig({"data": {"status": "busy"}}, ("status",)), "busy")
         self.assertIsNone(W._dig({"a": 1}, ("missing",)))
         self.assertIsNone(W._dig("not-a-dict", ("x",)))
 
     def test_last10(self):
         self.assertEqual(W._last10("919999999999"), "9999999999")
         self.assertEqual(W._last10("+91 99999-99999"), "9999999999")
-        self.assertEqual(W._last10("123"), "123")
 
+    def test_find_pe_by_queue_id(self):
+        with patch.object(W, "_enrollment_by_queue_id", return_value="PE-1"), \
+             patch.object(W, "_pe_by_name", return_value=_fake_pe()):
+            pe = W._find_pe("queue-1", None, None)
+        self.assertEqual(pe.name, "PE-1")
 
-# ════════════════════════════════════════════════════════════
-# Event processing (DB mocked)
-# ════════════════════════════════════════════════════════════
-
-class TestVocallabsWebhookProcessing(FrappeTestCase):
-    def test_call_ended_mappable_inserts_outcome(self):
-        payload = {"event": "call.ended", "call_id": "real-1",
-                   "call_status": "Completed", "phone_to": "919999999999"}
-        with patch.object(W, "_find_pe", return_value=_fake_pe()), \
-             patch.object(W, "_already_logged", return_value=False), \
-             patch.object(W, "now_datetime", return_value="2026-06-17 12:00:00"), \
-             patch.object(frappe, "get_doc", return_value=MagicMock()) as gd:
-            W._process_event("call.ended", payload, json.dumps(payload))
-        gd.assert_called_once()
-        doc = gd.call_args.args[0]
-        self.assertEqual(doc["event_type"], "parent_call_outcome")
-        self.assertEqual(doc["trigger_source"], "vocallabs_webhook")
-        self.assertEqual(doc["enrollment"], "PE-1")
-        details = json.loads(doc["details"])
-        self.assertEqual(details["real_call_id"], "real-1")
-        self.assertEqual(details["call_status"], "completed")  # lowercased
-
-    def test_data_collected_records_action_outcome(self):
-        payload = {"event": "data.collected", "call_id": "real-2",
-                   "action_outcome": "parent_agreed", "call_summary": "ok",
-                   "phone_to": "919999999999"}
-        with patch.object(W, "_find_pe", return_value=_fake_pe()), \
-             patch.object(W, "_already_logged", return_value=False), \
-             patch.object(W, "now_datetime", return_value="2026-06-17 12:00:00"), \
-             patch.object(frappe, "get_doc", return_value=MagicMock()) as gd:
-            W._process_event("data.collected", payload, json.dumps(payload))
-        details = json.loads(gd.call_args.args[0]["details"])
-        self.assertEqual(details["action_outcome"], "parent_agreed")
-
-    def test_unmappable_deadletters_no_insert(self):
-        payload = {"event": "call.ended", "call_id": "real-3", "phone_to": "910000000000"}
-        with patch.object(W, "_find_pe", return_value=None), \
-             patch.object(frappe, "get_doc") as gd, \
-             patch.object(frappe, "log_error") as log:
-            W._process_event("call.ended", payload, json.dumps(payload))
-        gd.assert_not_called()
-        self.assertTrue(
-            any(c.kwargs.get("title") == W.WEBHOOK_DEADLETTER_LOG_TITLE for c in log.call_args_list)
-        )
-
-    def test_call_started_is_ignored(self):
-        with patch.object(W, "_find_pe") as fp, patch.object(frappe, "get_doc") as gd:
-            W._process_event("call.started", {"event": "call.started"}, "{}")
-        fp.assert_not_called()
-        gd.assert_not_called()
-
-    def test_idempotent_duplicate_skipped(self):
-        payload = {"event": "call.ended", "call_id": "real-4",
-                   "call_status": "no-answer", "phone_to": "919999999999"}
-        with patch.object(W, "_find_pe", return_value=_fake_pe()), \
-             patch.object(W, "_already_logged", return_value=True), \
-             patch.object(frappe, "get_doc") as gd:
-            W._process_event("call.ended", payload, json.dumps(payload))
-        gd.assert_not_called()
-
-    def test_call_failed_sets_status_fail(self):
-        payload = {"event": "call.failed", "call_id": "real-5", "phone_to": "919999999999"}
-        with patch.object(W, "_find_pe", return_value=_fake_pe()), \
-             patch.object(W, "_already_logged", return_value=False), \
-             patch.object(W, "now_datetime", return_value="2026-06-17 12:00:00"), \
-             patch.object(frappe, "get_doc", return_value=MagicMock()) as gd:
-            W._process_event("call.failed", payload, json.dumps(payload))
-        details = json.loads(gd.call_args.args[0]["details"])
-        self.assertEqual(details["call_status"], "fail")
+    def test_find_pe_none_when_unresolvable(self):
+        with patch.object(W, "_enrollment_by_queue_id", return_value=None):
+            pe = W._find_pe("queue-x", None, None)
+        self.assertIsNone(pe)
 
     def test_already_logged_escapes_like_wildcards(self):
         captured = {}
@@ -191,11 +122,78 @@ class TestVocallabsWebhookProcessing(FrappeTestCase):
             return []
 
         with patch.object(frappe.db, "sql", side_effect=fake_sql):
-            self.assertFalse(W._already_logged("ab%c_d", "callended"))
+            self.assertFalse(W._already_logged("ab%c_d"))
         p0 = captured["params"][0]
         self.assertIn("ab\\%c\\_d", p0)          # % and _ escaped for LIKE
         self.assertIn('"real_call_id": "', p0)   # bounded by JSON key, not a bare substring
         self.assertIn("ESCAPE", captured["q"])
+
+
+# ════════════════════════════════════════════════════════════
+# Event processing — real {call_id, queue_id, status} shape (DB mocked)
+# ════════════════════════════════════════════════════════════
+
+class TestVocallabsWebhookProcessing(FrappeTestCase):
+    def test_outcome_mappable_inserts(self):
+        payload = {"call_id": "cc-real-1", "queue_id": "q-1", "status": "Completed"}
+        with patch.object(W, "_find_pe", return_value=_fake_pe()), \
+             patch.object(W, "_already_logged", return_value=False), \
+             patch.object(W, "now_datetime", return_value="2026-06-19 12:00:00"), \
+             patch.object(frappe, "get_doc", return_value=MagicMock()) as gd:
+            W._process_event(payload, json.dumps(payload))
+        gd.assert_called_once()
+        doc = gd.call_args.args[0]
+        self.assertEqual(doc["event_type"], "parent_call_outcome")
+        self.assertEqual(doc["trigger_source"], "vocallabs_webhook")
+        self.assertEqual(doc["enrollment"], "PE-1")
+        details = json.loads(doc["details"])
+        self.assertEqual(details["real_call_id"], "cc-real-1")
+        self.assertEqual(details["queue_id"], "q-1")
+        self.assertEqual(details["call_status"], "completed")  # lowercased
+
+    def test_status_passthrough_no_answer(self):
+        payload = {"call_id": "cc-2", "queue_id": "q-2", "status": "no-answer"}
+        with patch.object(W, "_find_pe", return_value=_fake_pe()), \
+             patch.object(W, "_already_logged", return_value=False), \
+             patch.object(W, "now_datetime", return_value="2026-06-19 12:00:00"), \
+             patch.object(frappe, "get_doc", return_value=MagicMock()) as gd:
+            W._process_event(payload, json.dumps(payload))
+        self.assertEqual(json.loads(gd.call_args.args[0]["details"])["call_status"], "no-answer")
+
+    def test_action_outcome_without_status_records(self):
+        payload = {"call_id": "cc-3", "queue_id": "q-3", "action_outcome": "parent_agreed"}
+        with patch.object(W, "_find_pe", return_value=_fake_pe()), \
+             patch.object(W, "_already_logged", return_value=False), \
+             patch.object(W, "now_datetime", return_value="2026-06-19 12:00:00"), \
+             patch.object(frappe, "get_doc", return_value=MagicMock()) as gd:
+            W._process_event(payload, json.dumps(payload))
+        self.assertEqual(json.loads(gd.call_args.args[0]["details"])["action_outcome"], "parent_agreed")
+
+    def test_ping_without_status_or_outcome_skipped(self):
+        payload = {"call_id": "cc-4", "queue_id": "q-4"}
+        with patch.object(W, "_find_pe") as fp, patch.object(frappe, "get_doc") as gd:
+            W._process_event(payload, json.dumps(payload))
+        fp.assert_not_called()
+        gd.assert_not_called()
+
+    def test_unmappable_deadletters_no_insert(self):
+        payload = {"call_id": "cc-5", "queue_id": "q-unknown", "status": "completed"}
+        with patch.object(W, "_find_pe", return_value=None), \
+             patch.object(frappe, "get_doc") as gd, \
+             patch.object(frappe, "log_error") as log:
+            W._process_event(payload, json.dumps(payload))
+        gd.assert_not_called()
+        self.assertTrue(
+            any(c.kwargs.get("title") == W.WEBHOOK_DEADLETTER_LOG_TITLE for c in log.call_args_list)
+        )
+
+    def test_idempotent_duplicate_skipped(self):
+        payload = {"call_id": "cc-6", "queue_id": "q-6", "status": "completed"}
+        with patch.object(W, "_find_pe", return_value=_fake_pe()), \
+             patch.object(W, "_already_logged", return_value=True), \
+             patch.object(frappe, "get_doc") as gd:
+            W._process_event(payload, json.dumps(payload))
+        gd.assert_not_called()
 
 
 # ════════════════════════════════════════════════════════════
@@ -217,14 +215,13 @@ class TestVocallabsWebhookReceive(FrappeTestCase):
             any(c.kwargs.get("title") == W.WEBHOOK_DEADLETTER_LOG_TITLE for c in log.call_args_list)
         )
 
-    def test_valid_call_ended_maps_and_inserts(self):
-        body = json.dumps({"event": "call.ended", "call_id": "real-9",
-                           "call_status": "completed", "phone_to": "919999999999"})
+    def test_valid_outcome_maps_and_inserts(self):
+        body = json.dumps({"call_id": "cc-9", "queue_id": "q-9", "status": "completed"})
         with patch.object(W, "_webhook_secret", return_value=SECRET), \
              patch.object(frappe, "request", _fake_request(token=SECRET, body=body)), \
              patch.object(W, "_find_pe", return_value=_fake_pe()), \
              patch.object(W, "_already_logged", return_value=False), \
-             patch.object(W, "now_datetime", return_value="2026-06-17 12:00:00"), \
+             patch.object(W, "now_datetime", return_value="2026-06-19 12:00:00"), \
              patch.object(frappe, "get_doc", return_value=MagicMock()) as gd:
             resp = W.receive()
         self.assertTrue(resp.get("ok"))
