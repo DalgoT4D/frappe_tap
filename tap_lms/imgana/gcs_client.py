@@ -6,6 +6,7 @@ import frappe
 import requests
 from google.cloud import storage
 from tap_lms.imgana.media_detection import detect_url_media_type
+from tap_lms.monitoring import emit
 
 AUTHENTICATED_BUCKET_TYPE = "Authenticated"
 PUBLIC_BUCKET_TYPE = "Public"
@@ -134,19 +135,35 @@ def upload_image_to_gcs(image_url, submission_id):
 
         url = f"https://storage.googleapis.com/{bucket_name}/{gcs_filename}"
 
-        frappe.logger("submission").info(
-            f"Image uploaded to GCS: {image_url} -> {url} (content_type: {content_type})"
+        emit(
+            severity="INFO",
+            message="gcs_upload_success",
+            media_type="image",
+            submission_id=submission_id,
+            gcs_url=url,
+            content_type=content_type,
         )
 
         return url
 
     except requests.exceptions.RequestException as e:
-        frappe.logger("submission").error(
-            f"Failed to download image from {image_url}: {str(e)}"
+        emit(
+            severity="ERROR",
+            message="gcs_download_failed",
+            media_type="image",
+            submission_id=submission_id,
+            url=image_url,
+            error=str(e),
         )
         raise frappe.ValidationError(f"Failed to download image: {str(e)}")
     except Exception as e:
-        frappe.logger("submission").error(f"Failed to upload to GCS: {str(e)}")
+        emit(
+            severity="ERROR",
+            message="gcs_upload_failed",
+            media_type="image",
+            submission_id=submission_id,
+            error=str(e),
+        )
         raise frappe.ValidationError(f"Failed to upload to GCS: {str(e)}")
 
 
