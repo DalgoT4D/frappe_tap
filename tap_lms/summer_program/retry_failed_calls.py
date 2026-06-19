@@ -34,10 +34,12 @@ SAFETY:
     Use it with `dry_run=False, max_calls=1` to place ONE controlled TEST call to a
     number you own before a full wave.
 
-Run (dry-run first):
+Run (dry-run first). NOTE: bench `--kwargs` is eval'd as PYTHON, not JSON — use
+`True`/`False` (capitalized), not `true`/`false`:
   bench --site <site> execute \\
     tap_lms.summer_program.retry_failed_calls.retry_from_export \\
-    --kwargs '{"csv_path": "/path/to/export.csv", "dry_run": true}'
+    --kwargs '{"csv_path": "/path/to/export.csv"}'            # dry-run is the default
+  # then to fire, add "dry_run": False  (+ e.g. "only_last10": ["<last10>"] or "max_calls": 1)
 """
 
 import csv
@@ -87,13 +89,19 @@ def retry_from_export(csv_path, dry_run=True, batch=DEFAULT_BATCH,
     skip = {"no_student": 0, "no_active_pe": 0, "already_submitted": 0,
             "no_parent_call_step": 0, "dup_pe": 0}
 
+    # Preload {last10 -> student} in ONE query — avoids a leading-wildcard LIKE per
+    # phone, which seq-scans the ~70K Student table (2,388 scans ≈ minutes on prod).
+    phone_map = {}
+    for s in frappe.get_all("Student", fields=["name", "phone"], limit_page_length=0):
+        l = _last10(s.get("phone"))
+        if l:
+            phone_map.setdefault(l, s["name"])  # first wins on shared-phone siblings
+
     for last10 in retry_phones:
-        srow = frappe.get_all("Student", filters={"phone": ["like", "%" + last10]},
-                              fields=["name"], limit=1)
-        if not srow:
+        student = phone_map.get(last10)
+        if not student:
             skip["no_student"] += 1
             continue
-        student = srow[0]["name"]
         pes = frappe.get_all(
             "ProgramEnrollment",
             filters={"student": student, "batch": batch, "program_status": "active"},
