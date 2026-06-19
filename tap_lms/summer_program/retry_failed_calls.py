@@ -16,8 +16,9 @@ Source of truth = the Vocallabs "Data" tab CSV export (per-call `call_status` +
      re-called just because an earlier attempt failed.)
   2. Map phone -> Student.phone (last-10) -> most-recent active ProgramEnrollment in
      the batch.
-  3. Guardrails: active PE only; skip already-submitted; skip dormant/arm_b control
-     (defensive — initiate_parent_call also skips it); dedup per PE.
+  3. Guardrails: active PE only; skip already-submitted; dedup per PE. (No
+     experiment-arm filter — control students (dormant/arm_b) physically can't be
+     called: initiate_parent_call no-ops them via welcome_greeting == "None".)
   4. Resolve the canonical parent_call escalation step via _get_escalation_steps_for_pe
      (L-029 — escalation is NEVER hardcoded) and enqueue initiate_parent_call.
 
@@ -29,6 +30,9 @@ SAFETY:
     initiate_parent_call's existing retry/DLQ, so pacing is politeness, not correctness.
   - Re-running fires again — run once per wave (use a fresh export each wave so
     numbers that have since connected drop out).
+  - `only_last10=["9876543210", ...]` restricts the run to specific parent numbers.
+    Use it with `dry_run=False, max_calls=1` to place ONE controlled TEST call to a
+    number you own before a full wave.
 
 Run (dry-run first):
   bench --site <site> execute \\
@@ -47,7 +51,7 @@ DEFAULT_BATCH = "BT00000019"
 
 
 def retry_from_export(csv_path, dry_run=True, batch=DEFAULT_BATCH,
-                      batch_size=200, sleep_seconds=30, max_calls=None):
+                      batch_size=200, sleep_seconds=30, max_calls=None, only_last10=None):
     from tap_lms.summer_program.pe_dispatcher import _get_escalation_steps_for_pe
 
     dry_run = _as_bool(dry_run)
@@ -73,12 +77,15 @@ def retry_from_export(csv_path, dry_run=True, batch=DEFAULT_BATCH,
                 agg["retry"] = True
 
     retry_phones = [p for p, a in by_phone.items() if a["retry"] and not a["connected"]]
+    if only_last10:
+        wanted = {_last10(x) for x in only_last10}
+        retry_phones = [p for p in retry_phones if p in wanted]
 
     # ── 2/3. map to active PE + guardrails ──
     to_call = []          # (pe_name, step, last10, language)
     seen_pe = set()
     skip = {"no_student": 0, "no_active_pe": 0, "already_submitted": 0,
-            "arm_b_control": 0, "no_parent_call_step": 0, "dup_pe": 0}
+            "no_parent_call_step": 0, "dup_pe": 0}
 
     for last10 in retry_phones:
         srow = frappe.get_all("Student", filters={"phone": ["like", "%" + last10]},
@@ -90,7 +97,7 @@ def retry_from_export(csv_path, dry_run=True, batch=DEFAULT_BATCH,
         pes = frappe.get_all(
             "ProgramEnrollment",
             filters={"student": student, "batch": batch, "program_status": "active"},
-            fields=["name", "archetype", "experiment_arm", "submission_count"],
+            fields=["name", "submission_count"],
             order_by="creation desc", limit=1,
         )
         if not pes:
@@ -100,13 +107,8 @@ def retry_from_export(csv_path, dry_run=True, batch=DEFAULT_BATCH,
         if pe["name"] in seen_pe:
             skip["dup_pe"] += 1
             continue
-        if (pe.get("experiment_arm") or "").lower() == "arm_b":
-            # arm_b == experiment control group → NEVER call (also enforced downstream
-            # in initiate_parent_call via welcome_greeting == "None"). Broadened from
-            # dormant+arm_b to any arm_b per code review: strictly safer, and arm_b is
-            # control regardless of archetype in this campaign.
-            skip["arm_b_control"] += 1
-            continue
+        # No experiment-arm filter: control students (dormant/arm_b) can't actually be
+        # called — initiate_parent_call no-ops them downstream via welcome_greeting == "None".
         if (pe.get("submission_count") or 0) and int(pe["submission_count"]) > 0:
             skip["already_submitted"] += 1
             continue
@@ -129,7 +131,7 @@ def retry_from_export(csv_path, dry_run=True, batch=DEFAULT_BATCH,
     print("  distinct phones          :", len(by_phone))
     print("  retry phones (never conn):", len(retry_phones))
     print("  --- skipped while mapping ---")
-    for k in ("no_student", "no_active_pe", "already_submitted", "arm_b_control", "no_parent_call_step", "dup_pe"):
+    for k in ("no_student", "no_active_pe", "already_submitted", "no_parent_call_step", "dup_pe"):
         print("    %-20s : %d" % (k, skip[k]))
     cap = "" if max_calls is None else "  (capped at %d)" % max_calls
     print("  >>> WOULD CALL           : %d%s" % (len(to_call), cap))

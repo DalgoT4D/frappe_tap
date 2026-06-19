@@ -1,7 +1,7 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "format:ER{########}",
+ "autoname": "hash",
  "creation": "2023-03-27 15:22:12.325906",
  "default_view": "List",
  "doctype": "DocType",
@@ -55,7 +55,7 @@
  "modified_by": "Administrator",
  "module": "Tap Lms",
  "name": "Enrollment",
- "naming_rule": "Expression",
+ "naming_rule": "Random",
  "owner": "Administrator",
  "permissions": [],
  "quick_entry": 1,

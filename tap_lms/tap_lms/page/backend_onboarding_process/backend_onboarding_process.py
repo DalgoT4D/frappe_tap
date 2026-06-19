@@ -6,7 +6,10 @@ from frappe.utils import nowdate, nowtime, now
 from tap_lms.glific_integration import create_or_get_glific_group_for_batch, add_student_to_glific_for_onboarding, get_contact_by_phone
 from tap_lms.api import get_course_level
 import time
+import random  # jitter for Phase-1 serialization-retry backoff
 import psycopg2.errors as _pg_errors  # Postgres serialization / deadlock classification (L-071)
+from rq.job import Job  # used by get_job_status (RQ status lookup)
+from frappe.utils.background_jobs import get_redis_conn  # used by get_job_status
 
 
 def normalize_phone_number(phone):
@@ -104,60 +107,7 @@ def get_batch_details(batch_id):
         #"glific_group": glific_group[0] if glific_group else None
     }
     #return {"students_"(students),bac}
-from frappe.utils.background_jobs import get_jobs
-def is_batch_job_running(batch_id):
-    """
-    Check if a student_onboarding job for the given batch_id is already running or queued.
-    """
-    job_name = f"student_onboarding_{batch_id}"
-    all_jobs = get_jobs(site=frappe.local.site, queue="long")  # can check all queues if needed
 
-    # all_jobs is a dict like {"long": [job1, job2, ...]}
-    for q, jobs in all_jobs.items():
-        for job in jobs:
-            if job_name == job.get("job_name"):
-                return True
-    return False
-
-from rq.job import Job
-from rq import Queue
-from rq.registry import StartedJobRegistry, FinishedJobRegistry, FailedJobRegistry
-from frappe.utils.background_jobs import get_redis_conn
-
-def is_rq_job_running(batch_id):
-    job_name = f"student_onboarding_{batch_id}"
-    """
-    Return True if a job with the given job_name exists in any RQ queue, else False.
-    """
-    conn = get_redis_conn()
-    queue = Queue(name="long", connection=conn)
-
-    # 1️⃣ Check waiting jobs
-    for job_id in queue.job_ids:
-        job = Job.fetch(job_id, connection=conn)
-        if job.kwargs.get("job_name") == job_name:
-            return True
-
-    # 2️⃣ Check started jobs
-    started_registry = StartedJobRegistry(queue=queue)
-    for job_id in started_registry.get_job_ids():
-        job = Job.fetch(job_id, connection=conn)
-        if job.kwargs.get("job_name") == job_name:
-            return True
-
-    # 3️⃣ Optionally check failed jobs
-    failed_registry = FailedJobRegistry(queue=queue)
-    for job_id in failed_registry.get_job_ids():
-        job = Job.fetch(job_id, connection=conn)
-        if job.kwargs.get("job_name") == job_name:
-            return True
-
-    return False
-
-import frappe
-from rq import Queue
-from rq.job import Job 
-from frappe.utils.background_jobs import get_redis_conn
 
 @frappe.whitelist()
 def is_job_name_exist(batch_id):
@@ -188,9 +138,6 @@ def is_job_name_exist(batch_id):
         #frappe.log_error(frappe.get_traceback(), "is_job_name_exist")
 
     return True if job_data else False
-
-
-
 
 
 def validate_student(student):
@@ -251,34 +198,77 @@ def get_initial_stage():
     
     return None
 
+def _onboarding_job_is_active(batch_id):
+    """Return True if a student_onboarding job for this set is queued or running.
+
+    M3 (CR-2026-06-19) concurrency guard.  Filters to ACTIVE RQ statuses only —
+    a finished/failed RQ Job row persists (result_ttl / failure_ttl) and must
+    NOT block a legitimate re-trigger.  Reads the RQ Job doctype (Frappe v15);
+    on any error it fails OPEN (returns False) and logs the reason — the
+    set-existence + status flow in process_batch is the second line of defense.
+
+    Replaces the dead is_rq_job_running / is_batch_job_running pair (neither was
+    wired to any caller; is_batch_job_running also crashed on get_jobs()'s
+    list-of-strings).  See docs/code-reviews/CR-2026-06-19-backend-onboarding-deep-review.md §4.
+    """
+    job_name = f"student_onboarding_{batch_id}"
+    active_statuses = {"queued", "started", "deferred", "scheduled"}
+    try:
+        if not frappe.db.table_exists("RQ Job"):
+            return False
+        rows = frappe.get_all("RQ Job", filters={"job_name": job_name}, fields=["status"])
+        return any((r.status or "").lower() in active_statuses for r in rows)
+    except Exception:
+        frappe.log_error(
+            title="Backend onboarding concurrency-guard check failed",
+            message=frappe.get_traceback(),
+        )
+        return False
+
+
 @frappe.whitelist()
 def process_batch(batch_id, use_background_job=False):
     """
     Process the batch by creating students and Glific contacts
-    
+
     Args:
         batch_id: ID of the Backend Student Onboarding document
         use_background_job: Whether to process in the background
-    
+
     Returns:
         If background job is used, returns the job ID
         Otherwise, returns processing results
     """
+    # M2 (CR-2026-06-19): restrict to TAP Admin — this enqueues a 2-hour
+    # long-queue job that creates/updates Student + Enrollment rows for an
+    # entire onboarding set.  Previously any authenticated user could trigger it.
+    frappe.only_for("TAP Admin")
+
     use_background_job = json.loads(use_background_job) if isinstance(use_background_job, str) else use_background_job
-    #frappe.msgprint(str(use_background_job))
+
+    # M2: validate the set exists before flipping any status.
+    if not frappe.db.exists("Backend Student Onboarding", batch_id):
+        frappe.throw(_("Backend Student Onboarding {0} not found").format(batch_id))
+
+    # M3: refuse to enqueue/run if a job for this set is already in flight.
+    # Double-triggering the same set is the L-073 re-run path (duplicate
+    # processing / silent re-enrollment); trigger each set once.
+    if _onboarding_job_is_active(batch_id):
+        frappe.throw(
+            _("An onboarding job for set {0} is already queued or running. "
+              "Wait for it to finish before re-triggering.").format(batch_id)
+        )
+
     # Update batch status to Processing
     batch = frappe.get_doc("Backend Student Onboarding", batch_id)
     batch.status = "Processing"
     batch.save()
 
-    #frappe.msgprint(str(batch))
-    
     if use_background_job:
         # Enqueue the processing job
         job = frappe.enqueue(
             process_batch_job,
             queue='long',
-            #timeout=1800, # 30 minutes
             timeout=7200,  # 2 hours
             job_name=f"student_onboarding_{batch_id}",
             set_id=batch_id
@@ -288,6 +278,86 @@ def process_batch(batch_id, use_background_job=False):
         # Process immediately
         return process_batch_job(batch_id)
 
+
+# ── CR-2026-06-19 §10: Phase-1 serialization-retry tuning ───────────────────
+# Backend onboarding runs at background_workers=4 in prod, so concurrent
+# new-Student inserts contend on the shared tabSeries 'ST' counter
+# (SELECT … FOR UPDATE), which can raise SerializationFailure (L-071/L-075).
+# Enrollment's 'ER' counter was removed (→ hash, cr_2026_06_19); Student keeps
+# its ST counter (L-031), so we retry the per-student work on serialization
+# conflict instead of dead-lettering it to a re-run.
+_PHASE1_MAX_SER_RETRIES = 3
+_PHASE1_SER_BACKOFFS = (0.05, 0.10, 0.20)  # seconds; per-attempt jitter added
+
+
+def _record_phase1_failure(student_entry, error, actual_index, set_id, results):
+    """Mark a Phase-1 student Failed durably + visibly (M1 / CR-2026-06-19).
+
+    The caller has already rolled this student's work back to its per-student
+    savepoint, so the txn is healthy.  The Failed-status write is isolated under
+    its OWN savepoint (bsf_<idx>) so a double-fault (the status write itself
+    failing) can't poison the txn or wipe prior slice successes — the row simply
+    stays Pending and is picked up on a re-run.  A trailing commit persists the
+    log + status alongside the prior slice successes (L-080).
+
+    The CALLER owns `failure_count += 1`; this helper only records the failed
+    row + logs (do not add the increment here, or it will double-count).
+    """
+    # M1: durable structured failure log, under its OWN savepoint so a
+    # log_error INSERT failure can't poison the txn and break the (un-guarded)
+    # bsf_ savepoint below — a scoped rollback keeps prior slice successes
+    # intact (L-030/L-080; code-review CR-2026-06-19 §A-HIGH).
+    sp_log = f"bsl_{actual_index}"
+    frappe.db.savepoint(sp_log)
+    try:
+        frappe.log_error(
+            title="Backend onboarding Phase-1 student failure",
+            message=json.dumps({
+                "backend_student": student_entry.name,
+                "set": set_id,
+                "error": str(error),
+            }),
+        )
+        frappe.db.release_savepoint(sp_log)
+    except Exception:
+        try:
+            frappe.db.rollback(save_point=sp_log)
+        except Exception:
+            pass
+
+    sp_fail = f"bsf_{actual_index}"
+    frappe.db.savepoint(sp_fail)
+    try:
+        student = frappe.get_doc("Backend Students", student_entry.name)
+        update_backend_student_status(student, "Failed", error=str(error))
+        frappe.db.release_savepoint(sp_fail)
+        results["failed"].append({
+            "backend_id": student.name,
+            "student_name": student.student_name,
+            "error": str(error),
+        })
+    except Exception as inner_e:
+        # Double-fault: the Failed-status write itself failed.  Roll back ONLY
+        # that write (keep the txn + prior successes alive), then log loudly.
+        frappe.db.rollback(save_point=sp_fail)
+        try:
+            frappe.log_error(
+                title="Backend onboarding Phase-1 double-fault",
+                message=json.dumps({
+                    "backend_student": student_entry.name,
+                    "set": set_id,
+                    "original_error": str(error),
+                    "status_write_error": str(inner_e),
+                }),
+            )
+        except Exception:
+            pass
+        results["failed"].append({
+            "backend_id": student_entry.name,
+            "student_name": "Unknown",
+            "error": f"Original error: {str(error)}. Status update error: {str(inner_e)}",
+        })
+    frappe.db.commit()
 
 
 def process_batch_job(set_id):
@@ -353,77 +423,106 @@ def process_batch_job(set_id):
                 batch_onboarding_cache = {b.batch_skeyword: b for b in batch_onboardings}
 
             for index, student_entry in enumerate(batch_students):
-                try:
-                    actual_index = batch_start + index
-                    update_job_progress(actual_index, total_students)
+                actual_index = batch_start + index
+                update_job_progress(actual_index, total_students)
 
-                    student = frappe.get_doc("Backend Students", student_entry.name)
-
-                    # ── Phase 1: resolve course level (DB only) ──────────────
-                    # AC-1: NO Glific calls here.  process_glific_contact is
-                    # intentionally absent from the Phase-1 path.
-                    course_level_for_glific = None
-                    if (hasattr(student, 'batch_skeyword') and student.batch_skeyword
-                            and student.course_vertical and student.grade):
-                        batch_onboarding = batch_onboarding_cache.get(student.batch_skeyword)
-                        if batch_onboarding:
-                            kitless = batch_onboarding.kit_less
-                            course_level_for_glific = get_course_level_with_validation_backend(
-                                student.course_vertical,
-                                student.grade,
-                                student.phone,
-                                student.student_name,
-                                kitless,
-                            )
-
-                    # ── Phase 1: create/update Student + Enrollment + states ──
-                    # glific_contact=None — process_student_record already guards
-                    # `if glific_contact and 'id' in glific_contact` so it simply
-                    # won't set glific_id yet (that happens in Phase 2).
-                    student_doc = process_student_record(
-                        student, None, set_id, initial_stage, course_level_for_glific
-                    )
-
-                    # ── Phase 1: mark DB success; Glific is pending ──────────
-                    # glific_sync_status is set to 'pending' before save so that
-                    # Phase 2 can pick up this row.
-                    student.glific_sync_status = "pending"
-                    update_backend_student_status(student, "Success", student_doc)
-
-                    success_count += 1
-                    results["success"].append({
-                        "backend_id": student.name,
-                        "student_id": student_doc.name,
-                        "student_name": student_doc.name1,
-                        "phone": student.phone,
-                    })
-
-                    # Commit every commit_interval students
-                    if (actual_index + 1) % commit_interval == 0:
-                        frappe.db.commit()
-                        time.sleep(0.1)
-
-                except Exception as e:
-                    frappe.db.rollback()
-
-                    failure_count += 1
+                # H1 fix (CR-2026-06-19): wrap each student in a Postgres
+                # SAVEPOINT so a single failure rolls back ONLY that student —
+                # never the up-to-49 already-processed successes in this slice.
+                # The pre-fix blanket frappe.db.rollback() reverted every
+                # uncommitted success since the last slice-end commit, silently
+                # deferring real students to a re-run (the L-073/L-065 incident
+                # trigger). Mirrors the CR-2026-06-15 B-2 pattern in
+                # event_log.log_event.  A commit releases ALL savepoints, so the
+                # name is per-iteration (bs_<actual_index>); nothing references a
+                # savepoint across the 200-boundary or slice-end commit.
+                # CR-2026-06-19 §10: create the per-student savepoint ONCE, then
+                # RETRY the body on PG serialization/deadlock (e.g. the tabSeries
+                # 'ST' counter under background_workers=4, L-071/L-075) by rolling
+                # back to THIS savepoint and re-running.  We deliberately do NOT
+                # use _insert_with_serialization_retry — its blanket
+                # frappe.db.rollback() would wipe the whole slice (re-introducing
+                # H1).  ROLLBACK TO SAVEPOINT keeps sp valid for the next attempt.
+                sp = f"bs_{actual_index}"
+                frappe.db.savepoint(sp)
+                ser_attempt = 0
+                while True:
                     try:
                         student = frappe.get_doc("Backend Students", student_entry.name)
-                        update_backend_student_status(student, "Failed", error=str(e))
 
-                        results["failed"].append({
+                        # ── Phase 1: resolve course level (DB only) ──────────
+                        # AC-1: NO Glific calls here.  process_glific_contact is
+                        # intentionally absent from the Phase-1 path.
+                        course_level_for_glific = None
+                        if (hasattr(student, 'batch_skeyword') and student.batch_skeyword
+                                and student.course_vertical and student.grade):
+                            batch_onboarding = batch_onboarding_cache.get(student.batch_skeyword)
+                            if batch_onboarding:
+                                kitless = batch_onboarding.kit_less
+                                course_level_for_glific = get_course_level_with_validation_backend(
+                                    student.course_vertical,
+                                    student.grade,
+                                    student.phone,
+                                    student.student_name,
+                                    kitless,
+                                )
+
+                        # ── Phase 1: create/update Student + Enrollment + states
+                        # glific_contact=None — process_student_record already
+                        # guards `if glific_contact and 'id' in glific_contact`.
+                        student_doc = process_student_record(
+                            student, None, set_id, initial_stage, course_level_for_glific
+                        )
+
+                        # ── Phase 1: mark DB success; Glific is pending ──────
+                        # glific_sync_status set 'pending' so Phase 2 picks it up.
+                        student.glific_sync_status = "pending"
+                        update_backend_student_status(student, "Success", student_doc)
+
+                        # Student fully processed — release its savepoint so the
+                        # row joins the slice transaction (committed at slice end).
+                        frappe.db.release_savepoint(sp)
+
+                        success_count += 1
+                        results["success"].append({
                             "backend_id": student.name,
-                            "student_name": student.student_name,
-                            "error": str(e)
+                            "student_id": student_doc.name,
+                            "student_name": student_doc.name1,
+                            "phone": student.phone,
                         })
 
-                        frappe.db.commit()
-                    except Exception as inner_e:
-                        results["failed"].append({
-                            "backend_id": student_entry.name,
-                            "student_name": "Unknown",
-                            "error": f"Original error: {str(e)}. Status update error: {str(inner_e)}"
-                        })
+                        # Commit every commit_interval students
+                        if (actual_index + 1) % commit_interval == 0:
+                            frappe.db.commit()
+                            time.sleep(0.1)
+                        break
+
+                    except (_pg_errors.SerializationFailure,
+                            _pg_errors.DeadlockDetected) as ser_e:
+                        # Transient PG write contention (tabSeries 'ST' counter
+                        # under parallel workers, L-071/L-075).  Roll back ONLY
+                        # this attempt and retry with bounded backoff + jitter.
+                        frappe.db.rollback(save_point=sp)
+                        ser_attempt += 1
+                        if ser_attempt <= _PHASE1_MAX_SER_RETRIES:
+                            backoff = _PHASE1_SER_BACKOFFS[
+                                min(ser_attempt - 1, len(_PHASE1_SER_BACKOFFS) - 1)
+                            ]
+                            time.sleep(backoff + random.uniform(0, 0.02))
+                            continue
+                        # Retries exhausted — record as a Phase-1 failure (M1).
+                        failure_count += 1
+                        _record_phase1_failure(student_entry, ser_e, actual_index, set_id, results)
+                        break
+
+                    except Exception as e:
+                        # H1: roll back ONLY this student's partial work.  Prior
+                        # successes in the slice stay intact and are persisted by
+                        # the commit inside _record_phase1_failure (and slice end).
+                        frappe.db.rollback(save_point=sp)
+                        failure_count += 1
+                        _record_phase1_failure(student_entry, e, actual_index, set_id, results)
+                        break
 
             # Commit at end of each slice
             frappe.db.commit()
@@ -503,7 +602,25 @@ def process_batch_job(set_id):
         except:
             pass # If this fails too, just continue
 
-        #frappe.log_error(f"Error in batch processing job: {str(e)}", "Backend Student Onboarding")
+        # M1 / L-035 / L-056: the outer job-level failure is the path with the
+        # MOST context (it may fail before any per-student loop runs), so it must
+        # be durably visible.  rollback first to clear any poison from the
+        # status-write attempt above (L-030/L-077), log, then commit so the
+        # record survives (L-080); fall back to the DB-independent file logger.
+        # Finally re-raise so RQ marks the job FAILED, not finished.
+        try:
+            frappe.db.rollback()
+            frappe.log_error(
+                title="Backend onboarding job failure",
+                message=json.dumps({
+                    "set": set_id,
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                }),
+            )
+            frappe.db.commit()
+        except Exception:
+            frappe.logger().error(f"process_batch_job [{set_id}] failed: {e}")
         raise
 
 def update_job_progress(current, total):
@@ -521,9 +638,6 @@ def update_job_progress(current, total):
             if (current+1) % 10 == 0 or (current+1) == total: # Update every 10 items
               #  frappe.db.commit()
                 print(f"Processed {current+1} of {total} students")
-
-
-
 
 
 def _ref(cache, doctype, name, fieldname):
@@ -582,8 +696,10 @@ def process_glific_contact(student, glific_group, course_level=None, ref_cache=N
     if student.school:
         school_name = _ref(ref_cache, "School", student.school, "name1") or ""
 
-    # Get batch name for Glific
-    batch_name = ""
+    # Get batch id for Glific.  Initialised to "" so the new-contact path below
+    # (which passes batch_id to add_student_to_glific_for_onboarding) can't raise
+    # a NameError when the row has no batch.
+    batch_id = ""
     if student.batch:
         batch_id = frappe.get_value("Batch", student.batch, "name") or ""
 
@@ -687,10 +803,6 @@ def process_glific_contact(student, glific_group, course_level=None, ref_cache=N
             print(f"Created contact: {student.student_name}")
         
         return contact
-
-
-
-
 
 
 def determine_student_type_backend(phone_number, student_name, course_vertical):
@@ -858,148 +970,6 @@ def determine_student_type_backend(phone_number, student_name, course_vertical):
     except Exception as e:
         #frappe.log_error(f"Backend: Error determining student type: {str(e)}", "Backend Student Type Error")
         return "New"  # Default to New on error
-
-
-@frappe.whitelist()
-def fix_broken_course_links(student_id=None):
-    """
-    Fix broken course links in enrollments by setting them to NULL
-    This allows the student type logic to handle them properly
-    """
-    try:
-        result = []
-        
-        if student_id:
-            # Fix specific student
-            students_to_check = [{"name": student_id}]
-            result.append(f"Checking student: {student_id}")
-        else:
-            # Check all students
-            students_to_check = frappe.get_all("Student", fields=["name"])
-            result.append(f"Checking all {len(students_to_check)} students")
-        
-        total_fixed = 0
-        
-        for student in students_to_check:
-            # Get enrollments with broken course links
-            broken_enrollments = frappe.db.sql("""
-                SELECT e.name, e.course
-                FROM `tabEnrollment` e
-                LEFT JOIN `tabCourse Level` cl ON cl.name = e.course
-                WHERE e.parent = %s 
-                AND e.course IS NOT NULL 
-                AND cl.name IS NULL
-            """, (student["name"],), as_dict=True)
-            
-            if broken_enrollments:
-                result.append(f"Student {student['name']}: {len(broken_enrollments)} broken links")
-                
-                for enrollment in broken_enrollments:
-                    # Set course to NULL instead of broken link
-                    frappe.db.set_value("Enrollment", enrollment.name, "course", None)
-                    result.append(f"  Fixed: {enrollment.name} (was: {enrollment.course})")
-                    total_fixed += 1
-        
-        if total_fixed > 0:
-            frappe.db.commit()
-            result.append(f"\nTotal fixed: {total_fixed} broken course links")
-        else:
-            result.append("No broken course links found")
-        
-        return "\n".join(result)
-        
-    except Exception as e:
-        return f"ERROR fixing broken links: {str(e)}"
-
-
-@frappe.whitelist()
-def debug_student_type_analysis(student_name, phone_number, course_vertical):
-    """
-    Debug function to analyze student type determination in detail
-    """
-    try:
-        result = []
-        result.append(f"\n=== STUDENT TYPE ANALYSIS: {student_name} ({phone_number}) ===")
-        
-        # Get normalized phone
-        phone_12, phone_10 = normalize_phone_number(phone_number)
-        result.append(f"Normalized phone: {phone_number} -> {phone_10} / {phone_12}")
-        result.append(f"Target vertical: {course_vertical}")
-        
-        # Find existing student
-        existing_students = frappe.db.sql("""
-            SELECT name, phone, name1
-            FROM `tabStudent`
-            WHERE name1 = %s 
-            AND (phone = %s OR phone = %s)
-            LIMIT 1
-        """, (student_name, phone_10, phone_12), as_dict=True)
-        
-        if not existing_students:
-            result.append("No existing student found → NEW")
-            return "\n".join(result)
-        
-        student_id = existing_students[0].name
-        result.append(f"Found student: {student_id}")
-        
-        # Get all enrollments
-        enrollments = frappe.db.sql("""
-            SELECT name, course, batch, grade, school
-            FROM `tabEnrollment` 
-            WHERE parent = %s
-        """, (student_id,), as_dict=True)
-        
-        result.append(f"Total enrollments: {len(enrollments)}")
-        
-        if not enrollments:
-            result.append("No enrollments found → NEW")
-            return "\n".join(result)
-        
-        # Analyze each enrollment
-        for i, enrollment in enumerate(enrollments, 1):
-            result.append(f"\nEnrollment {i}: {enrollment.name}")
-            result.append(f"  Course: {enrollment.course}")
-            result.append(f"  Batch: {enrollment.batch}")
-            
-            if not enrollment.course:
-                result.append("  Status: NULL COURSE → contributes to OLD")
-                continue
-            
-            # Check if course exists
-            course_exists = frappe.db.exists("Course Level", enrollment.course)
-            if not course_exists:
-                result.append("  Status: BROKEN COURSE LINK → contributes to OLD")
-                continue
-            
-            # Get course vertical
-            course_vertical_data = frappe.db.sql("""
-                SELECT cv.name as vertical_name
-                FROM `tabCourse Level` cl
-                INNER JOIN `tabCourse Verticals` cv ON cv.name = cl.vertical
-                WHERE cl.name = %s
-            """, (enrollment.course,), as_dict=True)
-            
-            if course_vertical_data:
-                enrollment_vertical = course_vertical_data[0].vertical_name
-                result.append(f"  Vertical: {enrollment_vertical}")
-                
-                if enrollment_vertical == course_vertical:
-                    result.append("  Status: SAME VERTICAL → contributes to OLD")
-                else:
-                    result.append("  Status: DIFFERENT VERTICAL → contributes to NEW")
-            else:
-                result.append("  Status: UNDETERMINED VERTICAL → contributes to OLD")
-        
-        # Get final determination
-        student_type = determine_student_type_backend(phone_number, student_name, course_vertical)
-        result.append(f"\nFINAL DETERMINATION: {student_type}")
-        
-        result.append(f"\n=== END ANALYSIS ===\n")
-        
-        return "\n".join(result)
-        
-    except Exception as e:
-        return f"ANALYSIS ERROR: {str(e)}"
 
 
 def get_current_academic_year_backend():
@@ -1375,7 +1345,6 @@ def process_student_record(student, glific_contact, batch_id, initial_stage, cou
                     # Create new enrollment - with enhanced error handling
                     try:
                         enrollment = {
-                            "doctype": "Enrollments",
                             "batch": student.batch,
                             "grade": student.grade, # Use the updated grade
                             "date_joining": nowdate(),
@@ -1510,7 +1479,6 @@ def process_student_record(student, glific_contact, batch_id, initial_stage, cou
                 # Create enrollment with enhanced error handling
                 try:
                     enrollment = {
-                        "doctype": "Enrollments",
                         "batch": student.batch,
                         "grade": student.grade,
                         "date_joining": nowdate(),
@@ -1828,147 +1796,6 @@ def format_phone_number(phone):
     phone_12, phone_10 = normalize_phone_number(phone)
     return phone_12
 
-# @frappe.whitelist()
-# def get_job_status(job_id):
-#     """Get the status of a background job using compatibility methods for different Frappe versions"""
-#     try:
-#         # First try to get the job directly from the database instead of using get_doc
-#         result = {
-#             "status": "Unknown"
-#         }
-        
-#         # Try different table names that might exist in different Frappe versions
-#         tables_to_try = ["tabRQ Job"]
-        
-#         for table in tables_to_try:
-#             # Check if table exists
-#             if frappe.db.table_exists(table.replace("tab", "")):
-#                 try:
-#                     # Get job data directly from the table
-#                     job_data = frappe.db.get_value(
-#                         table, 
-#                         job_id, 
-#                         ["status", "progress_data", "result"], 
-#                         as_dict=True
-#                     )
-                    
-#                     if job_data:
-#                         result["status"] = job_data.status
-                        
-#                         # If job is running or queued, check progress
-#                         if job_data.status == "started" or job_data.status == "Started":
-#                             if job_data.progress_data:
-#                                 try:
-#                                     progress = json.loads(job_data.progress_data)
-#                                     result["progress"] = progress
-#                                 except:
-#                                     pass
-                        
-#                         # If job is completed, check result
-#                         if job_data.status == "finished" or job_data.status == "Finished":
-#                             result["status"] = "Completed"
-#                             if job_data.result:
-#                                 try:
-#                                     result["result"] = json.loads(job_data.result)
-#                                 except:
-#                                     pass
-                        
-#                         # If job failed, update status
-#                         if job_data.status == "failed" or job_data.status == "Failed":
-#                             result["status"] = "Failed"
-                        
-#                         return result
-#                 except Exception as e:
-#                     #frappe.logger().warning(f"Error getting job data from {table}: {str(e)}")
-#                     continue
-        
-#         # If we reach here, try using frappe's queue functions directly
-#         try:
-#             from frappe.utils.background_jobs import get_job_status as get_rq_job_status
-#             status = get_rq_job_status(job_id)
-#             if status:
-#                 result["status"] = status
-#         except Exception as e:
-#             #frappe.logger().warning(f"Error getting job status via RQ: {str(e)}")
-        
-#         return result
-#     except Exception as e:
-#         #frappe.logger().error(f"Error in get_job_status: {str(e)}")
-#         # Return a fallback response that won't break the UI
-#         return {
-#             "status": "Unknown",
-#             "message": "Unable to determine job status. The job may still be running or have completed."
-#         }
-import frappe, json
-
-@frappe.whitelist()
-def get_job_status_old(job_id):
-    """Get the status of a background job across Frappe versions"""
-    result = {"status": "Unknown"}
-
-    try:
-        # Check if RQ Job doctype exists (Frappe v14+)
-        if frappe.db.table_exists("RQ Job"):
-            job_data = frappe.db.get_value(
-                "RQ Job",
-                job_id,
-                ["status", "progress_data", "result"],
-                as_dict=True
-            )
-
-            if job_data:
-                status = (job_data.status or "").lower()
-                result["status"] = status.capitalize()
-
-                # Progress info
-                if status == "started" and job_data.progress_data:
-                    try:
-                        result["progress"] = json.loads(job_data.progress_data)
-                    except Exception:
-                        pass
-
-                # Completed job
-                if status == "finished":
-                    result["status"] = "Completed"
-                    if job_data.result:
-                        try:
-                            result["result"] = json.loads(job_data.result)
-                        except Exception:
-                            result["result"] = job_data.result
-
-                # Failed job
-                if status == "failed":
-                    result["status"] = "Failed"
-
-                return result
-
-        # If RQ Job doesn’t exist (older versions), fallback to background_jobs utils
-        try:
-            from frappe.utils.background_jobs import get_job_status as get_rq_job_status
-            status = get_rq_job_status(job_id)
-            if status:
-                result["status"] = status.capitalize()
-        except Exception as e:
-            value = []
-            #frappe.logger().warning(f"Fallback RQ status check failed: {str(e)}")
-        #latest code
-        try:
-            status = get_job_status_RQ(job_id)
-            if status:
-                result["status"] = status.status
-        except Exception as e:
-            value = []
-            #frappe.logger().warning(f"Fallback RQ status check failed: {str(e)}")
-
-    except Exception as e:
-        value = []
-        #frappe.logger().error(f"Error in get_job_status: {str(e)}")
-
-    return result
-
-import frappe
-from rq.job import Job
-from frappe.utils.background_jobs import get_redis_conn
 
 @frappe.whitelist()
 def get_job_status(job_id):
@@ -1989,202 +1816,3 @@ def get_job_status(job_id):
         #frappe.logger().error(f"[get_job_status] {e}")
         return {"status": "Not Found"}
 
-
-@frappe.whitelist()
-def debug_student_processing(student_name, phone_number):
-    """
-    Debug function to identify why student processing is failing
-    """
-    try:
-        result = []
-        result.append(f"\n=== DEBUGGING STUDENT: {student_name} ({phone_number}) ===")
-        
-        # 1. Check phone number normalization
-        phone_12, phone_10 = normalize_phone_number(phone_number)
-        result.append(f"1. Phone normalization: {phone_number} -> {phone_10} / {phone_12}")
-        
-        # 2. Check if student exists
-        existing_student = find_existing_student_by_phone_and_name(phone_number, student_name)
-        if existing_student:
-            result.append(f"2. Student EXISTS: {existing_student}")
-            
-            # Get full student record
-            student_doc = frappe.get_doc("Student", existing_student.name)
-            result.append(f"   - Current Grade: {student_doc.grade}")
-            result.append(f"   - Current School: {student_doc.school_id}")
-            result.append(f"   - Current Language: {student_doc.language}")
-            result.append(f"   - Glific ID: {student_doc.glific_id}")
-            
-            # Check enrollments
-            enrollments = frappe.get_all("Enrollment", 
-                                       filters={"parent": student_doc.name},
-                                       fields=["name", "course", "batch", "grade", "school"])
-            result.append(f"   - Existing Enrollments: {len(enrollments)}")
-            for enrollment in enrollments:
-                result.append(f"     * {enrollment}")
-                
-                # Check if course exists
-                if enrollment.course:
-                    course_exists = frappe.db.exists("Course Level", enrollment.course)
-                    result.append(f"       Course '{enrollment.course}' exists: {course_exists}")
-                    if not course_exists:
-                        result.append(f"       *** BROKEN COURSE LINK DETECTED ***")
-        else:
-            result.append("2. Student DOES NOT EXIST - will create new")
-        
-        # 3. Check backend student record
-        backend_students = frappe.get_all("Backend Students",
-                                        filters={"student_name": student_name, "phone": phone_number},
-                                        fields=["name", "batch", "course_vertical", "grade", "school", 
-                                               "language", "batch_skeyword", "processing_status"])
-        
-        if backend_students:
-            backend_student = backend_students[0]
-            result.append(f"3. Backend Student Record: {backend_student}")
-            
-            # 4. Check batch keyword mapping
-            if backend_student.batch_skeyword:
-                batch_onboarding = frappe.get_all("Batch onboarding",
-                                                filters={"batch_skeyword": backend_student.batch_skeyword},
-                                                fields=["name", "batch", "school", "kit_less"])
-                result.append(f"4. Batch Onboarding for keyword '{backend_student.batch_skeyword}': {batch_onboarding}")
-                
-                if not batch_onboarding:
-                    result.append(f"   *** ERROR: No Batch onboarding found for keyword '{backend_student.batch_skeyword}' ***")
-            
-            # 5. Check batch exists
-            if backend_student.batch:
-                batch_exists = frappe.db.exists("Batch", backend_student.batch)
-                result.append(f"5. Batch '{backend_student.batch}' exists: {batch_exists}")
-                if not batch_exists:
-                    result.append(f"   *** ERROR: Batch '{backend_student.batch}' does not exist ***")
-            
-            # 6. Check school exists
-            if backend_student.school:
-                school_exists = frappe.db.exists("School", backend_student.school)
-                result.append(f"6. School '{backend_student.school}' exists: {school_exists}")
-                if not school_exists:
-                    result.append(f"   *** ERROR: School '{backend_student.school}' does not exist ***")
-            
-            # 7. Check course vertical exists
-            if backend_student.course_vertical:
-                vertical_exists = frappe.db.exists("Course Verticals", backend_student.course_vertical)
-                result.append(f"7. Course Vertical '{backend_student.course_vertical}' exists: {vertical_exists}")
-                if not vertical_exists:
-                    result.append(f"   *** ERROR: Course Vertical '{backend_student.course_vertical}' does not exist ***")
-            
-            # 8. Check language exists
-            if backend_student.language:
-                language_exists = frappe.db.exists("TAP Language", backend_student.language)
-                result.append(f"8. Language '{backend_student.language}' exists: {language_exists}")
-                if not language_exists:
-                    result.append(f"   *** ERROR: Language '{backend_student.language}' does not exist ***")
-            
-            # 9. Test course level selection
-            try:
-                if backend_student.batch_skeyword and backend_student.course_vertical and backend_student.grade:
-                    batch_onboarding = frappe.get_all("Batch onboarding",
-                                                    filters={"batch_skeyword": backend_student.batch_skeyword},
-                                                    fields=["name", "kit_less"])
-                    
-                    if batch_onboarding:
-                        kitless = batch_onboarding[0].kit_less
-                        result.append(f"9. Testing course level selection with kitless={kitless}")
-                        
-                        # Test student type determination
-                        student_type = determine_student_type_backend(phone_number, student_name, backend_student.course_vertical)
-                        result.append(f"   - Student Type: {student_type}")
-                        
-                        # Test course level selection
-                        course_level = get_course_level_with_validation_backend(
-                            backend_student.course_vertical,
-                            backend_student.grade,
-                            phone_number,
-                            student_name,
-                            kitless
-                        )
-                        result.append(f"   - Selected Course Level: {course_level}")
-                        
-                        if course_level:
-                            course_exists = frappe.db.exists("Course Level", course_level)
-                            result.append(f"   - Course Level exists: {course_exists}")
-                        
-            except Exception as course_error:
-                result.append(f"9. Course level selection ERROR: {str(course_error)}")
-            
-            # 10. Test basic enrollment creation (without course)
-            try:
-                result.append("10. Testing basic enrollment structure:")
-                test_enrollment = {
-                    "doctype": "Enrollments",
-                    "batch": backend_student.batch,
-                    "grade": backend_student.grade,
-                    "date_joining": nowdate(),
-                    "school": backend_student.school
-                }
-                result.append(f"    Basic enrollment structure: {test_enrollment}")
-                
-                # Check if all referenced records exist
-                refs_exist = {
-                    "batch": frappe.db.exists("Batch", backend_student.batch) if backend_student.batch else False,
-                    "school": frappe.db.exists("School", backend_student.school) if backend_student.school else False
-                }
-                result.append(f"    Referenced records exist: {refs_exist}")
-                
-            except Exception as enrollment_error:
-                result.append(f"10. Enrollment test ERROR: {str(enrollment_error)}")
-        
-        else:
-            result.append("3. *** ERROR: No Backend Student record found ***")
-        
-        result.append(f"\n=== END DEBUG FOR {student_name} ===\n")
-        
-        return "\n".join(result)
-        
-    except Exception as e:
-        return f"DEBUG ERROR: {str(e)}"
-
-@frappe.whitelist()
-def test_basic_student_creation():
-    """
-    Test creating a minimal student record to identify basic issues
-    """
-    try:
-        result = []
-        result.append("=== TESTING BASIC STUDENT CREATION ===")
-        
-        # Create a minimal test student
-        test_student = frappe.new_doc("Student")
-        test_student.name1 = "Test Student Debug"
-        test_student.phone = "919999999999"
-        test_student.gender = "Male"
-        test_student.grade = "5"
-        test_student.status = "active"
-        test_student.joined_on = nowdate()
-        
-        # Try to insert without any enrollments
-        test_student.insert()
-        result.append(f"Basic student created successfully: {test_student.name}")
-        
-        # Now try to add a simple enrollment
-        enrollment = {
-            "doctype": "Enrollments",
-            "batch": "BT00000015",  # From your data
-            "grade": "5",
-            "date_joining": nowdate()
-        }
-        
-        test_student.append("enrollment", enrollment)
-        test_student.save()
-        result.append("Enrollment added successfully")
-        
-        # Clean up
-        frappe.delete_doc("Student", test_student.name)
-        result.append("Test student deleted successfully")
-        
-        result.append("=== BASIC TEST PASSED ===")
-        
-        return "\n".join(result)
-        
-    except Exception as e:
-        return f"BASIC TEST FAILED: {str(e)}"
