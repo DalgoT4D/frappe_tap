@@ -235,6 +235,56 @@ def _already_logged(call_id):
 # Event processing
 # ════════════════════════════════════════════════════════════
 
+def _fetch_call_record(call_id):
+    """Fetch the full Vocallabs call record by the REAL telephony `call_id`.
+
+    The live webhook payload carries `call_id` but an EMPTY `queue_id` and no
+    phone (confirmed 2026-06-19), so the queue_id mapping can't resolve. The real
+    `call_id` DOES resolve in `getVocallabsCall`, which returns `phone_to` (to map)
+    plus `call_status` and the post-call `action_outcome`/`call_summary`
+    (in `call_data`). Best-effort; returns a normalised dict or None.
+    """
+    try:
+        import requests
+        from tap_lms.summer_program import vocallabs as V
+        settings = frappe.get_single("VoiceAgentSettings")
+        su = (settings.service_url or "").rstrip("/")
+        token = V._get_auth_token(settings)
+        resp = requests.get(
+            su + "/b2b/vocallabs/getVocallabsCall",
+            params={"callId": call_id},
+            headers={"Authorization": "Bearer " + token},
+            timeout=15,
+        )
+        rec = resp.json()
+    except Exception as e:  # noqa: BLE001 — best-effort enrichment; never raise
+        _safe_log(WEBHOOK_DEADLETTER_LOG_TITLE,
+                  "getVocallabsCall enrich failed for %s: %s" % (call_id, e))
+        return None
+    if not isinstance(rec, dict):
+        return None
+    out = {
+        "phone_to": _dig(rec, ("phone_to", "phoneTo")),
+        "call_status": _dig(rec, ("call_status", "status")),
+        "duration": _dig(rec, ("duration",)),
+        "action_outcome": None,
+        "call_summary": None,
+    }
+    # post-call key/value rows (action_outcome, call_summary) live in call_data[]
+    cd = rec.get("call_data")
+    if not isinstance(cd, list):
+        d = rec.get("data")
+        cd = d.get("call_data") if isinstance(d, dict) else None
+    for item in (cd or []):
+        if isinstance(item, dict):
+            k = item.get("key")
+            if k == "action_outcome" and not out["action_outcome"]:
+                out["action_outcome"] = item.get("value")
+            elif k == "call_summary" and not out["call_summary"]:
+                out["call_summary"] = item.get("value")
+    return out
+
+
 def _process_event(payload, raw_text):
     """Record a call outcome. The real Vocallabs payload is
     `{call_id, queue_id, status}` (no `event` field, no phone): `call_id` is the
@@ -256,11 +306,25 @@ def _process_event(payload, raw_text):
         return
 
     pe = _find_pe(queue_id, prospect_id, phone_to)
+    if not pe and real_call_id and not phone_to:
+        # Live payload carries call_id but EMPTY queue_id and no phone (2026-06-19),
+        # so the queue_id mapping can't resolve. Enrich via the real telephony id —
+        # it resolves in getVocallabsCall -> phone_to (+ richer status/action_outcome)
+        # — then map by phone.
+        rec = _fetch_call_record(real_call_id)
+        if rec:
+            phone_to = rec.get("phone_to") or phone_to
+            if not status and rec.get("call_status"):
+                status = str(rec["call_status"]).strip().lower()
+            duration = duration or rec.get("duration")
+            action_outcome = action_outcome or rec.get("action_outcome")
+            summary = summary or rec.get("call_summary")
+            pe = _find_pe(None, prospect_id, phone_to)
     if not pe:
         _safe_log(
             WEBHOOK_DEADLETTER_LOG_TITLE,
-            "unmappable real_call_id=%s queue_id=%s status=%s\n%s"
-            % (real_call_id, queue_id, status, raw_text),
+            "unmappable real_call_id=%s queue_id=%s phone_to=%s status=%s\n%s"
+            % (real_call_id, queue_id, phone_to, status, raw_text),
         )
         return
 

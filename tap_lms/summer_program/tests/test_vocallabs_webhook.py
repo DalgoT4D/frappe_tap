@@ -179,6 +179,7 @@ class TestVocallabsWebhookProcessing(FrappeTestCase):
     def test_unmappable_deadletters_no_insert(self):
         payload = {"call_id": "cc-5", "queue_id": "q-unknown", "status": "completed"}
         with patch.object(W, "_find_pe", return_value=None), \
+             patch.object(W, "_fetch_call_record", return_value=None), \
              patch.object(frappe, "get_doc") as gd, \
              patch.object(frappe, "log_error") as log:
             W._process_event(payload, json.dumps(payload))
@@ -186,6 +187,24 @@ class TestVocallabsWebhookProcessing(FrappeTestCase):
         self.assertTrue(
             any(c.kwargs.get("title") == W.WEBHOOK_DEADLETTER_LOG_TITLE for c in log.call_args_list)
         )
+
+    def test_empty_queue_id_enriches_via_getvocallabscall(self):
+        # LIVE shape (2026-06-19): call_id + EMPTY queue_id + no phone -> enrich via
+        # getVocallabsCall -> phone_to -> map by phone -> record (with action_outcome).
+        payload = {"call_id": "real-9", "queue_id": "", "status": "completed"}
+        with patch.object(W, "_find_pe", side_effect=[None, _fake_pe()]), \
+             patch.object(W, "_fetch_call_record", return_value={
+                 "phone_to": "919999999999", "call_status": "completed",
+                 "action_outcome": "parent_agreed", "call_summary": "ok", "duration": 42}), \
+             patch.object(W, "_already_logged", return_value=False), \
+             patch.object(W, "now_datetime", return_value="2026-06-19 12:00:00"), \
+             patch.object(frappe, "get_doc", return_value=MagicMock()) as gd:
+            W._process_event(payload, json.dumps(payload))
+        gd.assert_called_once()
+        details = json.loads(gd.call_args.args[0]["details"])
+        self.assertEqual(details["real_call_id"], "real-9")
+        self.assertEqual(details["action_outcome"], "parent_agreed")  # enriched
+        self.assertEqual(details["call_status"], "completed")
 
     def test_idempotent_duplicate_skipped(self):
         payload = {"call_id": "cc-6", "queue_id": "q-6", "status": "completed"}
