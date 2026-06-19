@@ -47,6 +47,7 @@ from tap_lms.summer_program.utils import (
     safe_sp_api_error_response,
     check_glific_placeholders,
 )
+from tap_lms.monitoring import emit, record_submission_published
 URL_SUBMISSION_TYPES = {"audio", "image", "video"}
 SAVE_SUBMISSION_DB_RETRY_ATTEMPTS = 3
 SAVE_SUBMISSION_DB_RETRY_DELAY_SECONDS = 0.15
@@ -99,6 +100,15 @@ def save_submission(student_id, assignment_id=None, submission=None,
         dict with: status (accepted|duplicate|rejected), is_primary,
                    points_awarded, submission_count, submission_id
     """
+    emit(
+        severity="INFO",
+        message="save_submission_called",
+        student_id=student_id,
+        assignment_id=assignment_id or content_id,
+        submission_length=len(str(submission)) if submission else 0,
+        week=week
+    )
+
     # Task #93 (2026-05-25): pre-validate empty submission and short-circuit
     # with structured response. Prevents the downstream
     # `_normalize_submission_payload` from raising
@@ -108,6 +118,13 @@ def save_submission(student_id, assignment_id=None, submission=None,
     # branch for Glific flows. Discord report 2026-05-25: Mayank (ST00052222)
     # blocked here because his emoji-flow webhook sent submission="".
     if submission is None or not str(submission).strip():
+        emit(
+            severity="WARNING",
+            message="save_submission_empty_payload",
+            student_id=student_id,
+            assignment_id=assignment_id or content_id,
+            week=week
+        )
         frappe.local.response.update({
             "success": False,
             "status": "submission_empty",
@@ -130,6 +147,14 @@ def save_submission(student_id, assignment_id=None, submission=None,
         student_id=student_id,
     )
     if placeholder_hit:
+        emit(
+            severity="WARNING",
+            message="save_submission_placeholder_detected",
+            student_id=student_id,
+            assignment_id=_effective_assignment_id,
+            details=placeholder_hit,
+            week=week
+        )
         frappe.local.response.update(placeholder_hit)
         return
 
@@ -151,6 +176,14 @@ def save_submission(student_id, assignment_id=None, submission=None,
             # HTML 500. Glific flows expect the flat envelope so they can
             # branch on `status`.
             frappe.db.rollback()
+            emit(
+                severity="WARNING",
+                message="save_submission_validation_error",
+                student_id=student_id,
+                assignment_id=assignment_id or content_id,
+                error=str(e),
+                week=week
+            )
             frappe.local.response.update({
                 "success": False,
                 "status": "validation_error",
@@ -162,6 +195,14 @@ def save_submission(student_id, assignment_id=None, submission=None,
             # Same pattern for missing-record errors (student, assignment,
             # PE not found). Structured envelope, not HTML 500.
             frappe.db.rollback()
+            emit(
+                severity="WARNING",
+                message="save_submission_not_found_error",
+                student_id=student_id,
+                assignment_id=assignment_id or content_id,
+                error=str(e),
+                week=week
+            )
             frappe.local.response.update({
                 "success": False,
                 "status": "not_found",
@@ -182,6 +223,14 @@ def save_submission(student_id, assignment_id=None, submission=None,
                     f"{type(e).__name__}: {e}",
                     "SP Save Submission",
                 )
+                emit(
+                    severity="ERROR",
+                    message="save_submission_internal_error",
+                    student_id=student_id,
+                    assignment_id=assignment_id or content_id,
+                    error=str(e),
+                    week=week
+                )
                 frappe.local.response.update({
                     "success": False,
                     "status": "internal_error",
@@ -193,6 +242,15 @@ def save_submission(student_id, assignment_id=None, submission=None,
 
             last_error = e
             frappe.db.rollback()
+            emit(
+                severity="WARNING",
+                message="save_submission_serialization_failure",
+                student_id=student_id,
+                assignment_id=assignment_id or content_id,
+                attempt=attempt,
+                error=str(e),
+                week=week
+            )
             if attempt < SAVE_SUBMISSION_DB_RETRY_ATTEMPTS:
                 time.sleep(SAVE_SUBMISSION_DB_RETRY_DELAY_SECONDS * attempt)
                 continue
@@ -201,6 +259,14 @@ def save_submission(student_id, assignment_id=None, submission=None,
         f"save_submission exhausted serialization retries for "
         f"student_id={student_id}, assignment_id={assignment_id}: {last_error}",
         "SP Save Submission",
+    )
+    emit(
+        severity="ERROR",
+        message="save_submission_retry_exhausted",
+        student_id=student_id,
+        assignment_id=assignment_id or content_id,
+        error=str(last_error),
+        week=week
     )
     frappe.local.response.update({
         "success": False,
@@ -217,6 +283,7 @@ def _save_submission_once(student_id, assignment_id=None, submission=None, week=
     Postgres serialization failures must be handled by retrying the whole
     transaction, so the whitelisted wrapper owns the retry loop.
     """
+    orig_student_id = student_id
     # P-006 deprecation alias (L-009): older Glific flows pass `content_id`.
     # Map it to `assignment_id` and log so we can track call-sites that still
     # use the legacy name before removing the alias.
@@ -230,6 +297,12 @@ def _save_submission_once(student_id, assignment_id=None, submission=None, week=
     assignment_id = normalize_unicode_surrogates(assignment_id)
 
     if not assignment_id:
+        emit(
+            severity="WARNING",
+            message="save_submission_missing_assignment",
+            student_id=student_id,
+            week=week
+        )
         frappe.local.response.update({
             "success": False,
             "status": "missing_param",
@@ -239,6 +312,12 @@ def _save_submission_once(student_id, assignment_id=None, submission=None, week=
 
     student_id = _resolve_student(student_id)
     if not student_id:
+        emit(
+            severity="WARNING",
+            message="save_submission_student_not_resolved",
+            input_student_id=orig_student_id,
+            week=week
+        )
         frappe.local.response.update({
             "success": False, "status": "not_found",
             "error_detail": "Student not found",
@@ -247,6 +326,12 @@ def _save_submission_once(student_id, assignment_id=None, submission=None, week=
 
     pe = get_active_pe(student_id)
     if not pe:
+        emit(
+            severity="WARNING",
+            message="save_submission_no_active_pe",
+            student_id=student_id,
+            week=week
+        )
         frappe.local.response.update({
             "success": False, "status": "no_active_enrollment",
             "error_detail": "No active ProgramEnrollment",
@@ -257,6 +342,14 @@ def _save_submission_once(student_id, assignment_id=None, submission=None, week=
 
     # Check if student is in a terminal or paused state
     if pe.resolved_flow_state in TERMINAL_STATES:
+        emit(
+            severity="WARNING",
+            message="save_submission_terminal_state",
+            student_id=student_id,
+            pe_name=pe.name,
+            resolved_flow_state=pe.resolved_flow_state,
+            week=week
+        )
         frappe.local.response.update({
             "success": False,
             "status": "terminal_state",
@@ -305,6 +398,15 @@ def _save_submission_once(student_id, assignment_id=None, submission=None, week=
             f"Submission insert failed for student {student_id}, "
             f"week {current_week}: {e}",
             "SP Save Submission",
+        )
+        emit(
+            severity="ERROR",
+            message="save_submission_insert_failed",
+            student_id=student_id,
+            pe_name=pe.name,
+            assignment_id=assignment_id,
+            error=str(e),
+            week=current_week
         )
         frappe.local.response.update({
             "success": False,
@@ -388,6 +490,17 @@ def _save_submission_once(student_id, assignment_id=None, submission=None, week=
         )
 
     # Removed mid-handler commit per L-017 — Frappe commits at request-end.
+
+    emit(
+        severity="INFO",
+        message="save_submission_success",
+        student_id=student_id,
+        pe_name=pe.name,
+        assignment_id=assignment_id,
+        submission_id=submission_doc.name if submission_doc else None,
+        is_primary=is_primary,
+        week=current_week
+    )
 
     return _build_submission_response(
         pe=pe,
@@ -948,6 +1061,13 @@ def _build_pe_context(pe):
 
 
 def _queue_submission_processing(submission_doc, pe_context):
+    emit(
+        severity="INFO",
+        message="save_submission_processing_queued",
+        submission_id=submission_doc.name,
+        student_id=submission_doc.student_id,
+        week=submission_doc.week
+    )
     frappe.enqueue(
         "tap_lms.summer_program.save_submission.process_submission_async",
         queue="long",
@@ -969,6 +1089,11 @@ def process_submission_async(
     Upload URL submissions to GCS, mark the record Processing, and enqueue
     feedback processing. Text and emoji submissions skip GCS upload.
     """
+    emit(
+        severity="INFO",
+        message="process_submission_async_start",
+        submission_id=submission_id
+    )
     pe_context = pe_context or {}
     try:
         submission = frappe.get_doc("Submission", submission_id)
@@ -980,6 +1105,12 @@ def process_submission_async(
             from tap_lms.imgana.gcs_client import upload_to_gcs
 
             media_type = detect_url_media_type(raw_submission, default="image")
+            emit(
+                severity="INFO",
+                message="process_submission_uploading_gcs",
+                submission_id=submission_id,
+                raw_url=raw_submission
+            )
             uploaded_url = upload_to_gcs(
                 raw_submission,
                 submission.name,
@@ -1000,6 +1131,15 @@ def process_submission_async(
         submission.save(ignore_permissions=True)
         frappe.db.commit()
 
+        emit(
+            severity="INFO",
+            message="process_submission_prepared",
+            submission_id=submission.name,
+            student_id=submission.student_id,
+            submission_type=submission.submission_type,
+            submission_url=submission.submission_url
+        )
+
         enqueue_submission(submission.name, pe_context=pe_context)
 
     except Exception as e:
@@ -1015,6 +1155,12 @@ def process_submission_async(
             f"Error in background processing for submission {submission_id}: {str(e)}",
             "SP process_submission_async",
         )
+        emit(
+            severity="ERROR",
+            message="process_submission_async_failed",
+            submission_id=submission_id,
+            error=str(e)
+        )
 
         try:
             submission = frappe.get_doc("Submission", submission_id)
@@ -1027,6 +1173,12 @@ def process_submission_async(
                 f"Failed to update submission {submission_id} after background error: {str(log_error)}",
                 "SP process_submission_async",
             )
+            emit(
+                severity="ERROR",
+                message="process_submission_failed_status_update_failed",
+                submission_id=submission_id,
+                error=str(log_error)
+            )
 
         # H-4: re-raise so RQ marks the job as failed and the DLQ logic
         # engages. Without this, RQ thinks the job succeeded.
@@ -1034,6 +1186,11 @@ def process_submission_async(
 
 
 def enqueue_submission(submission_id, pe_context=None, retry_count=0):
+    emit(
+        severity="INFO",
+        message="enqueue_submission_start",
+        submission_id=submission_id
+    )
     try:
         import pika
         from tap_lms.imgana.submission import get_rabbitmq_settings
@@ -1116,9 +1273,25 @@ def enqueue_submission(submission_id, pe_context=None, retry_count=0):
             frappe.logger("submission").info(
                 f"Enqueued submission {submission_id} with type {submission.submission_type}"
             )
+            try:
+                record_submission_published(
+                    submission_id=submission_id,
+                    student_id=payload.get("student_id", ""),
+                    assign_id=payload.get("assign_id", ""),
+                    submission_type=payload.get("submission_type", ""),
+                    queue_name=rabbitmq_config["queue"],
+                )
+            except Exception:
+                pass
     except Exception as e:
         frappe.logger("submission").error(
             f"Failed to enqueue submission {submission_id}: {str(e)}"
+        )
+        emit(
+            severity="ERROR",
+            message="enqueue_submission_failed",
+            submission_id=submission_id,
+            error=str(e)
         )
         retry_count = (retry_count or 0) + 1
         student_id = ""
@@ -1129,6 +1302,14 @@ def enqueue_submission(submission_id, pe_context=None, retry_count=0):
             student_id = ""
 
         if retry_count <= FEEDBACK_PIPELINE_MAX_RETRIES:
+            emit(
+                severity="WARNING",
+                message="enqueue_submission_retry",
+                submission_id=submission_id,
+                retry_count=retry_count,
+                max_retries=FEEDBACK_PIPELINE_MAX_RETRIES,
+                error=str(e)
+            )
             frappe.log_error(
                 title=FEEDBACK_PIPELINE_RETRY_LOG_TITLE,
                 message=(
@@ -1165,6 +1346,13 @@ def enqueue_submission(submission_id, pe_context=None, retry_count=0):
                     ),
                 )
         else:
+            emit(
+                severity="ERROR",
+                message="enqueue_submission_dlq",
+                submission_id=submission_id,
+                retry_count=retry_count,
+                error=str(e)
+            )
             frappe.log_error(
                 title=FEEDBACK_PIPELINE_DLQ_LOG_TITLE,
                 message=json.dumps(

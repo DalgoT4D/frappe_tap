@@ -13,6 +13,7 @@ Called by: update_flow_status, save_submission, reactivate_student, scheduler ac
 """
 import frappe
 from frappe.utils import now_datetime, add_to_date, getdate
+from tap_lms.monitoring import emit
 
 from tap_lms.glific_integration import update_contact_fields
 from tap_lms.summer_program.constants import (
@@ -121,6 +122,29 @@ def transition(pe, new_state, trigger_source="scheduler", extra_updates=None, sk
     # collection maintenance) sees fresh DB state — including any
     # concurrent column bumps that happened between pe load and now.
     pe.reload()
+
+    # Emit transition log for student progress funnel dashboard
+    try:
+        emit(
+            severity="INFO",
+            message="student_state_transition",
+            pe_name=pe.name,
+            student_id=pe.student,
+            glific_id=pe.glific_id,
+            old_state=old_state,
+            new_state=new_state,
+            journey_label=pe.journey_label,
+            current_week=pe.current_week,
+            current_path=pe.current_path,
+            current_tier=pe.current_tier,
+            program_status=pe.program_status,
+            current_escalation_step=pe.current_escalation_step,
+            trigger_source=trigger_source,
+            total_points=pe.total_points,
+            weekly_submission_done=pe.weekly_submission_done
+        )
+    except Exception:
+        pass
 
     # Log the transition
     log_state_transition(pe, old_state, new_state, trigger_source)
@@ -1152,6 +1176,13 @@ def t21_a_resume_paused(pe, trigger_source="scheduler"):
 # ── T22: Duplicate submission (no state change) ─────────
 def t22_duplicate_submission(pe, trigger_source="flow_callback"):
     """T22: submitted_awaiting_feedback stays same. Log only."""
+    emit(
+        severity="INFO",
+        message="student_duplicate_submission",
+        pe_name=pe.name,
+        student_id=pe.student,
+        trigger_source=trigger_source
+    )
     log_event(pe, "submission_received", trigger_source=trigger_source,
               details={"is_primary": False, "duplicate": True})
     return True
@@ -1227,6 +1258,15 @@ def t25_delivery_failure(pe, flow_name, trigger_source="scheduler"):
     )
     pe.reload()
 
+    emit(
+        severity="WARNING",
+        message="student_delivery_failure",
+        pe_name=pe.name,
+        student_id=pe.student,
+        flow_name=flow_name,
+        failure_count=pe.delivery_failure_count,
+        trigger_source=trigger_source
+    )
     log_event(pe, "delivery_failed", trigger_source=trigger_source,
               details={"flow_name": flow_name,
                        "failure_count": pe.delivery_failure_count})
