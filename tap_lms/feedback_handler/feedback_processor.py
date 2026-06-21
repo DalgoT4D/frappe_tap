@@ -102,11 +102,15 @@ class FeedbackProcessor:
             raise ValueError(f"Submission {submission_id} not found")
 
     def is_retryable_error(self, error: Exception) -> bool:
+        if isinstance(error, frappe.ValidationError):
+            return False
+
         error_str = str(error).lower()
 
         non_retryable_patterns = [
             "does not exist",
             "not found",
+            "could not find",
             "invalid",
             "permission denied",
             "duplicate",
