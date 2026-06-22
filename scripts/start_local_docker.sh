@@ -266,6 +266,8 @@ set -euo pipefail
 cd /home/frappe/frappe-bench/sites
 ../env/bin/python3 - << 'PYEOF'
 import frappe
+import frappe.utils.password as frappe_crypt
+
 frappe.init(site="$SITE_NAME")
 frappe.connect()
 
@@ -287,11 +289,25 @@ else:
     doc.save()
     print("✓ Updated Stub LLM Settings")
 
-# 2. RAG Settings Secret
-frappe.db.set_value("RAG Settings", "RAG Settings", "api_secret", "local-secret-key")
-print("✓ Seeded RAG Settings api_secret")
+# ── API Credentials for local development ────────────────────
+API_KEY_VALUE = "local-dev-api-key-001"
+API_SECRET_VALUE = "local-secret-key"
 
+# 2. Update RAG Settings with API key and vault the secret key securely
+rag_settings = frappe.get_doc("RAG Settings", "RAG Settings")
+if rag_settings.api_key != API_KEY_VALUE:
+    rag_settings.api_key = API_KEY_VALUE
+    rag_settings.save(ignore_permissions=True)
+    frappe.db.commit()
+    print(f"✓ RAG Settings api_key set to: {API_KEY_VALUE}")
+else:
+    print(f"  RAG Settings api_key already set: {API_KEY_VALUE}")
+
+frappe_crypt.set_encrypted_password(
+    "RAG Settings", "RAG Settings", API_SECRET_VALUE, "api_secret"
+)
 frappe.db.commit()
+print("✓ Seeded RAG Settings api_secret in secure vault")
 PYEOF
 EOF
 
