@@ -191,8 +191,8 @@ for skill_name in SKILLS:
 
 
 # ── 7. API Key (for submit_artwork flow) ────────────────────
-API_KEY_VALUE = "local-dev-api-key-001"
-API_SECRET_VALUE = "local-secret-key"
+API_KEY_VALUE = os.environ.get("LOCAL_API_KEY", "local-dev-api-key-001")
+API_SECRET_VALUE = os.environ.get("LOCAL_API_SECRET", "local-secret-key")
 
 # 1. Update the User Profile directly with the public API key identifier
 user_doc = frappe.get_doc("User", "Administrator")

@@ -44,6 +44,11 @@ BUSINESS_THEME_REPO="${BUSINESS_THEME_REPO:-https://github.com/Midocean-Technolo
 RAG_SITE_NAME="${RAG_SITE_NAME:-rag.localhost}"
 RAG_POSTGRES_DB="${RAG_POSTGRES_DB:-rag_lms}"
 
+# Single source of truth for local dev API credentials — reused below instead
+# of repeating the literal strings in every Python block.
+LOCAL_API_KEY="${LOCAL_API_KEY:-local-dev-api-key-001}"
+LOCAL_API_SECRET="${LOCAL_API_SECRET:-local-secret-key}"
+
 # ── Step 1: Start infrastructure + services ──────────────────────────────────
 echo "Starting infrastructure and services..."
 podman-compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --build \
@@ -343,8 +348,8 @@ else:
     print("✓ Updated Stub LLM Settings")
 
 # ── API Credentials for local development ────────────────────
-API_KEY_VALUE = "local-dev-api-key-001"
-API_SECRET_VALUE = "local-secret-key"
+API_KEY_VALUE = "$LOCAL_API_KEY"
+API_SECRET_VALUE = "$LOCAL_API_SECRET"
 
 # 2. Update RAG Settings with API key and vault the secret key securely.
 #    Must match the Administrator API key/secret seeded on the tap_lms site
@@ -379,8 +384,8 @@ import frappe.utils.password as frappe_crypt
 frappe.init(site="$SITE_NAME")
 frappe.connect()
 
-API_KEY_VALUE = "local-dev-api-key-001"
-API_SECRET_VALUE = "local-secret-key"
+API_KEY_VALUE = "$LOCAL_API_KEY"
+API_SECRET_VALUE = "$LOCAL_API_SECRET"
 
 # 3. Update the User Profile directly with the public API key identifier.
 #    This is the tap_lms-side credential that incoming requests (including
@@ -415,6 +420,8 @@ echo "Running seed_local.py (tap_lms site)..."
 podman-compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T dev-lms bash -lc '
   cd /home/frappe/frappe-bench/sites && \
   SITE_NAME="${SITE_NAME:-tap_lms.localhost}" \
+  LOCAL_API_KEY="${LOCAL_API_KEY:-local-dev-api-key-001}" \
+  LOCAL_API_SECRET="${LOCAL_API_SECRET:-local-secret-key}" \
   ../env/bin/python3 -c "import sys; sys.path.insert(0, \"/workspace/frappe_tap\"); import scripts.seed_local"
 '
 
@@ -424,6 +431,8 @@ podman-compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T dev-lms bash -l
   SITE_NAME="${SITE_NAME:-tap_lms.localhost}" \
   RAG_SITE_NAME="${RAG_SITE_NAME:-rag.localhost}" \
   WEB_PORT="${WEB_PORT:-8000}" \
+  LOCAL_API_KEY="${LOCAL_API_KEY:-local-dev-api-key-001}" \
+  LOCAL_API_SECRET="${LOCAL_API_SECRET:-local-secret-key}" \
   ../env/bin/python3 -c "import sys; sys.path.insert(0, \"/workspace/frappe_tap\"); import scripts.seed_local_rag"
 '
 
@@ -478,8 +487,8 @@ Next steps:
    Frappe desk → API Key → New → key: local-test-key-001 → Save
 
 4. Send a test submission (ensure auth token matches one declared in seed script or one created above manually):
-    curl -v -X POST "http://tap_lms.localhost:8000/api/method/tap_lms.imgana.submission.assignment_submission" -H "Content-Type: application/json" -H "Authorization: token local-dev-api-key-001:local-secret-key" -d '{
-        "api_key":   "local-dev-api-key-001",
+    curl -v -X POST "http://tap_lms.localhost:8000/api/method/tap_lms.imgana.submission.assignment_submission" -H "Content-Type: application/json" -H "Authorization: token ${LOCAL_API_KEY}:${LOCAL_API_SECRET}" -d '{
+        "api_key":   "${LOCAL_API_KEY}",
         "assign_id": "MockAssign-Basic",
         "name1":     "LocalDevStudent",
         "glific_id": "LOCAL_GLIFIC_001",
