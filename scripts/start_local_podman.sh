@@ -462,16 +462,16 @@ Next steps:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 1. Start the Frappe LMS web server:
-   podman-compose --env-file env.local -f ./frappe_tap/docker/local/docker-compose.local.yml \\
+   podman-compose --env-file ./frappe_tap/env.local -f ./frappe_tap/docker/local/docker-compose.local.yml \\
      exec dev-lms bash -lc "cd /home/frappe/frappe-bench && bench start"
 
 2. Start your RAG Worker Consumer (Feedback Generator) — note it now connects
    to the rag_service site (${RAG_SITE_NAME}), not tap_lms:
-   podman-compose --env-file env.local -f ./frappe_tap/docker/local/docker-compose.local.yml \\
+   podman-compose --env-file ./frappe_tap/env.local -f ./frappe_tap/docker/local/docker-compose.local.yml \\
      exec dev-lms bash -lc "cd /home/frappe/frappe-bench/sites/ && SITE_NAME=${RAG_SITE_NAME} ../env/bin/python -c \"import rag_service.scripts.console_consumer as cc; cc.run()\""
 
 2a. Start the LMS Submission consumer (Updates state):
-    podman-compose --env-file env.local -f ./frappe_tap/docker/local/docker-compose.local.yml \\
+    podman-compose --env-file ./frappe_tap/env.local -f ./frappe_tap/docker/local/docker-compose.local.yml \\
     exec dev-lms bash -lc "cd /home/frappe/frappe-bench/sites/ && ../env/bin/python ../apps/tap_lms/scripts/console_consumer.py"
 
 2b. Watch Plagiarism Worker logs (ML model loading takes 1-2 mins):

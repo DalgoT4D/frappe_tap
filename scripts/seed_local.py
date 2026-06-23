@@ -147,6 +147,8 @@ else:
 # ── 5. ProgramEnrollment ────────────────────────────────────
 PE_STATES = [
     ("normal_content_delivery", "Core", "content_delivered"),
+    # these are the other states. However, we need to create only one ProgramEnrollment record
+    # so this is just for reference:
     ("normal_escalation", "Core", "content_delivered"),
     ("remedial_content_delivery", "Remedial", "content_delivered"),
     ("remedial_escalation", "Remedial", "content_delivered"),
@@ -172,7 +174,8 @@ for state, path, label in PE_STATES:
         pe.student = student_id
         pe.batch = batch_name
         pe.program_type = "Summer"
-        pe.glific_id = STUDENT_GLIFIC
+        # we have a unique index for batch-glific_id. so we append state to glific_id to avoid insertion errors.
+        pe.glific_id = f"{STUDENT_GLIFIC}-{state}"
         pe.program_status = "active"
         pe.resolved_flow_state = state
         pe.current_path = path
