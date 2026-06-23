@@ -32,11 +32,22 @@ frappe.set_user("Administrator")
 # ── 1. Batch ────────────────────────────────────────────────
 BATCH_NAME1 = "LocalDev"
 BATCH_ID = "LOCAL_DEV_001"
+PROGRAM_NAME = "Summer"  # matches batch.program_type below; Program.name == this value (autoname: format:{program})
+
+if not frappe.db.exists("Program", PROGRAM_NAME):
+    program = frappe.new_doc("Program")
+    program.program = PROGRAM_NAME
+    program.insert(ignore_permissions=True)
+    frappe.db.commit()
+    print(f"✓ Program created: {PROGRAM_NAME}")
+else:
+    print(f"  Program already exists: {PROGRAM_NAME}")
 
 if not frappe.db.exists("Batch", {"batch_id": BATCH_ID}):
     batch = frappe.new_doc("Batch")
     batch.name1 = BATCH_NAME1
     batch.batch_id = BATCH_ID
+    batch.program = PROGRAM_NAME
     batch.start_date = today()
     batch.end_date = add_days(today(), 90)
     batch.regist_end_date = add_days(today(), 7)
@@ -83,11 +94,19 @@ if not frappe.db.exists("Assignment", ASSIGNMENT_ID):
     # Add mock rubrics
     assignment.append(
         "rubric_grades",
-        {"grade_value": 4, "grade_description": "Excellent work with great detail."},
+        {
+            "grade_name": "Excellent",
+            "grade_value": 4,
+            "grade_description": "Excellent work with great detail.",
+        },
     )
     assignment.append(
         "rubric_grades",
-        {"grade_value": 2, "grade_description": "Good effort but needs more detail."},
+        {
+            "grade_name": "Good",
+            "grade_value": 2,
+            "grade_description": "Good effort but needs more detail.",
+        },
     )
 
     assignment.insert(ignore_permissions=True)
