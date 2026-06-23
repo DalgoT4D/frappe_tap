@@ -11,6 +11,12 @@ POSTGRES_USER="${POSTGRES_USER:-postgres}"
 POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-postgres}"
 BUSINESS_THEME_REPO="${BUSINESS_THEME_REPO:-https://github.com/Midocean-Technologies/business_theme_v14.git}"
 
+# ── rag_service runs as its OWN Frappe site / own database ───────────────────
+# This mirrors dev/prod: rag_service never shares tap_lms's DB. It talks to
+# tap_lms only over HTTP (RAG Settings.base_url) and RabbitMQ.
+RAG_SITE_NAME="${RAG_SITE_NAME:-rag.localhost}"
+RAG_POSTGRES_DB="${RAG_POSTGRES_DB:-rag_lms}"
+
 if [[ ! -d /home/frappe/frappe-bench/apps/frappe ]]; then
   if [[ -n "$(find /home/frappe/frappe-bench -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
     echo "/home/frappe/frappe-bench is not empty but Frappe is missing."
@@ -51,17 +57,9 @@ if [[ ! -d apps/business_theme_v14 ]]; then
   bench get-app "$BUSINESS_THEME_REPO"
 fi
 
-if [[ ! -d "sites/$SITE_NAME" ]]; then
-  bench new-site "$SITE_NAME" \
-    --db-type postgres \
-    --db-host postgres \
-    --db-port 5432 \
-    --db-root-username "$POSTGRES_USER" \
-    --db-root-password "$POSTGRES_PASSWORD" \
-    --admin-password "$ADMIN_PASSWORD"
-fi
-
-# add the rag_service to the apps.txt file else bench new-site command will fail
+# apps.txt lists every app available in the bench (needed so `bench new-site`
+# doesn't choke when either site installs rag_service). It is NOT where
+# per-site installation is decided — that's the `install-app` calls below.
 echo "frappe
 tap_lms
 business_theme_v14
@@ -72,10 +70,19 @@ tap_lms
 business_theme_v14
 rag_service" > sites/apps.txt
 
-# Run migrations and explicit builds now that manifest maps are established
+# ── tap_lms site ───────────────────────────────────────────────────────────────
+if [[ ! -d "sites/$SITE_NAME" ]]; then
+  bench new-site "$SITE_NAME" \
+    --db-type postgres \
+    --db-host postgres \
+    --db-port 5432 \
+    --db-root-username "$POSTGRES_USER" \
+    --db-root-password "$POSTGRES_PASSWORD" \
+    --admin-password "$ADMIN_PASSWORD"
+fi
+
 bench --site "$SITE_NAME" install-app tap_lms
 bench --site "$SITE_NAME" install-app business_theme_v14
-bench --site "$SITE_NAME" install-app rag_service
 bench --site "$SITE_NAME" migrate
 
 bench build --app tap_lms
@@ -84,61 +91,106 @@ bench build --app business_theme_v14
 bench --site "$SITE_NAME" set-config developer_mode 1
 bench --site "$SITE_NAME" set-config host_name "http://${SITE_NAME}:${WEB_PORT:-8000}"
 
-# ── Helper ────────────────────────────────────────────────────────────────────
-set_single_value() {
-  local doctype="$1"
-  local field="$2"
-  local value="${3:-}"
-  local args
-  args="$(python -c "import json,sys; print(json.dumps([sys.argv[1], sys.argv[2], sys.argv[3]]))" "$doctype" "$field" "$value")"
-  bench --site "$SITE_NAME" execute frappe.db.set_single_value --args "$args"
-}
-
-# ── RabbitMQ Settings ─────────────────────────────────────────────────────────
-if [[ -n "${RABBITMQ_HOST:-}" ]]; then
-  set_single_value "RabbitMQ Settings" host                     "${RABBITMQ_HOST:-}"
-  set_single_value "RabbitMQ Settings" port                     "${RABBITMQ_PORT:-5672}"
-  set_single_value "RabbitMQ Settings" virtual_host             "${RABBITMQ_VIRTUAL_HOST:-/}"
-  set_single_value "RabbitMQ Settings" username                 "${RABBITMQ_USERNAME:-guest}"
-  set_single_value "RabbitMQ Settings" password                 "${RABBITMQ_PASSWORD:-guest}"
-  set_single_value "RabbitMQ Settings" submission_queue         "${RABBITMQ_SUBMISSION_QUEUE:-}"
-  set_single_value "RabbitMQ Settings" plagiarism_results_queue "${RABBITMQ_PLAGIARISM_RESULTS_QUEUE:-}"
-  set_single_value "RabbitMQ Settings" feedback_results_queue   "${RABBITMQ_FEEDBACK_RESULTS_QUEUE:-}"
+# ── rag_service site (separate DB, on the same Postgres instance) ────────────
+if [[ ! -d "sites/$RAG_SITE_NAME" ]]; then
+  bench new-site "$RAG_SITE_NAME" \
+    --db-type postgres \
+    --db-host postgres \
+    --db-port 5432 \
+    --db-name "$RAG_POSTGRES_DB" \
+    --db-root-username "$POSTGRES_USER" \
+    --db-root-password "$POSTGRES_PASSWORD" \
+    --admin-password "$ADMIN_PASSWORD"
 fi
 
-# ── GCS Settings ──────────────────────────────────────────────────────────────
-set_single_value "GCS Settings" enabled          "${GCS_ENABLED:-0}"
-set_single_value "GCS Settings" bucket_name      "${GCS_BUCKET_NAME:-}"
-set_single_value "GCS Settings" project_id       "${GCS_PROJECT_ID:-}"
-set_single_value "GCS Settings" credentials_json "${GCS_CREDENTIALS_JSON:-{}}"
+bench --site "$RAG_SITE_NAME" install-app rag_service
+bench --site "$RAG_SITE_NAME" migrate
 
-# ── ElevenLabs Settings ───────────────────────────────────────────────────────
-set_single_value "ElevenLabs Settings" enabled "${ELEVENLABS_ENABLED:-0}"
-set_single_value "ElevenLabs Settings" api_key  "${ELEVENLABS_API_KEY:-disabled-local-placeholder}"
+bench --site "$RAG_SITE_NAME" set-config developer_mode 1
 
-# ── VoiceAgentSettings ────────────────────────────────────────────────────────
-set_single_value "VoiceAgentSettings" enabled                  "${VOICE_AGENT_ENABLED:-0}"
-set_single_value "VoiceAgentSettings" service_url              "${VOICE_AGENT_SERVICE_URL:-}"
-set_single_value "VoiceAgentSettings" client_id                "${VOICE_AGENT_CLIENT_ID:-}"
-set_single_value "VoiceAgentSettings" client_secret            "${VOICE_AGENT_CLIENT_SECRET:-}"
-set_single_value "VoiceAgentSettings" default_contact_group_id "${VOICE_AGENT_DEFAULT_CONTACT_GROUP_ID:-}"
-set_single_value "VoiceAgentSettings" agent_id                 "${VOICE_AGENT_AGENT_ID:-}"
-set_single_value "VoiceAgentSettings" auth_token_cache_ttl     "${VOICE_AGENT_AUTH_TOKEN_CACHE_TTL:-3600}"
+# ── Helper ────────────────────────────────────────────────────────────────────
+# Takes the site as the first arg so it can target either site.
+set_single_value() {
+  local site="$1"
+  local doctype="$2"
+  local field="$3"
+  local value="${4:-}"
+  local args
+  args="$(python -c "import json,sys; print(json.dumps([sys.argv[1], sys.argv[2], sys.argv[3]]))" "$doctype" "$field" "$value")"
+  bench --site "$site" execute frappe.db.set_single_value --args "$args"
+}
 
-# ── Glific Settings → glific-stub ─────────────────────────────────────────────
+# ── tap_lms site settings ──────────────────────────────────────────────────────
+
+# RabbitMQ Settings (tap_lms's own copy — used as the submission-queue producer)
+if [[ -n "${RABBITMQ_HOST:-}" ]]; then
+  set_single_value "$SITE_NAME" "RabbitMQ Settings" host                     "${RABBITMQ_HOST:-}"
+  set_single_value "$SITE_NAME" "RabbitMQ Settings" port                     "${RABBITMQ_PORT:-5672}"
+  set_single_value "$SITE_NAME" "RabbitMQ Settings" virtual_host             "${RABBITMQ_VIRTUAL_HOST:-/}"
+  set_single_value "$SITE_NAME" "RabbitMQ Settings" username                 "${RABBITMQ_USERNAME:-guest}"
+  set_single_value "$SITE_NAME" "RabbitMQ Settings" password                 "${RABBITMQ_PASSWORD:-guest}"
+  set_single_value "$SITE_NAME" "RabbitMQ Settings" submission_queue         "${RABBITMQ_SUBMISSION_QUEUE:-}"
+  set_single_value "$SITE_NAME" "RabbitMQ Settings" plagiarism_results_queue "${RABBITMQ_PLAGIARISM_RESULTS_QUEUE:-}"
+  set_single_value "$SITE_NAME" "RabbitMQ Settings" feedback_results_queue   "${RABBITMQ_FEEDBACK_RESULTS_QUEUE:-}"
+fi
+
+# GCS Settings (tap_lms's own copy)
+set_single_value "$SITE_NAME" "GCS Settings" enabled          "${GCS_ENABLED:-0}"
+set_single_value "$SITE_NAME" "GCS Settings" bucket_name      "${GCS_BUCKET_NAME:-}"
+set_single_value "$SITE_NAME" "GCS Settings" project_id       "${GCS_PROJECT_ID:-}"
+set_single_value "$SITE_NAME" "GCS Settings" credentials_json "${GCS_CREDENTIALS_JSON:-{}}"
+
+# ElevenLabs Settings
+set_single_value "$SITE_NAME" "ElevenLabs Settings" enabled "${ELEVENLABS_ENABLED:-0}"
+set_single_value "$SITE_NAME" "ElevenLabs Settings" api_key  "${ELEVENLABS_API_KEY:-disabled-local-placeholder}"
+
+# VoiceAgentSettings
+set_single_value "$SITE_NAME" "VoiceAgentSettings" enabled                  "${VOICE_AGENT_ENABLED:-0}"
+set_single_value "$SITE_NAME" "VoiceAgentSettings" service_url              "${VOICE_AGENT_SERVICE_URL:-}"
+set_single_value "$SITE_NAME" "VoiceAgentSettings" client_id                "${VOICE_AGENT_CLIENT_ID:-}"
+set_single_value "$SITE_NAME" "VoiceAgentSettings" client_secret            "${VOICE_AGENT_CLIENT_SECRET:-}"
+set_single_value "$SITE_NAME" "VoiceAgentSettings" default_contact_group_id "${VOICE_AGENT_DEFAULT_CONTACT_GROUP_ID:-}"
+set_single_value "$SITE_NAME" "VoiceAgentSettings" agent_id                 "${VOICE_AGENT_AGENT_ID:-}"
+set_single_value "$SITE_NAME" "VoiceAgentSettings" auth_token_cache_ttl     "${VOICE_AGENT_AUTH_TOKEN_CACHE_TTL:-3600}"
+
+# Glific Settings → glific-stub
 echo "Seeding Glific Settings → glific-stub..."
-set_single_value "Glific Settings" api_url "${GLIFIC_API_URL:-http://glific-stub:4000}"
-set_single_value "Glific Settings" api_key "${GLIFIC_API_KEY:-local-stub-key}"
-
-# ── RAG Settings → tap_lms site ───────────────────────────────────────────────
-echo "Seeding RAG Settings..."
-set_single_value "RAG Settings" base_url                    "http://${SITE_NAME}:${WEB_PORT:-8000}"
-set_single_value "RAG Settings" assignment_context_endpoint "api/method/tap_lms.imgana.submission.get_assignment_context"
-set_single_value "RAG Settings" student_context_endpoint    "api/method/tap_lms.imgana.submission.get_student_details"
-set_single_value "RAG Settings" enable_caching              "0"
+set_single_value "$SITE_NAME" "Glific Settings" api_url "${GLIFIC_API_URL:-http://glific-stub:4000}"
+set_single_value "$SITE_NAME" "Glific Settings" api_key "${GLIFIC_API_KEY:-local-stub-key}"
 
 bench --site "$SITE_NAME" migrate
 bench --site "$SITE_NAME" clear-cache
+
+# ── rag_service site settings ─────────────────────────────────────────────────
+# rag_service needs its OWN RabbitMQ Settings (it consumes submission_queue and
+# publishes feedback_results_queue) and its OWN GCS Settings (it downloads
+# submission media for evaluation). These are separate doctype records living
+# in the rag_service site's DB — pointing at the same physical infra as
+# tap_lms's copies above, just not the same row.
+
+if [[ -n "${RABBITMQ_HOST:-}" ]]; then
+  set_single_value "$RAG_SITE_NAME" "RabbitMQ Settings" host                     "${RABBITMQ_HOST:-}"
+  set_single_value "$RAG_SITE_NAME" "RabbitMQ Settings" port                     "${RABBITMQ_PORT:-5672}"
+  set_single_value "$RAG_SITE_NAME" "RabbitMQ Settings" virtual_host             "${RABBITMQ_VIRTUAL_HOST:-/}"
+  set_single_value "$RAG_SITE_NAME" "RabbitMQ Settings" username                 "${RABBITMQ_USERNAME:-guest}"
+  set_single_value "$RAG_SITE_NAME" "RabbitMQ Settings" password                 "${RABBITMQ_PASSWORD:-guest}"
+  set_single_value "$RAG_SITE_NAME" "RabbitMQ Settings" submission_queue         "${RABBITMQ_SUBMISSION_QUEUE:-}"
+  set_single_value "$RAG_SITE_NAME" "RabbitMQ Settings" plagiarism_results_queue "${RABBITMQ_PLAGIARISM_RESULTS_QUEUE:-}"
+  set_single_value "$RAG_SITE_NAME" "RabbitMQ Settings" feedback_results_queue   "${RABBITMQ_FEEDBACK_RESULTS_QUEUE:-}"
+fi
+
+set_single_value "$RAG_SITE_NAME" "GCS Settings" project_id       "${GCS_PROJECT_ID:-}"
+set_single_value "$RAG_SITE_NAME" "GCS Settings" credentials_json "${GCS_CREDENTIALS_JSON:-{}}"
+
+# RAG Settings → points back at the tap_lms site over HTTP
+echo "Seeding RAG Settings..."
+set_single_value "$RAG_SITE_NAME" "RAG Settings" base_url                    "http://${SITE_NAME}:${WEB_PORT:-8000}"
+set_single_value "$RAG_SITE_NAME" "RAG Settings" assignment_context_endpoint "api/method/tap_lms.imgana.submission.get_assignment_context"
+set_single_value "$RAG_SITE_NAME" "RAG Settings" student_context_endpoint    "api/method/tap_lms.imgana.submission.get_student_details"
+set_single_value "$RAG_SITE_NAME" "RAG Settings" enable_caching              "0"
+
+bench --site "$RAG_SITE_NAME" migrate
+bench --site "$RAG_SITE_NAME" clear-cache
 
 # ── Step 4: Create separate venv & bridge for rag_service due to dependency conflicts ────────────────
 echo "Setting up rag_service isolated venv..."
@@ -171,17 +223,17 @@ PYEOF
 echo "rag_service venv bridge complete."
 
 # ── Step 5: Seed LLM Settings & RAG Secrets ───────────────────────────────────
-echo "Seeding LLM Settings & RAG Secrets..."
+echo "Seeding LLM Settings & RAG Secrets (rag_service site)..."
 
 cd /home/frappe/frappe-bench/sites
 ../env/bin/python3 - << PYEOF
 import frappe
 import frappe.utils.password as frappe_crypt
 
-frappe.init(site="$SITE_NAME")
+frappe.init(site="$RAG_SITE_NAME")
 frappe.connect()
 
-# 1. LLM Settings (Stub)
+# 1. LLM Settings (Stub) — lives on the rag_service site
 if not frappe.db.exists("LLM Settings", {"provider": "Stub"}):
     doc = frappe.new_doc("LLM Settings")
     doc.provider = "Stub"
@@ -203,7 +255,11 @@ else:
 API_KEY_VALUE = "local-dev-api-key-001"
 API_SECRET_VALUE = "local-secret-key"
 
-# 2. Update RAG Settings with API key and vault the secret key securely
+# 2. Update RAG Settings with API key and vault the secret key securely.
+#    This is what rag_service sends as the Authorization header when it
+#    calls tap_lms's get_assignment_context / get_student_details endpoints,
+#    so it must match the Administrator API key/secret seeded on the
+#    tap_lms site below.
 rag_settings = frappe.get_doc("RAG Settings", "RAG Settings")
 if rag_settings.api_key != API_KEY_VALUE:
     rag_settings.api_key = API_KEY_VALUE
@@ -219,7 +275,23 @@ frappe_crypt.set_encrypted_password(
 frappe.db.commit()
 print("✓ Seeded RAG Settings api_secret in secure vault")
 
-# 3. Update the User Profile directly with the public API key identifier
+PYEOF
+
+echo "Seeding API Credentials (tap_lms site)..."
+
+../env/bin/python3 - << PYEOF
+import frappe
+import frappe.utils.password as frappe_crypt
+
+frappe.init(site="$SITE_NAME")
+frappe.connect()
+
+API_KEY_VALUE = "local-dev-api-key-001"
+API_SECRET_VALUE = "local-secret-key"
+
+# 3. Update the User Profile directly with the public API key identifier.
+#    This is the tap_lms-side credential that incoming requests (including
+#    rag_service's calls above) authenticate against.
 user_doc = frappe.get_doc("User", "Administrator")
 if user_doc.api_key != API_KEY_VALUE:
     user_doc.api_key = API_KEY_VALUE
@@ -244,4 +316,3 @@ else:
     print(f"  API Secret already validated in vault.")
 
 PYEOF
-

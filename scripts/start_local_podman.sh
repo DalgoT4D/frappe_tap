@@ -39,6 +39,11 @@ POSTGRES_USER="${POSTGRES_USER:-postgres}"
 POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-postgres}"
 BUSINESS_THEME_REPO="${BUSINESS_THEME_REPO:-https://github.com/Midocean-Technologies/business_theme_v14.git}"
 
+# rag_service runs as its OWN Frappe site / own database (separate from
+# tap_lms), mirroring dev/prod — see frappe_tap/scripts/init.sh for details.
+RAG_SITE_NAME="${RAG_SITE_NAME:-rag.localhost}"
+RAG_POSTGRES_DB="${RAG_POSTGRES_DB:-rag_lms}"
+
 # ── Step 1: Start infrastructure + services ──────────────────────────────────
 echo "Starting infrastructure and services..."
 podman-compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --build \
@@ -94,6 +99,10 @@ POSTGRES_USER="${POSTGRES_USER:-postgres}"
 POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-postgres}"
 BUSINESS_THEME_REPO="${BUSINESS_THEME_REPO:-https://github.com/Midocean-Technologies/business_theme_v14.git}"
 
+# rag_service gets its own site / own database — separate from tap_lms.
+RAG_SITE_NAME="${RAG_SITE_NAME:-rag.localhost}"
+RAG_POSTGRES_DB="${RAG_POSTGRES_DB:-rag_lms}"
+
 if [[ ! -d /home/frappe/frappe-bench/apps/frappe ]]; then
   if [[ -n "$(find /home/frappe/frappe-bench -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
     echo "/home/frappe/frappe-bench is not empty but Frappe is missing."
@@ -134,17 +143,9 @@ if [[ ! -d apps/business_theme_v14 ]]; then
   bench get-app "$BUSINESS_THEME_REPO"
 fi
 
-if [[ ! -d "sites/$SITE_NAME" ]]; then
-  bench new-site "$SITE_NAME" \
-    --db-type postgres \
-    --db-host postgres \
-    --db-port 5432 \
-    --db-root-username "$POSTGRES_USER" \
-    --db-root-password "$POSTGRES_PASSWORD" \
-    --admin-password "$ADMIN_PASSWORD"
-fi
-
-# add the rag_service to the apps.txt file else bench new-site command will fail
+# apps.txt lists every app available in the bench (needed so `bench new-site`
+# does not choke when either site installs rag_service) — it is NOT where
+# per-site installation is decided, that happens via install-app below.
 echo "frappe
 tap_lms
 business_theme_v14
@@ -155,10 +156,19 @@ tap_lms
 business_theme_v14
 rag_service" > sites/apps.txt
 
-# Run migrations and explicit builds now that manifest maps are established
+# ── tap_lms site ──────────────────────────────────────────────────────────────
+if [[ ! -d "sites/$SITE_NAME" ]]; then
+  bench new-site "$SITE_NAME" \
+    --db-type postgres \
+    --db-host postgres \
+    --db-port 5432 \
+    --db-root-username "$POSTGRES_USER" \
+    --db-root-password "$POSTGRES_PASSWORD" \
+    --admin-password "$ADMIN_PASSWORD"
+fi
+
 bench --site "$SITE_NAME" install-app tap_lms
 bench --site "$SITE_NAME" install-app business_theme_v14
-bench --site "$SITE_NAME" install-app rag_service
 bench --site "$SITE_NAME" migrate
 
 bench build --app tap_lms
@@ -167,61 +177,104 @@ bench build --app business_theme_v14
 bench --site "$SITE_NAME" set-config developer_mode 1
 bench --site "$SITE_NAME" set-config host_name "http://${SITE_NAME}:${WEB_PORT:-8000}"
 
-# ── Helper ────────────────────────────────────────────────────────────────────
-set_single_value() {
-  local doctype="$1"
-  local field="$2"
-  local value="${3:-}"
-  local args
-  args="$(python -c "import json,sys; print(json.dumps([sys.argv[1], sys.argv[2], sys.argv[3]]))" "$doctype" "$field" "$value")"
-  bench --site "$SITE_NAME" execute frappe.db.set_single_value --args "$args"
-}
-
-# ── RabbitMQ Settings ─────────────────────────────────────────────────────────
-if [[ -n "${RABBITMQ_HOST:-}" ]]; then
-  set_single_value "RabbitMQ Settings" host                     "${RABBITMQ_HOST:-}"
-  set_single_value "RabbitMQ Settings" port                     "${RABBITMQ_PORT:-5672}"
-  set_single_value "RabbitMQ Settings" virtual_host             "${RABBITMQ_VIRTUAL_HOST:-/}"
-  set_single_value "RabbitMQ Settings" username                 "${RABBITMQ_USERNAME:-guest}"
-  set_single_value "RabbitMQ Settings" password                 "${RABBITMQ_PASSWORD:-guest}"
-  set_single_value "RabbitMQ Settings" submission_queue         "${RABBITMQ_SUBMISSION_QUEUE:-}"
-  set_single_value "RabbitMQ Settings" plagiarism_results_queue "${RABBITMQ_PLAGIARISM_RESULTS_QUEUE:-}"
-  set_single_value "RabbitMQ Settings" feedback_results_queue   "${RABBITMQ_FEEDBACK_RESULTS_QUEUE:-}"
+# ── rag_service site (separate DB, same Postgres instance) ──────────────────
+if [[ ! -d "sites/$RAG_SITE_NAME" ]]; then
+  bench new-site "$RAG_SITE_NAME" \
+    --db-type postgres \
+    --db-host postgres \
+    --db-port 5432 \
+    --db-name "$RAG_POSTGRES_DB" \
+    --db-root-username "$POSTGRES_USER" \
+    --db-root-password "$POSTGRES_PASSWORD" \
+    --admin-password "$ADMIN_PASSWORD"
 fi
 
-# ── GCS Settings ──────────────────────────────────────────────────────────────
-set_single_value "GCS Settings" enabled          "${GCS_ENABLED:-0}"
-set_single_value "GCS Settings" bucket_name      "${GCS_BUCKET_NAME:-}"
-set_single_value "GCS Settings" project_id       "${GCS_PROJECT_ID:-}"
-set_single_value "GCS Settings" credentials_json "${GCS_CREDENTIALS_JSON:-{}}"
+bench --site "$RAG_SITE_NAME" install-app rag_service
+bench --site "$RAG_SITE_NAME" migrate
+bench --site "$RAG_SITE_NAME" set-config developer_mode 1
 
-# ── ElevenLabs Settings ───────────────────────────────────────────────────────
-set_single_value "ElevenLabs Settings" enabled "${ELEVENLABS_ENABLED:-0}"
-set_single_value "ElevenLabs Settings" api_key  "${ELEVENLABS_API_KEY:-disabled-local-placeholder}"
+# ── Helper ────────────────────────────────────────────────────────────────────
+# Takes the site as the first arg so it can target either site.
+set_single_value() {
+  local site="$1"
+  local doctype="$2"
+  local field="$3"
+  local value="${4:-}"
+  local args
+  args="$(python -c "import json,sys; print(json.dumps([sys.argv[1], sys.argv[2], sys.argv[3]]))" "$doctype" "$field" "$value")"
+  bench --site "$site" execute frappe.db.set_single_value --args "$args"
+}
 
-# ── VoiceAgentSettings ────────────────────────────────────────────────────────
-set_single_value "VoiceAgentSettings" enabled                  "${VOICE_AGENT_ENABLED:-0}"
-set_single_value "VoiceAgentSettings" service_url              "${VOICE_AGENT_SERVICE_URL:-}"
-set_single_value "VoiceAgentSettings" client_id                "${VOICE_AGENT_CLIENT_ID:-}"
-set_single_value "VoiceAgentSettings" client_secret            "${VOICE_AGENT_CLIENT_SECRET:-}"
-set_single_value "VoiceAgentSettings" default_contact_group_id "${VOICE_AGENT_DEFAULT_CONTACT_GROUP_ID:-}"
-set_single_value "VoiceAgentSettings" agent_id                 "${VOICE_AGENT_AGENT_ID:-}"
-set_single_value "VoiceAgentSettings" auth_token_cache_ttl     "${VOICE_AGENT_AUTH_TOKEN_CACHE_TTL:-3600}"
+# ── tap_lms site settings ─────────────────────────────────────────────────────
 
-# ── Glific Settings → glific-stub ─────────────────────────────────────────────
+# RabbitMQ Settings (tap_lms'"'"'s own copy — submission-queue producer)
+if [[ -n "${RABBITMQ_HOST:-}" ]]; then
+  set_single_value "$SITE_NAME" "RabbitMQ Settings" host                     "${RABBITMQ_HOST:-}"
+  set_single_value "$SITE_NAME" "RabbitMQ Settings" port                     "${RABBITMQ_PORT:-5672}"
+  set_single_value "$SITE_NAME" "RabbitMQ Settings" virtual_host             "${RABBITMQ_VIRTUAL_HOST:-/}"
+  set_single_value "$SITE_NAME" "RabbitMQ Settings" username                 "${RABBITMQ_USERNAME:-guest}"
+  set_single_value "$SITE_NAME" "RabbitMQ Settings" password                 "${RABBITMQ_PASSWORD:-guest}"
+  set_single_value "$SITE_NAME" "RabbitMQ Settings" submission_queue         "${RABBITMQ_SUBMISSION_QUEUE:-}"
+  set_single_value "$SITE_NAME" "RabbitMQ Settings" plagiarism_results_queue "${RABBITMQ_PLAGIARISM_RESULTS_QUEUE:-}"
+  set_single_value "$SITE_NAME" "RabbitMQ Settings" feedback_results_queue   "${RABBITMQ_FEEDBACK_RESULTS_QUEUE:-}"
+fi
+
+# GCS Settings (tap_lms'"'"'s own copy)
+set_single_value "$SITE_NAME" "GCS Settings" enabled          "${GCS_ENABLED:-0}"
+set_single_value "$SITE_NAME" "GCS Settings" bucket_name      "${GCS_BUCKET_NAME:-}"
+set_single_value "$SITE_NAME" "GCS Settings" project_id       "${GCS_PROJECT_ID:-}"
+set_single_value "$SITE_NAME" "GCS Settings" credentials_json "${GCS_CREDENTIALS_JSON:-{}}"
+
+# ElevenLabs Settings
+set_single_value "$SITE_NAME" "ElevenLabs Settings" enabled "${ELEVENLABS_ENABLED:-0}"
+set_single_value "$SITE_NAME" "ElevenLabs Settings" api_key  "${ELEVENLABS_API_KEY:-disabled-local-placeholder}"
+
+# VoiceAgentSettings
+set_single_value "$SITE_NAME" "VoiceAgentSettings" enabled                  "${VOICE_AGENT_ENABLED:-0}"
+set_single_value "$SITE_NAME" "VoiceAgentSettings" service_url              "${VOICE_AGENT_SERVICE_URL:-}"
+set_single_value "$SITE_NAME" "VoiceAgentSettings" client_id                "${VOICE_AGENT_CLIENT_ID:-}"
+set_single_value "$SITE_NAME" "VoiceAgentSettings" client_secret            "${VOICE_AGENT_CLIENT_SECRET:-}"
+set_single_value "$SITE_NAME" "VoiceAgentSettings" default_contact_group_id "${VOICE_AGENT_DEFAULT_CONTACT_GROUP_ID:-}"
+set_single_value "$SITE_NAME" "VoiceAgentSettings" agent_id                 "${VOICE_AGENT_AGENT_ID:-}"
+set_single_value "$SITE_NAME" "VoiceAgentSettings" auth_token_cache_ttl     "${VOICE_AGENT_AUTH_TOKEN_CACHE_TTL:-3600}"
+
+# Glific Settings → glific-stub
 echo "Seeding Glific Settings → glific-stub..."
-set_single_value "Glific Settings" api_url "${GLIFIC_API_URL:-http://glific-stub:4000}"
-set_single_value "Glific Settings" api_key "${GLIFIC_API_KEY:-local-stub-key}"
-
-# ── RAG Settings → tap_lms site ───────────────────────────────────────────────
-echo "Seeding RAG Settings..."
-set_single_value "RAG Settings" base_url                    "http://${SITE_NAME}:${WEB_PORT:-8000}"
-set_single_value "RAG Settings" assignment_context_endpoint "api/method/tap_lms.imgana.submission.get_assignment_context"
-set_single_value "RAG Settings" student_context_endpoint    "api/method/tap_lms.imgana.submission.get_student_details"
-set_single_value "RAG Settings" enable_caching              "0"
+set_single_value "$SITE_NAME" "Glific Settings" api_url "${GLIFIC_API_URL:-http://glific-stub:4000}"
+set_single_value "$SITE_NAME" "Glific Settings" api_key "${GLIFIC_API_KEY:-local-stub-key}"
 
 bench --site "$SITE_NAME" migrate
 bench --site "$SITE_NAME" clear-cache
+
+# ── rag_service site settings ─────────────────────────────────────────────────
+# rag_service needs its OWN RabbitMQ Settings (consumes submission_queue,
+# publishes feedback_results_queue) and OWN GCS Settings (downloads
+# submission media) — separate doctype records in its own DB, pointing at
+# the same physical infra as the tap_lms copies above.
+
+if [[ -n "${RABBITMQ_HOST:-}" ]]; then
+  set_single_value "$RAG_SITE_NAME" "RabbitMQ Settings" host                     "${RABBITMQ_HOST:-}"
+  set_single_value "$RAG_SITE_NAME" "RabbitMQ Settings" port                     "${RABBITMQ_PORT:-5672}"
+  set_single_value "$RAG_SITE_NAME" "RabbitMQ Settings" virtual_host             "${RABBITMQ_VIRTUAL_HOST:-/}"
+  set_single_value "$RAG_SITE_NAME" "RabbitMQ Settings" username                 "${RABBITMQ_USERNAME:-guest}"
+  set_single_value "$RAG_SITE_NAME" "RabbitMQ Settings" password                 "${RABBITMQ_PASSWORD:-guest}"
+  set_single_value "$RAG_SITE_NAME" "RabbitMQ Settings" submission_queue         "${RABBITMQ_SUBMISSION_QUEUE:-}"
+  set_single_value "$RAG_SITE_NAME" "RabbitMQ Settings" plagiarism_results_queue "${RABBITMQ_PLAGIARISM_RESULTS_QUEUE:-}"
+  set_single_value "$RAG_SITE_NAME" "RabbitMQ Settings" feedback_results_queue   "${RABBITMQ_FEEDBACK_RESULTS_QUEUE:-}"
+fi
+
+set_single_value "$RAG_SITE_NAME" "GCS Settings" project_id       "${GCS_PROJECT_ID:-}"
+set_single_value "$RAG_SITE_NAME" "GCS Settings" credentials_json "${GCS_CREDENTIALS_JSON:-{}}"
+
+# RAG Settings → points back at the tap_lms site over HTTP
+echo "Seeding RAG Settings..."
+set_single_value "$RAG_SITE_NAME" "RAG Settings" base_url                    "http://${SITE_NAME}:${WEB_PORT:-8000}"
+set_single_value "$RAG_SITE_NAME" "RAG Settings" assignment_context_endpoint "api/method/tap_lms.imgana.submission.get_assignment_context"
+set_single_value "$RAG_SITE_NAME" "RAG Settings" student_context_endpoint    "api/method/tap_lms.imgana.submission.get_student_details"
+set_single_value "$RAG_SITE_NAME" "RAG Settings" enable_caching              "0"
+
+bench --site "$RAG_SITE_NAME" migrate
+bench --site "$RAG_SITE_NAME" clear-cache
 ' # <--- This ends the massive Step 3 single-quoted container block cleanly!
 
 # ── Step 4: Create separate venv & bridge for rag_service due to dependency conflicts ────────────────
@@ -259,7 +312,7 @@ OUTEREOF
 echo "rag_service venv bridge complete."
 
 # ── Step 5: Seed LLM Settings & RAG Secrets ───────────────────────────────────
-echo "Seeding LLM Settings & RAG Secrets..."
+echo "Seeding LLM Settings & RAG Secrets (rag_service site)..."
 
 podman-compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T dev-lms bash << EOF
 set -euo pipefail
@@ -268,10 +321,10 @@ cd /home/frappe/frappe-bench/sites
 import frappe
 import frappe.utils.password as frappe_crypt
 
-frappe.init(site="$SITE_NAME")
+frappe.init(site="$RAG_SITE_NAME")
 frappe.connect()
 
-# 1. LLM Settings (Stub)
+# 1. LLM Settings (Stub) — lives on the rag_service site
 if not frappe.db.exists("LLM Settings", {"provider": "Stub"}):
     doc = frappe.new_doc("LLM Settings")
     doc.provider = "Stub"
@@ -293,7 +346,10 @@ else:
 API_KEY_VALUE = "local-dev-api-key-001"
 API_SECRET_VALUE = "local-secret-key"
 
-# 2. Update RAG Settings with API key and vault the secret key securely
+# 2. Update RAG Settings with API key and vault the secret key securely.
+#    Must match the Administrator API key/secret seeded on the tap_lms site
+#    below — this is what rag_service sends as the Authorization header when
+#    calling tap_lms's get_assignment_context / get_student_details.
 rag_settings = frappe.get_doc("RAG Settings", "RAG Settings")
 if rag_settings.api_key != API_KEY_VALUE:
     rag_settings.api_key = API_KEY_VALUE
@@ -311,11 +367,64 @@ print("✓ Seeded RAG Settings api_secret in secure vault")
 PYEOF
 EOF
 
+echo "Seeding API Credentials (tap_lms site)..."
+
+podman-compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T dev-lms bash << EOF
+set -euo pipefail
+cd /home/frappe/frappe-bench/sites
+../env/bin/python3 - << 'PYEOF'
+import frappe
+import frappe.utils.password as frappe_crypt
+
+frappe.init(site="$SITE_NAME")
+frappe.connect()
+
+API_KEY_VALUE = "local-dev-api-key-001"
+API_SECRET_VALUE = "local-secret-key"
+
+# 3. Update the User Profile directly with the public API key identifier.
+#    This is the tap_lms-side credential that incoming requests (including
+#    rag_service's calls above) authenticate against.
+user_doc = frappe.get_doc("User", "Administrator")
+if user_doc.api_key != API_KEY_VALUE:
+    user_doc.api_key = API_KEY_VALUE
+    user_doc.save(ignore_permissions=True)
+    frappe.db.commit()
+    print(f"✓ Public API Key bound to User Profile: {API_KEY_VALUE}")
+else:
+    print(f"  Public API Key already set on User Profile: {API_KEY_VALUE}")
+
+# 4. Force-inject the crypted Secret password block into Frappe's security vault for Administrator
+current_secret = frappe_crypt.get_decrypted_password(
+    "User", "Administrator", "api_secret", raise_exception=False
+)
+
+if current_secret != API_SECRET_VALUE:
+    frappe_crypt.set_encrypted_password(
+        "User", "Administrator", API_SECRET_VALUE, "api_secret"
+    )
+    frappe.db.commit()
+    print(f"✓ API Secret encrypted and vaulted securely: {API_SECRET_VALUE}")
+else:
+    print(f"  API Secret already validated in vault.")
+PYEOF
+EOF
+
 # ── Step 6: Create seed data ──────────────────────────────────────────────────────────
-echo "Running seed_local.py..."
+echo "Running seed_local.py (tap_lms site)..."
 podman-compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T dev-lms bash -lc '
   cd /home/frappe/frappe-bench/sites && \
-  ../env/bin/python3 -c "import frappe; frappe.init(\"tap_lms.localhost\"); frappe.connect(); import sys; sys.path.insert(0, \"/workspace/frappe_tap\"); import scripts.seed_local"
+  SITE_NAME="${SITE_NAME:-tap_lms.localhost}" \
+  ../env/bin/python3 -c "import sys; sys.path.insert(0, \"/workspace/frappe_tap\"); import scripts.seed_local"
+'
+
+echo "Running seed_local_rag.py (rag_service site)..."
+podman-compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T dev-lms bash -lc '
+  cd /home/frappe/frappe-bench/sites && \
+  SITE_NAME="${SITE_NAME:-tap_lms.localhost}" \
+  RAG_SITE_NAME="${RAG_SITE_NAME:-rag.localhost}" \
+  WEB_PORT="${WEB_PORT:-8000}" \
+  ../env/bin/python3 -c "import sys; sys.path.insert(0, \"/workspace/frappe_tap\"); import scripts.seed_local_rag"
 '
 
 echo "Initializing Plagiarism Database..."
@@ -330,6 +439,7 @@ Local TAP LMS testbed is ready.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   Frappe LMS Service (tap_lms)    →  http://${SITE_NAME}:${WEB_PORT:-8000}
+  Frappe RAG Service (rag)        →  http://${RAG_SITE_NAME}:${WEB_PORT:-8000}  (own DB: ${RAG_POSTGRES_DB})
   tap_plg API (Real ML Service)   →  http://localhost:${TAP_PLG_API_PORT:-8080}
   RabbitMQ management UI          →  http://localhost:15672  (guest / guest)
   LLM stub                        →  http://localhost:${LLM_STUB_PORT:-8001}
@@ -346,9 +456,10 @@ Next steps:
    podman-compose --env-file env.local -f ./frappe_tap/docker/local/docker-compose.local.yml \\
      exec dev-lms bash -lc "cd /home/frappe/frappe-bench && bench start"
 
-2. Start your RAG Worker Consumer (Feedback Generator):
+2. Start your RAG Worker Consumer (Feedback Generator) — note it now connects
+   to the rag_service site (${RAG_SITE_NAME}), not tap_lms:
    podman-compose --env-file env.local -f ./frappe_tap/docker/local/docker-compose.local.yml \\
-     exec dev-lms bash -lc "cd /home/frappe/frappe-bench/sites/ && ../env/bin/python -c \"import frappe; frappe.init('tap_lms.localhost'); frappe.connect(); import rag_service.scripts.console_consumer as cc; cc.run()\""
+     exec dev-lms bash -lc "cd /home/frappe/frappe-bench/sites/ && SITE_NAME=${RAG_SITE_NAME} ../env/bin/python -c \"import rag_service.scripts.console_consumer as cc; cc.run()\""
 
 2a. Start the LMS Submission consumer (Updates state):
     podman-compose --env-file env.local -f ./frappe_tap/docker/local/docker-compose.local.yml \\

@@ -1,8 +1,13 @@
 """
-Seed script for local development.
+Seed script for local development — tap_lms site.
 Creates the minimal fixtures needed to exercise both submission flows:
   - Flow 1: save_submission (Summer Program)
   - Flow 2: submit_artwork (imgana, legacy)
+
+rag_service now runs as its own Frappe site with its own DB (mirroring
+dev/prod), so its fixtures (Prompt Segment/Template, RAG Settings) live in
+scripts/seed_local_rag.py instead — run that against RAG_SITE_NAME after
+this one. This script only seeds tap_lms-owned doctypes.
 
 Run from inside the bench environment:
     cd /path/to/frappe-bench
@@ -13,11 +18,14 @@ Prints the IDs you'll need for the test script.
 """
 
 import json
+import os
 
 import frappe
 from frappe.utils import add_days, today
 
-frappe.init("tap_lms.localhost")
+SITE_NAME = os.environ.get("SITE_NAME", "tap_lms.localhost")
+
+frappe.init(SITE_NAME)
 frappe.connect()
 frappe.set_user("Administrator")
 
@@ -174,67 +182,13 @@ for skill_name in SKILLS:
     else:
         print(f"  Skill already exists: {skill_name}")
 
-# ── 6. Prompt Templates (rag_service) ───────────────────────
-print("\nSeeding Prompt Templates...")
+# ── 6. (rag_service Prompt Templates moved to seed_local_rag.py) ─────────────
+# Prompt Segment / Prompt Template are rag_service doctypes and now live on
+# RAG_SITE_NAME's own database. Run scripts/seed_local_rag.py against that
+# site to seed them — see that file for the matching template/segments used
+# by Assignment "MockAssign-Basic" above (course_vertical="Arts",
+# activity_type="Regular", media_type="image", prompt_type="both").
 
-
-def create_segment(name, seg_type, content):
-    if not frappe.db.exists("Prompt Segment", name):
-        doc = frappe.new_doc("Prompt Segment")
-        doc.segment_name = name
-        doc.segment_type = seg_type
-        doc.content = content
-        doc.is_active = 1
-        doc.insert(ignore_permissions=True)
-        frappe.db.commit()
-        return name
-    return name
-
-
-sys_seg = create_segment(
-    "Local System",
-    "system",
-    "You are an expert art teacher. Provide feedback on {assignment_name}.",
-)
-grad_seg = create_segment(
-    "Local Grading", "grading", "Evaluate the following rubrics: {rubric_criteria}"
-)
-subj_seg = create_segment(
-    "Local Subject", "subject", "Assignment Description: {assignment_description}"
-)
-out_seg = create_segment("Local Output", "output", "Format your response as JSON.")
-
-TEMPLATE_NAME = "Local Image Template"
-if not frappe.db.exists("Prompt Template", TEMPLATE_NAME):
-    template = frappe.new_doc("Prompt Template")
-    template.template_name = TEMPLATE_NAME
-    template.assignment_type = "Practical"
-    template.course_vertical = VERTICAL_LABEL
-    template.media_type = "image"
-    template.prompt_type = "both"
-    template.activity_type = "Regular"
-    template.system_segment = sys_seg
-    template.grading_segment = grad_seg
-    template.subject_segment = subj_seg
-    template.output_segment = out_seg
-    template.response_format = json.dumps(
-        {
-            "rubric_evaluations": [],
-            "strengths": [],
-            "areas_for_improvement": [],
-            "encouragement": "",
-            "overall_feedback": "",
-            "overall_feedback_translated": "",
-            "learning_objectives_feedback": [],
-            "final_grade": 0,
-        }
-    )
-    template.is_active = 1
-    template.insert(ignore_permissions=True)
-    frappe.db.commit()
-    print(f"✓ Prompt Template created: {TEMPLATE_NAME}")
-else:
-    print(f"  Prompt Template already exists: {TEMPLATE_NAME}")
 
 # ── 7. API Key (for submit_artwork flow) ────────────────────
 API_KEY_VALUE = "local-dev-api-key-001"
@@ -266,26 +220,9 @@ if current_secret != API_SECRET_VALUE:
 else:
     print(f"  API Secret already validated in vault.")
 
-rag_settings = frappe.get_doc("RAG Settings", "RAG Settings")
-rag_settings.base_url = "http://tap_lms.localhost:8000"
-rag_settings.assignment_context_endpoint = (
-    "api/method/tap_lms.imgana.submission.get_assignment_context"
-)
-rag_settings.student_context_endpoint = (
-    "api/method/tap_lms.imgana.submission.get_student_details"
-)
-rag_settings.enable_caching = 0
-rag_settings.api_key = API_KEY_VALUE
-rag_settings.save(ignore_permissions=True)
-
-# Securely vault the secret key onto RAG Settings too
-frappe_crypt.set_encrypted_password(
-    "RAG Settings", "RAG Settings", API_SECRET_VALUE, "api_secret"
-)
-
-frappe.db.commit()
-frappe.clear_cache()
-print("✓ RAG Settings configured")
+# RAG Settings (rag_service doctype) now lives on RAG_SITE_NAME — see
+# scripts/seed_local_rag.py, which seeds it with this same API_KEY_VALUE so
+# rag_service's calls back to this site authenticate correctly.
 
 # ── Summary ─────────────────────────────────────────────────
 print("\n=== Seed complete. Use these values in test_submissions.py ===")
