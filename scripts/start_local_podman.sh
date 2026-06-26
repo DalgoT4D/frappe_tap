@@ -475,7 +475,7 @@ Next steps:
     exec dev-lms bash -lc "cd /home/frappe/frappe-bench/sites/ && ../env/bin/python ../apps/tap_lms/scripts/console_consumer.py"
 
 2b. Watch Plagiarism Worker logs (ML model loading takes 1-2 mins):
-    podman-compose --env-file env.local -f ./frappe_tap/docker/local/docker-compose.local.yml \\
+    podman-compose --env-file ./frappe_tap/env.local -f ./frappe_tap/docker/local/docker-compose.local.yml \\
     logs -f tap_plg_worker
 
 2c. Development (Hot Reloading):
