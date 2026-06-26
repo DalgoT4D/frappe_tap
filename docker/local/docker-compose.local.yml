@@ -120,11 +120,11 @@ services:
             dockerfile: Dockerfile
         container_name: tap_lms_plg_worker
         environment:
-            RABBITMQ_HOST: rabbitmq
-            RABBITMQ_PORT: 5672
-            RABBITMQ_USER: guest
-            RABBITMQ_PASS: guest
-            RABBITMQ_VHOST: /
+            RABBITMQ_HOST: "${RABBITMQ_HOST:-rabbitmq}"
+            RABBITMQ_PORT: "${RABBITMQ_PORT:-5672}"
+            RABBITMQ_USER: "${RABBITMQ_USERNAME:-guest}"
+            RABBITMQ_PASS: "${RABBITMQ_PASSWORD:-guest}"
+            RABBITMQ_VHOST: "${RABBITMQ_VIRTUAL_HOST:-/}"
             SUBMISSION_QUEUE: "${RABBITMQ_SUBMISSION_QUEUE:-submission_queue}"
             FEEDBACK_QUEUE: "${RABBITMQ_PLAGIARISM_RESULTS_QUEUE:-plagiarism_feedback}"
             POSTGRES_HOST: tap_plg_postgres
@@ -170,11 +170,11 @@ services:
                 "--reload",
             ]
         environment:
-            RABBITMQ_HOST: rabbitmq
-            RABBITMQ_PORT: 5672
-            RABBITMQ_USER: guest
-            RABBITMQ_PASS: guest
-            RABBITMQ_VHOST: /
+            RABBITMQ_HOST: "${RABBITMQ_HOST:-rabbitmq}"
+            RABBITMQ_PORT: "${RABBITMQ_PORT:-5672}"
+            RABBITMQ_USER: "${RABBITMQ_USERNAME:-guest}"
+            RABBITMQ_PASS: "${RABBITMQ_PASSWORD:-guest}"
+            RABBITMQ_VHOST: "${RABBITMQ_VIRTUAL_HOST:-/}"
             SUBMISSION_QUEUE: "${RABBITMQ_SUBMISSION_QUEUE:-submission_queue}"
             FEEDBACK_QUEUE: "${RABBITMQ_PLAGIARISM_RESULTS_QUEUE:-plagiarism_feedback}"
             APP_ENV: dev
