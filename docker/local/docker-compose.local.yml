@@ -20,10 +20,16 @@ services:
             context: ../..
             dockerfile: docker/local/Dockerfile
         container_name: tap_lms_dev
-        command: sleep infinity
+        # Runs the idempotent bootstrap, then bench + both consumers, so a
+        # plain `podman-compose up` is enough on its own — no more manual
+        # `exec ... bash -lc '...'` steps required after the containers exist.
+        # Override with `command: sleep infinity` if you'd rather exec in
+        # and drive things by hand.
+        command: ["bash", "/workspace/frappe_tap/scripts/entrypoint.sh"]
+        restart: on-failure
         depends_on:
             postgres:
-                condition: service_started
+                condition: service_healthy
             redis-cache:
                 condition: service_started
             redis-queue:
@@ -43,6 +49,11 @@ services:
             GLIFIC_API_URL: http://glific-stub:4000
             APP_ENV: dev
             STUB_MODE: "0"
+            # rag_service's isolated venv reuses downloaded wheels across
+            # rebuilds via this cache, so even a forced reinstall (changed
+            # requirements.txt) doesn't re-download numpy/opencv/etc. from
+            # the network every time.
+            PIP_CACHE_DIR: /home/frappe/.cache/pip
         ports:
             - "${WEB_PORT:-8000}:8000"
             - "${SOCKETIO_PORT:-9000}:9000"
@@ -50,6 +61,11 @@ services:
             - bench-data:/home/frappe/frappe-bench
             - ../..:/workspace/frappe_tap:cached,z
             - ../../../rag_service:/workspace/rag_service:cached,z
+            # Named volumes so the rag_service venv and its pip download
+            # cache survive container recreation (down/up, --build, etc.)
+            # instead of being rebuilt from scratch every time.
+            - rag-venv-data:/home/frappe/rag_venv
+            - ~/.cache/pip-docker-cache:/home/frappe/.cache/pip:z
         working_dir: /home/frappe
 
     # ── PostgreSQL (Frappe) ────────────────────────────────────────────────────
@@ -151,7 +167,6 @@ services:
         volumes:
             - ../../../tap_plg:/app:cached,z
             - tap_plg_model_cache:/root/.cache:z
-        restart: on-failure
 
     # ── tap_plg API ────────────────────────────────────────────────────────────
     tap_plg_api:
@@ -192,7 +207,6 @@ services:
             interval: 10s
             timeout: 5s
             retries: 5
-        restart: on-failure
 
     # ── LLM stub ──────────────────────────────────────────────────────────────
     # Replaces OpenAI / TogetherAI / Vertex AI.
@@ -252,3 +266,5 @@ volumes:
     postgres-data:
     tap_plg_postgres_data:
     tap_plg_model_cache:
+    rag-venv-data:
+    pip-cache:
