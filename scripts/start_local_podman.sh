@@ -76,7 +76,7 @@ _wait_for_port "Frappe (dev-lms)" "${WEB_PORT:-8000}"
 cat <<EOF
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Local TAP LMS testbed is ready.
+Local TAP LMS testbed is coming up. Use the commands below to check the logs for status!
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   Frappe LMS Service (tap_lms)    ->  http://${SITE_NAME}:${WEB_PORT:-8000}
