@@ -156,19 +156,18 @@ if [[ -x "$RAG_VENV/bin/python3" ]] && [[ -f "$RAG_HASH_FILE" ]] && [[ "$(cat "$
 else
   echo "  Installing rag_service dependencies (venv missing or requirements.txt changed)..."
 
-  # Build securely in a temporary directory, swap only on 100% success
-  TMP_VENV="/home/frappe/rag_venv_tmp"
-  rm -rf "$TMP_VENV"
-  python3 -m venv "$TMP_VENV"
-  "$TMP_VENV/bin/pip" install -r "$RAG_REQ_FILE"
-  echo "$CURRENT_HASH" > "$TMP_VENV/.requirements.sha256"
+  # Clean up old dependencies safely without breaking the mount directory permissions
+  rm -rf "${RAG_VENV:?}/bin" "${RAG_VENV:?}/lib" "${RAG_VENV:?}/include" "${RAG_VENV:?}/share" 2>/dev/null || true
 
-  # Clean the CONTENTS of the directory instead of trying to delete the mounted folder, which causes the container to crash
-  find "$RAG_VENV" -mindepth 1 -delete 2>/dev/null || true
+  # Re-initialize the virtual environment directly inside the persistent mount path
+  python3 -m venv "$RAG_VENV"
 
-  # copy tmp contents to the RAG env
-  cp -a "$TMP_VENV/." "$RAG_VENV/"
-  rm -rf "$TMP_VENV"
+  # Install packages using the persistent host pip-cache
+  "$RAG_VENV/bin/pip" install --upgrade pip setuptools wheel
+  "$RAG_VENV/bin/pip" install -r "$RAG_REQ_FILE"
+
+  # store the requirements hash for next time
+  echo "$CURRENT_HASH" > "$RAG_VENV/.requirements.sha256"
   echo "----- Finished installing rag_service dependencies... ----"
 fi
 
@@ -251,6 +250,21 @@ if current_secret != API_SECRET_VALUE:
     frappe_crypt.set_encrypted_password("User", "Administrator", API_SECRET_VALUE, "api_secret")
     frappe.db.commit()
     print(f"API Secret encrypted and vaulted securely: {API_SECRET_VALUE}")
+
+# Create the matching "API Key" table record for the submission custom authentication function
+if not frappe.db.exists("API Key", {"key": API_KEY_VALUE}):
+    api_key_doc = frappe.new_doc("API Key")
+    api_key_doc.key = API_KEY_VALUE
+    api_key_doc.user = "Administrator"
+    api_key_doc.enabled = 1
+    api_key_doc.insert(ignore_permissions=True)
+    frappe.db.commit()
+    print(f"✅ Generated mandatory Custom API Key Ledger Record for: {API_KEY_VALUE}")
+else:
+    frappe.db.set_value("API Key", {"key": API_KEY_VALUE}, "enabled", 1)
+    frappe.db.commit()
+    print(f"API Key Ledger Record already exists and is active.")
+
 PYEOF
 
 # ── Step G: seed data (scripts are self-guarded / idempotent) ──────────────

@@ -65,7 +65,10 @@ services:
             # cache survive container recreation (down/up, --build, etc.)
             # instead of being rebuilt from scratch every time.
             - rag-venv-data:/home/frappe/rag_venv
-            - ~/.cache/pip-docker-cache:/home/frappe/.cache/pip:z
+            # Mount the local folder for pip cache so it survives
+            # volume deletions. the :U flag changes the UID/GID to
+            # that of the container.
+            - ~/.cache/pip-docker-cache:/home/frappe/.cache/pip:z,U
         working_dir: /home/frappe
 
     # ── PostgreSQL (Frappe) ────────────────────────────────────────────────────

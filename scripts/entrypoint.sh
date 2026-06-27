@@ -31,19 +31,19 @@ cd /home/frappe/frappe-bench
 echo "── Starting bench, RAG consumer, and LMS submission consumer ──"
 
 bench start &
-BENCH_PID=$!
+BENCH_PID=$! # gets the PID of the bench start command so we can kill it later
 
 (
   cd sites
   SITE_NAME="$RAG_SITE_NAME" ../env/bin/python -c "import rag_service.scripts.console_consumer as cc; cc.run()"
 ) &
-RAG_CONSUMER_PID=$!
+RAG_CONSUMER_PID=$! # gets the PID of the plagiarism_feedback listener
 
 (
   cd sites
   ../env/bin/python ../apps/tap_lms/scripts/console_consumer.py
 ) &
-LMS_CONSUMER_PID=$!
+LMS_CONSUMER_PID=$! # gets the PID of the feedbacks_queue listener
 
 cleanup() {
   echo "Shutting down..."
