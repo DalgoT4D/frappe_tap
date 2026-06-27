@@ -3,7 +3,9 @@ import json
 import os
 from datetime import datetime
 from typing import Any, Dict, Optional, Tuple
+
 import frappe
+
 from tap_lms.feedback_handler.audio_creation import generate_feedback_audio
 
 _STOCK_FEEDBACK_CACHE: Optional[Dict[str, Any]] = None
@@ -28,7 +30,9 @@ def _load_stock_feedback_data() -> Dict[str, Any]:
     return _STOCK_FEEDBACK_CACHE
 
 
-def get_stock_feedback_and_audio(plagiarism_status: str, translation_language: str) -> Dict[str, Optional[str]]:
+def get_stock_feedback_and_audio(
+    plagiarism_status: str, translation_language: str
+) -> Dict[str, Optional[str]]:
     status_to_message_type = {
         "Flagged - AI Generated": "invalid_submission_ai",
         "Flagged - Peer Plagiarism": "invalid_submission_peer_plagiarism",
@@ -36,11 +40,13 @@ def get_stock_feedback_and_audio(plagiarism_status: str, translation_language: s
         "Flagged - Exact Match": "invalid_submission_peer_plagiarism",
         "Flagged - Near Duplicate": "invalid_submission_peer_plagiarism",
         "Flagged - Semantic Match": "invalid_submission_peer_plagiarism",
-        "Flagged - Reference Plagiarism" : "invalid_submission_reference_plagiarism",
+        "Flagged - Reference Plagiarism": "invalid_submission_reference_plagiarism",
         "system_error": "resend_technical_issue",
         "requirements_mismatch": "invalid_submission_wrong_work",
     }
-    print(f"Getting stock feedback for plagiarism status: {plagiarism_status} and language: {translation_language}")
+    print(
+        f"Getting stock feedback for plagiarism status: {plagiarism_status} and language: {translation_language}"
+    )
 
     message_type = status_to_message_type.get(plagiarism_status)
     if not message_type or not translation_language:
@@ -67,12 +73,10 @@ def get_stock_feedback_and_audio(plagiarism_status: str, translation_language: s
     return {"translated_feedback": None, "audio_feedback_url": None}
 
 
-
-
 class FeedbackProcessor:
     """
     Handles message parsing/validation and all DB updates for feedback processing.
-    
+
     """
 
     def parse_and_validate(self, body: bytes) -> Tuple[Dict[str, Any], str]:
@@ -102,7 +106,7 @@ class FeedbackProcessor:
             raise ValueError(f"Submission {submission_id} not found")
 
     def is_retryable_error(self, error: Exception) -> bool:
-        if isinstance(error, frappe.ValidationError):
+        if isinstance(error, (frappe.ValidationError, AttributeError)):
             return False
 
         error_str = str(error).lower()
@@ -131,14 +135,18 @@ class FeedbackProcessor:
                 submission.error_message = error_message[:500]
 
             submission.save(ignore_permissions=True)
-            frappe.logger().error(f"Marked submission {submission_id} as failed: {error_message}")
+            frappe.logger().error(
+                f"Marked submission {submission_id} as failed: {error_message}"
+            )
         except Exception as e:
             frappe.logger().error(
                 f"Error marking submission {submission_id} as failed: {str(e)}"
             )
 
     def _use_stock(self, key, reason, translation_language):
-        frappe.logger().info(f"Using stock audio feedback for submission due to {reason}.")
+        frappe.logger().info(
+            f"Using stock audio feedback for submission due to {reason}."
+        )
         fb = get_stock_feedback_and_audio(key, translation_language)
         return fb.get("translated_feedback"), fb.get("audio_feedback_url", "")
 
@@ -160,9 +168,8 @@ class FeedbackProcessor:
         similar_sources = plagiarism_data.get("similar_sources", [])
 
         # if is_plagiarized:
-        #     audio_feedback_url = 
-        #     overall_feedback_translated = 
-
+        #     audio_feedback_url =
+        #     overall_feedback_translated =
 
         plagiarism_status = self._determine_plagiarism_status(
             is_plagiarized, is_ai_generated, match_type, plagiarism_source
@@ -178,7 +185,9 @@ class FeedbackProcessor:
             [f"• {area}" for area in areas_for_improvement]
         )
 
-        learning_objectives_feedback = feedback_data.get("learning_objectives_feedback", [])
+        learning_objectives_feedback = feedback_data.get(
+            "learning_objectives_feedback", []
+        )
         learning_objectives_feedback_message = "\n".join(
             [f"• {objective}" for objective in learning_objectives_feedback]
         )
@@ -196,28 +205,44 @@ class FeedbackProcessor:
                     }
                 )
 
-
         # Extract translated feedback and language
-        overall_feedback_translated = feedback_data.get("overall_feedback_translated", "")
+        overall_feedback_translated = (
+            feedback_data.get("overall_feedback_translated", "") or ""
+        )
         translation_language = feedback_data.get("translation_language", "English")
-        print("plag status:", plagiarism_status)    
+        print("plag status:", plagiarism_status)
         # Generate audio feedback if translated text and language are provided
         audio_feedback_url = ""
 
-        #using stock feedback and audio for flagged submissions and certain error cases to 
-        #ensure appropriate messaging and avoid repeated TTS generation 
+        # using stock feedback and audio for flagged submissions and certain error cases to
+        # ensure appropriate messaging and avoid repeated TTS generation
 
         if "Flagged" in plagiarism_status:
-            overall_feedback_translated, audio_feedback_url = self._use_stock(plagiarism_status, f"plagiarism status: {plagiarism_status}", translation_language)
+            overall_feedback_translated, audio_feedback_url = self._use_stock(
+                plagiarism_status,
+                f"plagiarism status: {plagiarism_status}",
+                translation_language,
+            )
         elif "system error" in overall_feedback_translated.lower():
-            overall_feedback_translated, audio_feedback_url = self._use_stock("system_error", "system error in feedback", translation_language)
-        elif "Submission does not match assignment requirements" in overall_feedback_translated.lower():
-            overall_feedback_translated, audio_feedback_url = self._use_stock("requirements_mismatch", "requirements mismatch in feedback", translation_language)
+            overall_feedback_translated, audio_feedback_url = self._use_stock(
+                "system_error", "system error in feedback", translation_language
+            )
+        elif (
+            "Submission does not match assignment requirements"
+            in overall_feedback_translated.lower()
+        ):
+            overall_feedback_translated, audio_feedback_url = self._use_stock(
+                "requirements_mismatch",
+                "requirements mismatch in feedback",
+                translation_language,
+            )
 
         # Creating TTS for valid submissions and feedback.
         else:
             try:
-                overall_feedback_translated = feedback_data.get("overall_feedback_translated", "")
+                overall_feedback_translated = feedback_data.get(
+                    "overall_feedback_translated", ""
+                )
                 frappe.logger().info(
                     f"Generating audio feedback for submission {submission_id} "
                     f"in language {translation_language}"
@@ -227,7 +252,7 @@ class FeedbackProcessor:
                     text=overall_feedback_translated,
                     language_name=translation_language,
                     submission_id=submission_id,
-                    tone=None
+                    tone=None,
                 )
 
                 frappe.logger().info(
@@ -262,12 +287,16 @@ class FeedbackProcessor:
             # case-sensitive comparison (== "Invalid") instead of defensive
             # title/lower dual-check. AI sources have been observed writing
             # both "Invalid" and "invalid"; canonicalize here.
-            "submission_validity": (feedback_data.get("submission_validity") or "").strip().capitalize(),
+            "submission_validity": (feedback_data.get("submission_validity") or "")
+            .strip()
+            .capitalize(),
             "overall_feedback": feedback_data.get("overall_feedback", ""),
             "overall_feedback_translated": overall_feedback_translated,
             "translation_language": translation_language,
             "audio_feedback_url": audio_feedback_url,
-            "generated_feedback": json.dumps(feedback_data, indent=2, ensure_ascii=False),
+            "generated_feedback": json.dumps(
+                feedback_data, indent=2, ensure_ascii=False
+            ),
             "learning_objectives_feedback": learning_objectives_feedback_message,
             "strengths": strengths_message,
             "areas_for_improvement": areas_for_improvement_message,
@@ -280,7 +309,9 @@ class FeedbackProcessor:
         submission.update(update_data)
         submission.save(ignore_permissions=True)
 
-    def _determine_result_status(self, is_plagiarized: bool, is_ai_generated: bool) -> str:
+    def _determine_result_status(
+        self, is_plagiarized: bool, is_ai_generated: bool
+    ) -> str:
         if is_plagiarized or is_ai_generated:
             return "Success - Flagged"
         return "Success - Original"
@@ -308,8 +339,9 @@ class FeedbackProcessor:
                 return "Resubmission Allowed"
             return "Original"
 
-
-    def _extract_grade(self, feedback_data: Dict[str, Any], submission_id: str) -> float:
+    def _extract_grade(
+        self, feedback_data: Dict[str, Any], submission_id: str
+    ) -> float:
         grade_recommendation: Any = feedback_data.get("final_grade", "50")
 
         try:
@@ -327,8 +359,6 @@ class FeedbackProcessor:
             )
 
         return grade
-
-
 
 
 # if plagiarism_source == "peer":
