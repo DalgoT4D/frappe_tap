@@ -362,47 +362,75 @@ def check_auto_activate():
     Register in hooks.py:
         scheduler_events.daily: tap_lms.summer_program.batch_activation.check_auto_activate
     """
-    today = getdate(now_datetime())
-
-    # Find BPRs ready to activate
-    candidates = frappe.db.sql(
-        """
-        SELECT bpr.name AS bpr_name, bpr.batch, b.start_date
-        FROM `tabBatchProgramRun` bpr
-        JOIN `tabBatch` b ON b.name = bpr.batch
-        WHERE bpr.status = %s
-          AND bpr.validation_status = %s
-          AND b.start_date IS NOT NULL
-          AND b.start_date <= %s
-        """,
-        (BPR_COLLECTIONS_READY, VALIDATION_PASSED, today),
-        as_dict=True,
-    )
-
+    import time as _time
+    from tap_lms.monitoring import record_job
+    _t0 = _time.monotonic()
+    _status = "success"
+    _error = None
+    _candidate_count = 0
+    _error_count = 0
     activated = 0
-    for row in candidates:
-        try:
-            result = activate_bpr(row.bpr_name)
-            if result.get("success"):
-                activated += 1
-                frappe.logger().info(
-                    f"Auto-activated BPR {row.bpr_name} for batch {row.batch} "
-                    f"(start_date={row.start_date}, seeded={result.get('seeded_count', 0)})"
-                )
-        except Exception as e:
-            # H-2 (2026-06-15): rollback-before-log so a poisoned txn from
-            # a partial activate_bpr write doesn't make frappe.log_error
-            # itself raise InFailedSqlTransaction (L-030 / L-077). Without
-            # this, the log line silently disappears and the next iteration
-            # runs on a still-poisoned connection.
+
+    try:
+        today = getdate(now_datetime())
+
+        # Find BPRs ready to activate
+        candidates = frappe.db.sql(
+            """
+            SELECT bpr.name AS bpr_name, bpr.batch, b.start_date
+            FROM `tabBatchProgramRun` bpr
+            JOIN `tabBatch` b ON b.name = bpr.batch
+            WHERE bpr.status = %s
+              AND bpr.validation_status = %s
+              AND b.start_date IS NOT NULL
+              AND b.start_date <= %s
+            """,
+            (BPR_COLLECTIONS_READY, VALIDATION_PASSED, today),
+            as_dict=True,
+        )
+        _candidate_count = len(candidates)
+
+        for row in candidates:
             try:
-                frappe.db.rollback()
-            except Exception:
-                pass
-            frappe.log_error(
-                f"Auto-activate error for BPR {row.bpr_name}: {str(e)}",
-                "SP Auto Activate",
+                result = activate_bpr(row.bpr_name)
+                if result.get("success"):
+                    activated += 1
+                    frappe.logger().info(
+                        f"Auto-activated BPR {row.bpr_name} for batch {row.batch} "
+                        f"(start_date={row.start_date}, seeded={result.get('seeded_count', 0)})"
+                    )
+            except Exception as e:
+                _error_count += 1
+                # H-2 (2026-06-15): rollback-before-log so a poisoned txn from
+                # a partial activate_bpr write doesn't make frappe.log_error
+                # itself raise InFailedSqlTransaction (L-030 / L-077). Without
+                # this, the log line silently disappears and the next iteration
+                # runs on a still-poisoned connection.
+                try:
+                    frappe.db.rollback()
+                except Exception:
+                    pass
+                frappe.log_error(
+                    f"Auto-activate error for BPR {row.bpr_name}: {str(e)}",
+                    "SP Auto Activate",
+                )
+    except Exception as e:
+        _status = "error"
+        _error = str(e)
+        raise
+    finally:
+        try:
+            record_job(
+                job_name="check_auto_activate",
+                status=_status if _error_count == 0 else "error",
+                duration_ms=(_time.monotonic() - _t0) * 1000,
+                error=_error,
+                candidate_count=_candidate_count,
+                activated_count=activated,
+                error_count=_error_count,
             )
+        except Exception:
+            pass
 
     return activated
 
@@ -511,124 +539,159 @@ def _bulk_populate_kind_keyed_collections(bpr_name):
     from tap_lms.summer_program.glific_extensions import (
         bulk_add_to_group_with_circuit_breaker,
     )
+    import time as _time
+    from tap_lms.monitoring import record_job
+    _t0 = _time.monotonic()
+    _status = "success"
+    _error = None
+    _added_total = 0
+    _failed_batches = 0
+    _tripped_kinds = []
 
-    batch_name = frappe.db.get_value("BatchProgramRun", bpr_name, "batch")
-    if not batch_name:
-        frappe.log_error(
-            message=f"_bulk_populate_kind_keyed_collections: BPR {bpr_name} "
-                    f"not found or has no batch",
-            title="SP activate_bpr bulk-populate",
-        )
-        return
-
-    # Kind-keyed collections for this BPR. Read fresh from the DB — the rows were
-    # just created by _ensure_kind_keyed_pg_collections and are NOT in any
-    # in-memory child list on the BPR doc.
-    cols = frappe.db.sql(
-        """
-        SELECT name, kind, glific_group_id
-          FROM "tabPGCollection"
-         WHERE parent = %s
-           AND COALESCE(is_active, 0) = 1
-        """,
-        (bpr_name,),
-        as_dict=True,
-    )
-    if not cols:
-        # L-035: log the empty-path exit so "job ran but did nothing" is visible
-        # — BR-002 itself was a silent empty-collection bug.
-        frappe.logger().info(
-            f"_bulk_populate_kind_keyed_collections: BPR {bpr_name} has no active "
-            f"kind-keyed collections — nothing to populate"
-        )
-        return
-
-    # All PEs in the batch with a usable Glific contact id. The NULL/empty
-    # glific_id filter lives here in SQL (validated on real PG by bench run-tests).
-    pes = frappe.db.sql(
-        """
-        SELECT name, glific_id, resolved_flow_state
-          FROM "tabProgramEnrollment"
-         WHERE batch = %s
-           AND glific_id IS NOT NULL
-           AND glific_id != ''
-        """,
-        (batch_name,),
-        as_dict=True,
-    )
-
-    # Bucket glific_ids by collection kind (state-driven; mirrors maintain_collections).
-    by_kind = {}
-    for pe in pes:
-        state = pe.get("resolved_flow_state")
-        if state in MAIN_ELIGIBLE_STATES:
-            by_kind.setdefault("main", []).append(pe["glific_id"])
-        audit_kind = STATE_TO_AUDIT_KIND.get(state)
-        if audit_kind:
-            by_kind.setdefault(audit_kind, []).append(pe["glific_id"])
-
-    failed_batches = 0
-    tripped_kinds = []
-    populated = {}
-    for col in cols:
-        kind = col.get("kind")
-        group_id = col.get("glific_group_id")
-        glific_ids = by_kind.get(kind, [])
-        if not glific_ids or not group_id:
-            continue
-
-        # CR-029: delegate the chunking + circuit-breaker to the shared helper
-        # (L-074). The helper preserves the per-chunk add_contacts_to_group_bulk
-        # call semantics that existed before — every existing assertion in
-        # test_activate_bpr_bulk_populate still holds. New behavior: after 3
-        # consecutive failed chunks the loop aborts that kind (later chunks are
-        # counted as `skipped_after_trip`), so a sustained Glific outage during
-        # a 71K populate no longer burns tokens for nothing.
-        result = bulk_add_to_group_with_circuit_breaker(
-            glific_ids, group_id, op_label=f"activate_bpr.{kind}",
-        )
-        added = result["added"]
-        failed_batches += result["chunks_failed"]
-        if result["circuit_tripped"]:
-            tripped_kinds.append(kind)
-        for err in result["errors"]:
+    try:
+        batch_name = frappe.db.get_value("BatchProgramRun", bpr_name, "batch")
+        if not batch_name:
             frappe.log_error(
-                message=f"BPR={bpr_name} kind={kind} {err}",
-                title="SP activate_bpr bulk-add failed",
+                message=f"_bulk_populate_kind_keyed_collections: BPR {bpr_name} "
+                        f"not found or has no batch",
+                title="SP activate_bpr bulk-populate",
+            )
+            _status = "skip"
+            return
+
+        # Kind-keyed collections for this BPR. Read fresh from the DB — the rows were
+        # just created by _ensure_kind_keyed_pg_collections and are NOT in any
+        # in-memory child list on the BPR doc.
+        cols = frappe.db.sql(
+            """
+            SELECT name, kind, glific_group_id
+              FROM "tabPGCollection"
+             WHERE parent = %s
+               AND COALESCE(is_active, 0) = 1
+            """,
+            (bpr_name,),
+            as_dict=True,
+        )
+        if not cols:
+            # L-035: log the empty-path exit so "job ran but did nothing" is visible
+            # — BR-002 itself was a silent empty-collection bug.
+            frappe.logger().info(
+                f"_bulk_populate_kind_keyed_collections: BPR {bpr_name} has no active "
+                f"kind-keyed collections — nothing to populate"
+            )
+            _status = "skip"
+            return
+
+        # All PEs in the batch with a usable Glific contact id. The NULL/empty
+        # glific_id filter lives here in SQL (validated on real PG by bench run-tests).
+        pes = frappe.db.sql(
+            """
+            SELECT name, glific_id, resolved_flow_state
+              FROM "tabProgramEnrollment"
+             WHERE batch = %s
+               AND glific_id IS NOT NULL
+               AND glific_id != ''
+            """,
+            (batch_name,),
+            as_dict=True,
+        )
+
+        # Bucket glific_ids by collection kind (state-driven; mirrors maintain_collections).
+        by_kind = {}
+        for pe in pes:
+            state = pe.get("resolved_flow_state")
+            if state in MAIN_ELIGIBLE_STATES:
+                by_kind.setdefault("main", []).append(pe["glific_id"])
+            audit_kind = STATE_TO_AUDIT_KIND.get(state)
+            if audit_kind:
+                by_kind.setdefault(audit_kind, []).append(pe["glific_id"])
+
+        failed_batches = 0
+        tripped_kinds = []
+        populated = {}
+        for col in cols:
+            kind = col.get("kind")
+            group_id = col.get("glific_group_id")
+            glific_ids = by_kind.get(kind, [])
+            if not glific_ids or not group_id:
+                continue
+
+            # CR-029: delegate the chunking + circuit-breaker to the shared helper
+            # (L-074). The helper preserves the per-chunk add_contacts_to_group_bulk
+            # call semantics that existed before — every existing assertion in
+            # test_activate_bpr_bulk_populate still holds. New behavior: after 3
+            # consecutive failed chunks the loop aborts that kind (later chunks are
+            # counted as `skipped_after_trip`), so a sustained Glific outage during
+            # a 71K populate no longer burns tokens for nothing.
+            result = bulk_add_to_group_with_circuit_breaker(
+                glific_ids, group_id, op_label=f"activate_bpr.{kind}",
+            )
+            added = result["added"]
+            failed_batches += result["chunks_failed"]
+            if result["circuit_tripped"]:
+                tripped_kinds.append(kind)
+            for err in result["errors"]:
+                frappe.log_error(
+                    message=f"BPR={bpr_name} kind={kind} {err}",
+                    title="SP activate_bpr bulk-add failed",
+                )
+
+            # member_count is a denormalized counter (Glific is the SSOT). SET to the
+            # count actually added so a re-run corrects drift rather than doubling.
+            # Not a Glific-mapped field, so set_value needs no reconcile (L-039 N/A).
+            frappe.db.set_value(
+                "PGCollection", col["name"], "member_count", added,
+                update_modified=False,
+            )
+            frappe.db.commit()
+            populated[kind] = added
+            frappe.logger().info(
+                f"activate_bpr bulk-populated {kind} with {added} contacts "
+                f"(group {group_id}, BPR {bpr_name})"
             )
 
-        # member_count is a denormalized counter (Glific is the SSOT). SET to the
-        # count actually added so a re-run corrects drift rather than doubling.
-        # Not a Glific-mapped field, so set_value needs no reconcile (L-039 N/A).
-        frappe.db.set_value(
-            "PGCollection", col["name"], "member_count", added,
-            update_modified=False,
-        )
-        frappe.db.commit()
-        populated[kind] = added
+        # L-035: structured completion log on the SUCCESS path too, so an operator
+        # can confirm the job did its job (and how much) without a manual query.
         frappe.logger().info(
-            f"activate_bpr bulk-populated {kind} with {added} contacts "
-            f"(group {group_id}, BPR {bpr_name})"
+            f"_bulk_populate_kind_keyed_collections done: BPR={bpr_name} "
+            f"total_added={sum(populated.values())} per_kind={populated} "
+            f"failed_batches={failed_batches} tripped_kinds={tripped_kinds}"
         )
 
-    # L-035: structured completion log on the SUCCESS path too, so an operator
-    # can confirm the job did its job (and how much) without a manual query.
-    frappe.logger().info(
-        f"_bulk_populate_kind_keyed_collections done: BPR={bpr_name} "
-        f"total_added={sum(populated.values())} per_kind={populated} "
-        f"failed_batches={failed_batches} tripped_kinds={tripped_kinds}"
-    )
+        _added_total = sum(populated.values())
+        _failed_batches = failed_batches
+        _tripped_kinds = tripped_kinds
 
-    if failed_batches:
-        # L-056: surface terminal failure to RQ so it lands in FailedJobRegistry
-        # and an operator can re-run. Successful batches are already committed;
-        # the raise does not undo them. Re-run is safe (idempotent — the SET
-        # member_count + Glific's idempotent add).
-        trip_note = (
-            f" circuit_tripped_for={tripped_kinds}" if tripped_kinds else ""
-        )
-        raise RuntimeError(
-            f"_bulk_populate_kind_keyed_collections: {failed_batches} batch(es) "
-            f"failed for BPR {bpr_name}{trip_note} — see Error Log 'SP "
-            f"activate_bpr bulk-add failed'"
-        )
+        if failed_batches:
+            # L-056: surface terminal failure to RQ so it lands in FailedJobRegistry
+            # and an operator can re-run. Successful batches are already committed;
+            # the raise does not undo them. Re-run is safe (idempotent — the SET
+            # member_count + Glific's idempotent add).
+            trip_note = (
+                f" circuit_tripped_for={tripped_kinds}" if tripped_kinds else ""
+            )
+            _status = "error"
+            _error = (
+                f"{failed_batches} batch(es) failed for BPR {bpr_name}{trip_note} "
+                f"— see Error Log 'SP activate_bpr bulk-add failed'"
+            )
+            raise RuntimeError(_error)
+    except Exception as e:
+        if _status != "error":
+            _status = "error"
+            _error = str(e)
+        raise
+    finally:
+        try:
+            record_job(
+                job_name="bulk_populate_kind_keyed_collections",
+                status=_status,
+                duration_ms=(_time.monotonic() - _t0) * 1000,
+                error=_error,
+                bpr_name=bpr_name,
+                added_total=_added_total,
+                failed_batches=_failed_batches,
+                tripped_kinds=_tripped_kinds or None,
+            )
+        except Exception:
+            pass

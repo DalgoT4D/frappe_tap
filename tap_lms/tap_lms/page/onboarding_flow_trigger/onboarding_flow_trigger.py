@@ -120,6 +120,12 @@ def _trigger_onboarding_flow_job(onboarding_set, onboarding_stage, student_statu
     Returns:
         dict: Results of the flow trigger operation
     """
+    import time as _time
+    from tap_lms.monitoring import record_job
+    _t0 = _time.monotonic()
+    _status = "success"
+    _error = None
+
     try:
         frappe.logger().info(f"Starting background job for onboarding set: {onboarding_set}, stage: {onboarding_stage}, status: {student_status}")
         
@@ -153,6 +159,8 @@ def _trigger_onboarding_flow_job(onboarding_set, onboarding_stage, student_statu
         return results
         
     except Exception as e:
+        _status = "error"
+        _error = str(e)
         error_traceback = traceback.format_exc()
         frappe.log_error(message=f"Error in onboarding flow job: {str(e)}\n{error_traceback}",
                         title="Onboarding Flow Job Error")
@@ -162,6 +170,20 @@ def _trigger_onboarding_flow_job(onboarding_set, onboarding_stage, student_statu
         # job. The page enqueues fire-and-forget (job_id only), so raising does
         # not affect the UI.
         raise
+    finally:
+        try:
+            record_job(
+                job_name="trigger_onboarding_flow_job",
+                status=_status,
+                duration_ms=(_time.monotonic() - _t0) * 1000,
+                error=_error,
+                onboarding_set=onboarding_set,
+                onboarding_stage=onboarding_stage,
+                student_status=student_status,
+                flow_type=flow_type,
+            )
+        except Exception:
+            pass
 
 
 
@@ -865,12 +887,20 @@ def update_incomplete_stages():
     """
     Daily scheduled task to update the status of student stages that have been assigned but haven't been started within a reasonable timeframe
     """
+    import time as _time
+    from tap_lms.monitoring import record_job
+    _t0 = _time.monotonic()
+    _status = "success"
+    _error = None
+    _found_count = 0
+    _updated_count = 0
+
     try:
         frappe.logger().info("Running update_incomplete_stages scheduled task")
-        
+
         # Find students who have been in 'assigned' status for more than 3 days
         three_days_ago = add_to_date(now_datetime(), days=-3)
-        
+
         # Get all progress records that are still in assigned status
         assigned_records = frappe.get_all(
             "StudentStageProgress",
@@ -881,9 +911,10 @@ def update_incomplete_stages():
             },
             fields=["name", "student", "stage", "start_timestamp"]
         )
-        
+        _found_count = len(assigned_records)
+
         frappe.logger().info(f"Found {len(assigned_records)} records to mark as incomplete")
-        
+
         # Process these records
         updated_count = 0
         for record in assigned_records:
@@ -896,14 +927,29 @@ def update_incomplete_stages():
                 updated_count += 1
             except Exception as e:
                 frappe.logger().error(f"Error updating record {record.name}: {str(e)}")
-        
+        _updated_count = updated_count
+
         frappe.db.commit()
-        
+
         # Log a message about the update
         frappe.logger().info(f"Updated {updated_count} records from 'assigned' to 'incomplete' status")
     except Exception as e:
+        _status = "error"
+        _error = str(e)
         error_traceback = traceback.format_exc()
         frappe.log_error(
             message=f"Error in updating incomplete stages: {str(e)}\n{error_traceback}",
             title="Update Incomplete Stages Error"
         )
+    finally:
+        try:
+            record_job(
+                job_name="update_incomplete_stages",
+                status=_status,
+                duration_ms=(_time.monotonic() - _t0) * 1000,
+                error=_error,
+                found_count=_found_count,
+                updated_count=_updated_count,
+            )
+        except Exception:
+            pass

@@ -186,26 +186,53 @@ def auto_advance_batch_week():
     Finds all active Summer Program batches and advances their
     calendar week by 1. Delegates to update_batch_week for each batch.
     """
+    import time as _time
+    from tap_lms.monitoring import record_job
     from tap_lms.summer_program.constants import BPR_ACTIVE
-
-    # Find batches with active BatchProgramRun records
-    active_batches = frappe.db.sql("""
-        SELECT DISTINCT bpr.batch
-        FROM `tabBatchProgramRun` bpr
-        WHERE bpr.status = %s
-    """, (BPR_ACTIVE,), as_dict=True)
+    _t0 = _time.monotonic()
+    _status = "success"
+    _error = None
+    _batch_count = 0
+    _failure_count = 0
 
     results = []
-    for row in active_batches:
-        try:
-            result = update_batch_week(row.batch)
-            results.append(result)
-        except Exception as e:
-            frappe.log_error(
-                f"Auto-advance failed for batch {row.batch}: {str(e)}",
-                "SP Auto Advance Batch Week",
-            )
-            results.append({"success": False, "batch": row.batch, "error": str(e)})
+    try:
+        # Find batches with active BatchProgramRun records
+        active_batches = frappe.db.sql("""
+            SELECT DISTINCT bpr.batch
+            FROM `tabBatchProgramRun` bpr
+            WHERE bpr.status = %s
+        """, (BPR_ACTIVE,), as_dict=True)
+        _batch_count = len(active_batches)
 
-    frappe.logger().info(f"auto_advance_batch_week: processed {len(results)} batches")
+        for row in active_batches:
+            try:
+                result = update_batch_week(row.batch)
+                results.append(result)
+            except Exception as e:
+                _failure_count += 1
+                frappe.log_error(
+                    f"Auto-advance failed for batch {row.batch}: {str(e)}",
+                    "SP Auto Advance Batch Week",
+                )
+                results.append({"success": False, "batch": row.batch, "error": str(e)})
+
+        frappe.logger().info(f"auto_advance_batch_week: processed {len(results)} batches")
+    except Exception as e:
+        _status = "error"
+        _error = str(e)
+        raise
+    finally:
+        try:
+            record_job(
+                job_name="auto_advance_batch_week",
+                status=_status if _failure_count == 0 else "error",
+                duration_ms=(_time.monotonic() - _t0) * 1000,
+                error=_error,
+                batch_count=_batch_count,
+                failure_count=_failure_count,
+            )
+        except Exception:
+            pass
+
     return results
