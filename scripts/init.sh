@@ -22,6 +22,12 @@ RAG_POSTGRES_DB="${RAG_POSTGRES_DB:-rag_lms}"
 LOCAL_API_KEY="${LOCAL_API_KEY:-local-dev-api-key-001}"
 LOCAL_API_SECRET="${LOCAL_API_SECRET:-local-secret-key}"
 
+# AUTH_KEY / AUTH_SECRET: the Authorization-header credential, stored on
+# User.api_key/api_secret and RAG Settings.api_key/api_secret. Defaults to
+# LOCAL_API_KEY/LOCAL_API_SECRET unless overridden in env.local.
+AUTH_KEY="${AUTH_KEY:-$LOCAL_API_KEY}"
+AUTH_SECRET="${AUTH_SECRET:-$LOCAL_API_SECRET}"
+
 if [[ ! -d /home/frappe/frappe-bench/apps/frappe ]]; then
   if [[ -n "$(find /home/frappe/frappe-bench -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
     echo "/home/frappe/frappe-bench is not empty but Frappe is missing."
@@ -257,8 +263,8 @@ else:
     print("✓ Updated Stub LLM Settings")
 
 # ── API Credentials for local development ────────────────────
-API_KEY_VALUE = "$LOCAL_API_KEY"
-API_SECRET_VALUE = "$LOCAL_API_SECRET"
+API_KEY_VALUE = "$AUTH_KEY"
+API_SECRET_VALUE = "$AUTH_SECRET"
 
 # 2. Update RAG Settings with API key and vault the secret key securely.
 #    This is what rag_service sends as the Authorization header when it
@@ -291,8 +297,8 @@ import frappe.utils.password as frappe_crypt
 frappe.init(site="$SITE_NAME")
 frappe.connect()
 
-API_KEY_VALUE = "$LOCAL_API_KEY"
-API_SECRET_VALUE = "$LOCAL_API_SECRET"
+API_KEY_VALUE = "$AUTH_KEY"
+API_SECRET_VALUE = "$AUTH_SECRET"
 
 # 3. Update the User Profile directly with the public API key identifier.
 #    This is the tap_lms-side credential that incoming requests (including

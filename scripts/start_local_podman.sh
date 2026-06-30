@@ -37,6 +37,15 @@ set +a
 SITE_NAME="${SITE_NAME:-tap_lms.localhost}"
 RAG_SITE_NAME="${RAG_SITE_NAME:-rag.localhost}"
 
+# AUTH_KEY / AUTH_SECRET drive the "Authorization: token ..." header shown in
+# the sample curl below. LOCAL_API_KEY is kept separate and used only for the
+# "api_key" field in the request body. They default to the same values as
+# LOCAL_API_KEY/LOCAL_API_SECRET (since the seeded Administrator API key/secret
+# is what the Authorization header needs to match), but can now be overridden
+# independently via env.local without touching LOCAL_API_KEY.
+AUTH_KEY="${AUTH_KEY:-$LOCAL_API_KEY}"
+AUTH_SECRET="${AUTH_SECRET:-$LOCAL_API_SECRET}"
+
 echo "Starting all services (first run will be slow: bench init, site creation,"
 echo "and the rag_service venv install; subsequent runs skip all of that)..."
 podman-compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --build
@@ -103,7 +112,7 @@ Next, send a test submission:
 
   curl -v -X POST "http://${SITE_NAME}:${WEB_PORT:-8000}/api/method/tap_lms.imgana.submission.assignment_submission" \\
     -H "Content-Type: application/json" \\
-    -H "Authorization: token ${LOCAL_API_KEY:-local-dev-api-key-001}:${LOCAL_API_SECRET:-local-secret-key}" \\
+    -H "Authorization: token ${AUTH_KEY}:${AUTH_SECRET}" \\
     -d '{
         "api_key":   "${LOCAL_API_KEY:-local-dev-api-key-001}",
         "assign_id": "MockAssign-Basic",

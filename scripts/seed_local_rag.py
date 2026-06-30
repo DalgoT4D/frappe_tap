@@ -32,11 +32,13 @@ frappe.init(RAG_SITE_NAME)
 frappe.connect()
 frappe.set_user("Administrator")
 
-# Must match the Administrator API key/secret seeded by seed_local.py on the
-# tap_lms site — this is what rag_service sends as the Authorization header
-# when it calls tap_lms's get_assignment_context / get_student_details.
-API_KEY_VALUE = os.environ.get("LOCAL_API_KEY", "local-dev-api-key-001")
-API_SECRET_VALUE = os.environ.get("LOCAL_API_SECRET", "local-secret-key")
+# Must match the Administrator Authorization-header credential seeded by
+# seed_local.py on the tap_lms site — this is what rag_service sends as the
+# Authorization header when it calls tap_lms's get_assignment_context /
+# get_student_details. (Distinct from LOCAL_API_KEY, which is the separate
+# "api_key" body field checked by the submission endpoint.)
+API_KEY_VALUE = os.environ.get("AUTH_KEY", os.environ.get("LOCAL_API_KEY", "local-dev-api-key-001"))
+API_SECRET_VALUE = os.environ.get("AUTH_SECRET", os.environ.get("LOCAL_API_SECRET", "local-secret-key"))
 
 # Must match the values used in scripts/seed_local.py's Assignment fixture.
 VERTICAL_LABEL = "Arts"

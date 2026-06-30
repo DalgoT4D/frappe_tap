@@ -212,19 +212,19 @@ for skill_name in SKILLS:
 # activity_type="Regular", media_type="image", prompt_type="both").
 
 
-# ── 7. API Key (for submit_artwork flow) ────────────────────
-API_KEY_VALUE = os.environ.get("LOCAL_API_KEY", "local-dev-api-key-001")
-API_SECRET_VALUE = os.environ.get("LOCAL_API_SECRET", "local-secret-key")
+# ── 7. Auth credentials (Authorization header, matches User.api_key/secret) ─
+AUTH_KEY_VALUE = os.environ.get("AUTH_KEY", os.environ.get("LOCAL_API_KEY", "local-dev-api-key-001"))
+AUTH_SECRET_VALUE = os.environ.get("AUTH_SECRET", os.environ.get("LOCAL_API_SECRET", "local-secret-key"))
 
 # 1. Update the User Profile directly with the public API key identifier
 user_doc = frappe.get_doc("User", "Administrator")
-if user_doc.api_key != API_KEY_VALUE:
-    user_doc.api_key = API_KEY_VALUE
+if user_doc.api_key != AUTH_KEY_VALUE:
+    user_doc.api_key = AUTH_KEY_VALUE
     user_doc.save(ignore_permissions=True)
     frappe.db.commit()
-    print(f"✓ Public API Key bound to User Profile: {API_KEY_VALUE}")
+    print(f"✓ Public API Key bound to User Profile: {AUTH_KEY_VALUE}")
 else:
-    print(f"  Public API Key already set on User Profile: {API_KEY_VALUE}")
+    print(f"  Public API Key already set on User Profile: {AUTH_KEY_VALUE}")
 
 # 2. Force-inject the crypted Secret password block into Frappe's security vault
 import frappe.utils.password as frappe_crypt
@@ -233,18 +233,23 @@ current_secret = frappe_crypt.get_decrypted_password(
     "User", "Administrator", "api_secret", raise_exception=False
 )
 
-if current_secret != API_SECRET_VALUE:
+if current_secret != AUTH_SECRET_VALUE:
     frappe_crypt.set_encrypted_password(
-        "User", "Administrator", API_SECRET_VALUE, "api_secret"
+        "User", "Administrator", AUTH_SECRET_VALUE, "api_secret"
     )
     frappe.db.commit()
-    print(f"✓ API Secret encrypted and vaulted securely: {API_SECRET_VALUE}")
+    print(f"✓ API Secret encrypted and vaulted securely: {AUTH_SECRET_VALUE}")
 else:
     print(f"  API Secret already validated in vault.")
 
 # RAG Settings (rag_service doctype) now lives on RAG_SITE_NAME — see
-# scripts/seed_local_rag.py, which seeds it with this same API_KEY_VALUE so
+# scripts/seed_local_rag.py, which seeds it with this same AUTH_KEY_VALUE so
 # rag_service's calls back to this site authenticate correctly.
+
+# This is the separate custom "API Key" doctype record (created in
+# bootstrap_lms.sh Step F) checked against the submission endpoint's
+# "api_key" body field — distinct from the Authorization header above.
+API_KEY_VALUE = os.environ.get("LOCAL_API_KEY", "local-dev-api-key-001")
 
 # ── Summary ─────────────────────────────────────────────────
 print("\n=== Seed complete. Use these values in test_submissions.py ===")
@@ -253,5 +258,6 @@ print(f"STUDENT_PHONE   = '{STUDENT_PHONE}'")
 print(f"STUDENT_GLIFIC  = '{STUDENT_GLIFIC}'")
 print(f"BATCH_NAME      = '{batch_name}'")
 print(f"ASSIGNMENT_ID   = '{ASSIGNMENT_ID}'")
-print(f"API_KEY         = '{API_KEY_VALUE}'")
+print(f"AUTH_KEY        = '{AUTH_KEY_VALUE}'  (Authorization header)")
+print(f"API_KEY         = '{API_KEY_VALUE}'  (request body 'api_key' field)")
 print(f"PE_IDS          = {pe_ids}")

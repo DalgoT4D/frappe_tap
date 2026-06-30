@@ -25,6 +25,16 @@ RAG_POSTGRES_DB="${RAG_POSTGRES_DB:-rag_lms}"
 LOCAL_API_KEY="${LOCAL_API_KEY:-local-dev-api-key-001}"
 LOCAL_API_SECRET="${LOCAL_API_SECRET:-local-secret-key}"
 
+# AUTH_KEY / AUTH_SECRET: stored on User.api_key/api_secret (tap_lms) and
+# RAG Settings.api_key/api_secret (rag_service) — this is what Frappe's
+# token-auth checks against the "Authorization: token <key>:<secret>" header.
+# Kept separate from LOCAL_API_KEY, which is stored only on the custom
+# "API Key" doctype record and is what the submission endpoint's "api_key"
+# body field is checked against. Defaults to the same value as
+# LOCAL_API_KEY/LOCAL_API_SECRET unless overridden in env.local.
+AUTH_KEY="${AUTH_KEY:-$LOCAL_API_KEY}"
+AUTH_SECRET="${AUTH_SECRET:-$LOCAL_API_SECRET}"
+
 set_single_value() {
   local site="$1" doctype="$2" field="$3" value="${4:-}"
   local args
@@ -212,8 +222,8 @@ else:
     doc.save()
     print("Updated Stub LLM Settings")
 
-API_KEY_VALUE = "$LOCAL_API_KEY"
-API_SECRET_VALUE = "$LOCAL_API_SECRET"
+API_KEY_VALUE = "$AUTH_KEY"
+API_SECRET_VALUE = "$AUTH_SECRET"
 
 rag_settings = frappe.get_doc("RAG Settings", "RAG Settings")
 if rag_settings.api_key != API_KEY_VALUE:
@@ -235,21 +245,22 @@ import frappe.utils.password as frappe_crypt
 frappe.init(site="$SITE_NAME")
 frappe.connect()
 
+AUTH_KEY_VALUE = "$AUTH_KEY"
+AUTH_SECRET_VALUE = "$AUTH_SECRET"
 API_KEY_VALUE = "$LOCAL_API_KEY"
-API_SECRET_VALUE = "$LOCAL_API_SECRET"
 
 user_doc = frappe.get_doc("User", "Administrator")
-if user_doc.api_key != API_KEY_VALUE:
-    user_doc.api_key = API_KEY_VALUE
+if user_doc.api_key != AUTH_KEY_VALUE:
+    user_doc.api_key = AUTH_KEY_VALUE
     user_doc.save(ignore_permissions=True)
     frappe.db.commit()
-    print(f"Public API Key bound to User Profile: {API_KEY_VALUE}")
+    print(f"Public API Key bound to User Profile: {AUTH_KEY_VALUE}")
 
 current_secret = frappe_crypt.get_decrypted_password("User", "Administrator", "api_secret", raise_exception=False)
-if current_secret != API_SECRET_VALUE:
-    frappe_crypt.set_encrypted_password("User", "Administrator", API_SECRET_VALUE, "api_secret")
+if current_secret != AUTH_SECRET_VALUE:
+    frappe_crypt.set_encrypted_password("User", "Administrator", AUTH_SECRET_VALUE, "api_secret")
     frappe.db.commit()
-    print(f"API Secret encrypted and vaulted securely: {API_SECRET_VALUE}")
+    print(f"API Secret encrypted and vaulted securely: {AUTH_SECRET_VALUE}")
 
 # Create the matching "API Key" table record for the submission custom authentication function
 if not frappe.db.exists("API Key", {"key": API_KEY_VALUE}):
@@ -267,14 +278,30 @@ else:
 
 PYEOF
 
-# ── Step G: seed data (scripts are self-guarded / idempotent) ──────────────
-echo "Running seed_local.py (tap_lms site)..."
-SITE_NAME="$SITE_NAME" LOCAL_API_KEY="$LOCAL_API_KEY" LOCAL_API_SECRET="$LOCAL_API_SECRET" \
-  ../env/bin/python3 -c "import sys; sys.path.insert(0, '/workspace/frappe_tap'); import scripts.seed_local"
+# ── Step G: seed data — ONLY on first container creation ────────────────────
+# bootstrap_lms.sh runs on every container start (see entrypoint.sh), but
+# seeding should only happen once, the first time the bench-data volume is
+# created. We mark that with a sentinel file inside the (persistent)
+# frappe-bench dir. To force a reseed, delete the marker file by hand, or
+# blow away the volume with `docker compose down -v` (which removes the
+# marker along with everything else, so seeding naturally runs again).
+SEED_MARKER="/home/frappe/frappe-bench/.seed_local_done"
 
-echo "Running seed_local_rag.py (rag_service site)..."
-SITE_NAME="$SITE_NAME" RAG_SITE_NAME="$RAG_SITE_NAME" WEB_PORT="${WEB_PORT:-8000}" \
-  LOCAL_API_KEY="$LOCAL_API_KEY" LOCAL_API_SECRET="$LOCAL_API_SECRET" \
-  ../env/bin/python3 -c "import sys; sys.path.insert(0, '/workspace/frappe_tap'); import scripts.seed_local_rag"
+if [[ -f "$SEED_MARKER" ]]; then
+  echo "Seed marker found ($SEED_MARKER) — skipping seed_local / seed_local_rag (already seeded on first create)."
+else
+  echo "Running seed_local.py (tap_lms site)..."
+  SITE_NAME="$SITE_NAME" LOCAL_API_KEY="$LOCAL_API_KEY" \
+    AUTH_KEY="$AUTH_KEY" AUTH_SECRET="$AUTH_SECRET" \
+    ../env/bin/python3 -c "import sys; sys.path.insert(0, '/workspace/frappe_tap'); import scripts.seed_local"
+
+  echo "Running seed_local_rag.py (rag_service site)..."
+  SITE_NAME="$SITE_NAME" RAG_SITE_NAME="$RAG_SITE_NAME" WEB_PORT="${WEB_PORT:-8000}" \
+    LOCAL_API_KEY="$LOCAL_API_KEY" AUTH_KEY="$AUTH_KEY" AUTH_SECRET="$AUTH_SECRET" \
+    ../env/bin/python3 -c "import sys; sys.path.insert(0, '/workspace/frappe_tap'); import scripts.seed_local_rag"
+
+  touch "$SEED_MARKER"
+  echo "Seeding complete — wrote marker $SEED_MARKER (will be skipped on future container starts)."
+fi
 
 echo "Bootstrap complete."
