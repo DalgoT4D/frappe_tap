@@ -530,6 +530,14 @@ def get_submission_feedback(submission_id, **_glific_kwargs):
         submission = frappe.get_doc("Submission", submission_id)
 
         if submission.status == "Completed":
+            emit(
+                severity="INFO",
+                message="feedback_fetched",
+                submission_id=submission_id,
+                student_id=submission.student_id,
+                status=submission.status,
+                has_audio_feedback=bool(submission.audio_feedback_url),
+            )
             return {
                 "status": submission.status,
                 "overall_feedback": submission.overall_feedback,
@@ -537,13 +545,31 @@ def get_submission_feedback(submission_id, **_glific_kwargs):
                 "audio_feedback_url": submission.audio_feedback_url,
             }
 
+        emit(
+            severity="INFO",
+            message="feedback_not_ready",
+            submission_id=submission_id,
+            student_id=submission.student_id,
+            status=submission.status,
+        )
         return {"status": submission.status}
 
     except frappe.DoesNotExistError:
+        emit(
+            severity="WARNING",
+            message="feedback_fetch_submission_not_found",
+            submission_id=submission_id,
+        )
         return {"error": "Submission not found"}
 
     except Exception as e:
         # BR-003: rollback-first + flat error (L-030 cascade fix).
+        emit(
+            severity="ERROR",
+            message="feedback_fetch_failed",
+            submission_id=submission_id,
+            error=str(e),
+        )
         return safe_sp_api_error_response(e, "get_submission_feedback",
                                           extras={"submission_id": submission_id})
 
@@ -561,7 +587,21 @@ def ready_to_receive_feedback(submission_id, **_glific_kwargs):
         submission = frappe.get_doc("Submission", submission_id)
         requested_at = now_datetime()
 
+        emit(
+            severity="INFO",
+            message="feedback_requested",
+            submission_id=submission_id,
+            student_id=submission.student_id,
+            submission_status=submission.status,
+        )
+
         if not _mark_feedback_requested(submission_id, requested_at):
+            emit(
+                severity="INFO",
+                message="feedback_flow_already_triggered",
+                submission_id=submission_id,
+                student_id=submission.student_id,
+            )
             return {
                 "success": True,
                 "status": "success",
@@ -572,6 +612,13 @@ def ready_to_receive_feedback(submission_id, **_glific_kwargs):
         submission.feedback_requested_at = requested_at
 
         if submission.status not in ("Completed", "Failed"):
+            emit(
+                severity="INFO",
+                message="feedback_not_ready",
+                submission_id=submission_id,
+                student_id=submission.student_id,
+                submission_status=submission.status,
+            )
             return {
                 "success": True,
                 "status": "success",
@@ -588,6 +635,20 @@ def ready_to_receive_feedback(submission_id, **_glific_kwargs):
         if consumer._claim_feedback_flow(submission_id):
             frappe.db.commit()
             consumer.trigger_feedback_flow(submission_id, message_data)
+            emit(
+                severity="INFO",
+                message="feedback_flow_triggered",
+                submission_id=submission_id,
+                student_id=submission.student_id,
+                submission_status=submission.status,
+            )
+        else:
+            emit(
+                severity="INFO",
+                message="feedback_flow_claim_lost",
+                submission_id=submission_id,
+                student_id=submission.student_id,
+            )
 
         return {
             "success": True,
@@ -596,6 +657,11 @@ def ready_to_receive_feedback(submission_id, **_glific_kwargs):
         }
 
     except frappe.DoesNotExistError:
+        emit(
+            severity="WARNING",
+            message="feedback_ready_submission_not_found",
+            submission_id=submission_id,
+        )
         return {
             "success": False,
             "status": "not_found",
@@ -607,6 +673,12 @@ def ready_to_receive_feedback(submission_id, **_glific_kwargs):
         # Glific-facing whitelisted endpoint follows the same L-077 pattern
         # as every other SP endpoint (rollback-first, length-capped log,
         # flat-map response, double-fault defense around log_error itself).
+        emit(
+            severity="ERROR",
+            message="feedback_flow_trigger_failed",
+            submission_id=submission_id,
+            error=str(e),
+        )
         return safe_sp_api_error_response(
             e, "ready_to_receive_feedback",
             extras={"submission_id": submission_id},
