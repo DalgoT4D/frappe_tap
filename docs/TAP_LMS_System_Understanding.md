@@ -1,7 +1,7 @@
 # TAP LMS — Full System Understanding
 
-**Version:** 1.6
-**Date:** June 2026
+**Version:** 1.7
+**Date:** July 2026
 **Purpose:** System architecture, user flows, and observability analysis across all five services — prepared for client validation.
 
 ---
@@ -13,18 +13,19 @@
 3. [The Five Services](#3-the-five-services)
 4. [The Summer Program — Architecture Deep Dive](#4-the-summer-program--architecture-deep-dive)
 5. [Complete User Flow — Student Submission](#5-complete-user-flow--student-submission)
-6. [Full Pipeline — End to End](#6-full-pipeline--end-to-end)
-7. [External Integrations Map](#7-external-integrations-map)
-8. [Current Observability Gaps — Per Service](#8-current-observability-gaps--per-service)
-9. [What a Stuck Submission Looks Like Today](#9-what-a-stuck-submission-looks-like-today)
-10. [What a Stuck Submission Will Look Like After Monitoring](#10-what-a-stuck-submission-will-look-like-after-monitoring)
-11. [Risks and Notable Code Issues Found](#11-risks-and-notable-code-issues-found)
-12. [Monitoring Implementation Plan — All Three Services](#12-monitoring-implementation-plan--all-three-services)
-13. [Glific ↔ tap_lms API Visibility — New Monitoring Scope](#13-glific--tap_lms-api-visibility--new-monitoring-scope)
-14. [Local Development Environment and Testing Strategy](#14-local-development-environment-and-testing-strategy)
-15. [Open Questions](#15-open-questions)
-16. [DLQ Monitoring — Detailed Design](#16-dlq-monitoring--detailed-design)
-17. [Error Classification — Retryable vs Non-Retryable Failures](#17-error-classification--retryable-vs-non-retryable-failures)
+6. [Complete User Flow — Quiz Assessment](#6-complete-user-flow--quiz-assessment)
+7. [Full Pipeline — End to End](#7-full-pipeline--end-to-end)
+8. [External Integrations Map](#8-external-integrations-map)
+9. [Current Observability Gaps — Per Service](#9-current-observability-gaps--per-service)
+10. [What a Stuck Submission Looks Like Today](#10-what-a-stuck-submission-looks-like-today)
+11. [What a Stuck Submission Will Look Like After Monitoring](#11-what-a-stuck-submission-will-look-like-after-monitoring)
+12. [Risks and Notable Code Issues Found](#12-risks-and-notable-code-issues-found)
+13. [Monitoring Implementation Plan — All Three Services](#13-monitoring-implementation-plan--all-three-services)
+14. [Glific ↔ tap_lms API Visibility — New Monitoring Scope](#14-glific--tap_lms-api-visibility--new-monitoring-scope)
+15. [Local Development Environment and Testing Strategy](#15-local-development-environment-and-testing-strategy)
+16. [Open Questions](#16-open-questions)
+17. [DLQ Monitoring — Detailed Design](#17-dlq-monitoring--detailed-design)
+18. [Error Classification — Retryable vs Non-Retryable Failures](#18-error-classification--retryable-vs-non-retryable-failures)
 
 ---
 
@@ -114,7 +115,9 @@ All three services share a single **RabbitMQ instance hosted on CloudAMQP**. Thr
 
 **Key components:**
 
-- **`imgana/submission.py`** — Receives student submissions via API, uploads media to Google Cloud Storage, creates a `Submission` DocType record, and publishes the submission to RabbitMQ. Supports four media types: **image** (jpg, png, gif, webp, bmp, svg), **video** (mp4, mov, avi, mkv, webm), **audio** (mp3, wav, ogg, opus, m4a, aac, flac), and **text** (inline, no GCS upload). Media type is auto-detected from the file extension.
+- **`summer_program/save_submission.py`** — **Active entry point for all student submissions.** Receives student submissions via API (`POST /api/method/tap_lms.summer_program.save_submission.save_submission`), uploads media to Google Cloud Storage, creates a `Submission` DocType record, and publishes the submission to RabbitMQ. Supports four media types: **image** (jpg, png, gif, webp, bmp, svg), **video** (mp4, mov, avi, mkv, webm), **audio** (mp3, wav, ogg, opus, m4a, aac, flac), and **text** (inline, no GCS upload). Media type is auto-detected from the file extension. Also provides `get_submission_feedback` (poll for feedback status) and `ready_to_receive_feedback` (trigger feedback delivery flow) endpoints.
+- **`imgana/submission.py`** — **Deprecated.** The original submission entry point (`POST /api/method/tap_lms.imgana.submission.assignment_submission`). No longer in active use; all Glific flows should call `save_submission` instead.
+- **`summer_program/student_progression_sp.py`** — Manages the quiz assessment flow. Key whitelisted endpoints: `start_quiz` (initialise a `StudentQuizAttempt`), `submit_answer` (one call per question — records answer, returns next question or final result), and the private `_complete_quiz_sp` (auto-triggered on the last answer — computes score, determines pass/fail, awards points). See Section 6 for the full quiz flow.
 - **`feedback_handler/feedback_consumer.py`** — A long-running RabbitMQ consumer that receives graded feedback results, updates the `Submission` record, triggers the ElevenLabs TTS call (for audio feedback), and sends a Glific WhatsApp notification to the student.
 - **`summer_program/pe_dispatcher.py`** — A scheduled job running **every 1 minute** that drives a state machine for every active Summer Program student. This is the most performance-critical background process in the system — it processes up to 100,000 students per cycle.
 - **`summer_program/escalation_runner.py`** — Runs every 2 hours to handle students whose program progression has stalled past a threshold.
@@ -252,24 +255,28 @@ Every Glific SP flow calls `update_flow_status` on completion, bridging Glific's
 
 The system supports **four submission types**: image, video, audio, and text. All four types are published to the same `submission_queue` — tap_plg processes image submissions; video, audio, and text bypass plagiarism checking by design.
 
+> **Active endpoint:** `POST /api/method/tap_lms.summer_program.save_submission.save_submission`
+> The legacy endpoint `POST /api/method/tap_lms.imgana.submission.assignment_submission` (`imgana/submission.py`) is **deprecated** and should not be used in new Glific flows.
+
 ```
 Step 1 — Student sends artwork
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Student sends image via WhatsApp
     └── Glific receives the message
     └── Glific calls tap_lms API:
-        POST /api/method/tap_lms.imgana.submission.submit_artwork
-        { api_key, assign_id, name1, glific_id, img_url }
+        POST /api/method/tap_lms.summer_program.save_submission.save_submission
+        { assignment_id, student_id, submission }
 
 Step 2 — tap_lms processes the submission
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-tap_lms (submission.py):
-    ├── Authenticates the API key
+tap_lms (save_submission.py):
+    ├── Authenticates the API key (Authorization header + active ProgramEnrollment check)
+    ├── Validates student and assignment; guards against Glific placeholder strings
     ├── Creates a new Submission DocType record (status: "Pending")
-    ├── Downloads image from Glific; uploads to Google Cloud Storage
+    ├── Downloads media from Glific; uploads to Google Cloud Storage
     └── Calls enqueue_submission(submission.name)
             └── Publishes JSON message to [submission_queue]
-    └── Returns { submission_id, student_id, image_url } to Glific
+    └── Returns { submission_id, student_id, status } to Glific
 
 Step 3 — tap_plg detects plagiarism
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -294,8 +301,14 @@ tap_lms (feedback_consumer.py):
     ├── Advances Summer Program state machine (T12 transition)
     └── Calls ElevenLabs TTS; uploads audio to GCS
 
-Step 6 — Student receives feedback
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Step 6 — Student requests and receives feedback
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Glific calls:
+    POST /api/method/tap_lms.summer_program.save_submission.ready_to_receive_feedback
+        └── Marks feedback as requested; triggers FeedbackConsumer flow if ready
+    GET  /api/method/tap_lms.summer_program.save_submission.get_submission_feedback
+        └── Returns { status, overall_feedback, audio_feedback_url }
+
 Student receives on WhatsApp:
     ├── Text feedback in their local language
     └── Audio feedback (voice message)
@@ -303,13 +316,94 @@ Student receives on WhatsApp:
 
 ---
 
-## 6. Full Pipeline — End to End
+## 6. Complete User Flow — Quiz Assessment
+
+Quizzes are short assessments (typically 3–5 questions) delivered inline through the WhatsApp/Glific flow as part of a learning unit. Unlike submissions, quizzes are **entirely synchronous and self-contained within tap_lms** — no RabbitMQ, no GCS, no tap_plg or rag_service involvement.
+
+**Active file:** `tap_lms/summer_program/student_progression_sp.py`
+**Deprecated file:** `tap_lms/journey/student_progression.py` — contains one-line shims pointing to the above; do not use.
+
+**Doctypes involved:** `Quiz`, `QuizQuestion`, `QuizOption` (+ translation variants), `StudentQuizAttempt`, `StudentQuizAnswer`
+
+```
+Step 1 — Quiz initiated
+━━━━━━━━━━━━━━━━━━━━━━━
+Glific calls:
+    POST /api/method/tap_lms.summer_program.student_progression_sp.start_quiz
+    { student_id, course_level, quiz_id, language }
+
+tap_lms (start_quiz):
+    ├── Resolves student_id → Student doc
+    ├── Fetches active ProgramEnrollment (must be active or paused)
+    ├── Creates StudentQuizAttempt (status: "in_progress")
+    │       attempt_number tracks re-attempts for the same quiz
+    ├── Loads all questions via _get_quiz_questions(quiz_doc)
+    └── Returns first question as flat key/value response (Glific Rule 2):
+        { quiz_attempt_id, total_questions, question_index=1,
+          question_text, option_a, option_b, option_c, option_d }
+    ✦ emit: quiz_started
+
+    If a prior in-progress attempt exists → _resume_quiz():
+        └── Returns the next unanswered question
+        ✦ emit: quiz_resumed
+
+Step 2 — Student answers each question (one call per question)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Glific calls for each answer:
+    POST /api/method/tap_lms.summer_program.student_progression_sp.submit_answer
+    { student_id, quiz_attempt_id, question_index, answer }
+    answer: one of A, B, C, D
+
+tap_lms (submit_answer):
+    ├── Validates attempt ownership and status
+    ├── Looks up correct_option from cached QuizQuestion
+    ├── Records StudentQuizAnswer child row on the attempt
+    │       fields: selected_option, correct_option, is_correct,
+    │               started_at, answered_at, time_spent_seconds
+    ├── Updates attempt.correct_answers (running total)
+    │
+    ├── If more questions remain:
+    │       └── Returns next question in same response
+    │           { status: "next_question", question_index, question_text,
+    │             option_a..d, progress_answered, progress_correct }
+    │           ✦ emit: quiz_answer_submitted (with was_correct, time_spent_seconds)
+    │
+    └── If last question (question_index == total_questions):
+            └── Calls _complete_quiz_sp() inline — no separate API call needed
+
+Step 3 — Quiz completion (auto-triggered on last answer)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+tap_lms (_complete_quiz_sp):
+    ├── Computes score = correct_answers / total_questions × 100
+    ├── Determines passed = score >= quiz.passing_score
+    ├── Sets attempt.status = "passed" or "failed"
+    ├── Awards points via gamification hook (stored as attempt.points_earned)
+    ├── Advances Summer Program state machine:
+    │       Core quiz FAIL   → advance to next content (no remedial switch)
+    │       Remedial quiz FAIL → restart or continue remedial LU
+    │       Remedial quiz PASS → advance (exit remedial for next week)
+    └── Returns final result as flat response:
+        { status: "quiz_passed" | "quiz_failed",
+          score, correct_answers, total_questions,
+          points_earned, feedback_message }
+    ✦ emit: quiz_completed (score, passed, correct_answers, points_earned,
+                            time_spent_seconds, attempt_number)
+```
+
+**Key design decisions:**
+- **One API call per question** — Glific sends answers one at a time as the student responds in WhatsApp. There is no "batch submit all answers" path.
+- **Server-side time tracking** — `started_at` / `answered_at` are recorded by tap_lms, not sent by Glific, so time-per-question is tamper-proof.
+- **In-process question cache** (`cached_question_details`) — `QuizQuestion` docs are immutable after publishing; they are cached per process lifetime to avoid repeated DB reads during a quiz session.
+- **Re-attempt support** — `start_quiz` creates a new `StudentQuizAttempt` with an incremented `attempt_number` if a prior completed attempt exists. If a prior *in-progress* attempt exists, it resumes from the last unanswered question.
+- **Structured logging** — All four key events (`quiz_started`, `quiz_resumed`, `quiz_answer_submitted`, `quiz_completed`) emit structured JSON logs via `tap_lms/monitoring.py`, consistent with the rest of the Summer Program module.
+
+---
 
 ### Timeline view of a single submission
 
 ```
 T+0s     Student sends image on WhatsApp
-T+1s     Glific calls tap_lms submit_artwork API
+T+1s     Glific calls tap_lms save_submission API
 T+4s     tap_lms: Message published to [submission_queue]
 T+5s     tap_plg: Message consumed
 T+25s    tap_plg: All 5 detection steps complete
@@ -493,7 +587,8 @@ The current `is_retryable_error()` method uses string pattern matching to decide
 | `tap_lms/middleware.py` | Create | HTTP request latency, error rate, exception hooks |
 | `tap_lms/summer_program/dlq_monitor.py` | Create | CloudAMQP Management API poller; structured log per DLQ |
 | `tap_lms/hooks.py` | +4 lines | Register before_request / after_request / on_exception + DLQ monitor cron |
-| `tap_lms/imgana/submission.py` | +5 lines | Emit `submission_published` with submission_id |
+| `tap_lms/summer_program/save_submission.py` | Already instrumented (27 emit calls) | `save_submission_called`, `save_submission_success`, `save_submission_*_error`, `feedback_fetched`, `feedback_requested`, `feedback_flow_triggered` — complete |
+| `tap_lms/imgana/submission.py` | Deprecated — not instrumented | Legacy entry point; no new monitoring work required |
 | `tap_lms/feedback_handler/feedback_consumer.py` | +4 emit calls | `feedback_result_received`, `feedback_processing_complete`, `feedback_processing_failed` (with failure_reason), `glific_notification_sent` |
 | `tap_lms/feedback_handler/feedback_processor.py` | Replace method | Replace `is_retryable_error()` with `classify_error()` returning (bool, failure_reason) |
 | `tap_lms/summer_program/pe_dispatcher.py` | Wrap entry point | `dispatcher_cycle` metric: processed / skipped / errors / duration |
