@@ -98,7 +98,7 @@
    "fieldname": "teacher_role",
    "fieldtype": "Select",
    "label": "Teacher Role",
-   "options": "\nHM\nNodal_Officer_POC\nTeacher\nMaster_Trainers\nZonal_Coordinator"
+   "options": "\nPrincipal/ HOS\nNodal Teacher\nTeacher\nGovt Nodal Officer"
   },
   {
    "fieldname": "teacher_batch",
