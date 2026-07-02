@@ -157,8 +157,27 @@ def _get_school_row_from_input(school_value):
     if not school_value:
         return None
 
-    school_name = school_value.split(" - ", 1)[1].strip() if " - " in school_value else school_value
-    return _get_school_row_by_name(school_name)
+    rows = frappe.db.sql(
+        """
+        SELECT
+            s.name AS school_id,
+            s.name1 AS school_name,
+            s.state AS state_id,
+            COALESCE(st.state_name, s.state, '') AS state,
+            COALESCE(d.district_name, s.district, '') AS district,
+            COALESCE(c.city_name, s.city, '') AS city
+        FROM `tabSchool` s
+        LEFT JOIN `tabState` st ON st.name = s.state
+        LEFT JOIN `tabDistrict` d ON d.name = s.district
+        LEFT JOIN `tabCity` c ON c.name = s.city
+        WHERE s.name1 = %s
+           OR CONCAT(s.name, ' - ', s.name1) = %s
+        LIMIT 1
+        """,
+        (school_value, school_value),
+        as_dict=True,
+    )
+    return rows[0] if rows else None
 
 
 def _is_delhi_school(school_row):
@@ -573,9 +592,9 @@ def update_teacher_details():
 
     try:
         phone = _require_valid_phone(data.get("phone"))
-        school_name = data.get("school")
-        school_row = _get_school_row_by_name(school_name) if school_name else None
-        if school_name and not school_row:
+        school_value = data.get("school")
+        school_row = _get_school_row_from_input(school_value) if school_value else None
+        if school_value and not school_row:
             frappe.throw("School not found")
 
         teacher_name = frappe.db.get_value("Teacher", {"phone_number": phone}, "name")
