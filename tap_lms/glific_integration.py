@@ -238,7 +238,62 @@ def create_contact(name, phone, school_name, model_name, language_id, batch_id):
         frappe.logger().error(f"Exception occurred while creating Glific contact: {str(e)}", exc_info=True)
         return None
 
-def update_contact_fields(contact_id, fields_to_update, language_id=None):
+def _parse_glific_fields_blob(raw_fields):
+    """Best-effort parse for Glific contact fields JSON."""
+    if not raw_fields:
+        return {}
+    if isinstance(raw_fields, dict):
+        return raw_fields
+    try:
+        return json.loads(raw_fields)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+
+
+def _glific_fields_match(updated_fields, fields_to_update):
+    """Return True only if every requested key is reflected in Glific."""
+    parsed_fields = _parse_glific_fields_blob(updated_fields)
+    for key, expected_value in (fields_to_update or {}).items():
+        actual_entry = parsed_fields.get(key)
+        if isinstance(actual_entry, dict):
+            actual_value = actual_entry.get("value")
+        else:
+            actual_value = actual_entry
+
+        if str(actual_value or "") != str(expected_value or ""):
+            return False
+    return True
+
+
+def _set_glific_sync_status(doctype, docname, status):
+    """Write glific_sync_status only for doctypes that expose the field."""
+    if not doctype or not docname:
+        return
+
+    try:
+        meta = frappe.get_meta(doctype)
+        if not meta.has_field("glific_sync_status"):
+            return
+        frappe.db.set_value(
+            doctype,
+            docname,
+            "glific_sync_status",
+            status,
+            update_modified=False,
+        )
+    except Exception as exc:
+        frappe.logger().warning(
+            f"Failed to set glific_sync_status={status} for {doctype} {docname}: {exc}"
+        )
+
+
+def update_contact_fields(
+    contact_id,
+    fields_to_update,
+    language_id=None,
+    sync_status_doctype=None,
+    sync_status_docname=None,
+):
     """
     Update Glific contact fields using fetch-merge-update pattern, optionally
     updating the contact's CORE language at the same time.
@@ -293,20 +348,17 @@ def update_contact_fields(contact_id, fields_to_update, language_id=None):
 
         if "errors" in fetch_data:
             frappe.logger().error(f"Glific fetch contact error for {contact_id}: {fetch_data['errors']}")
+            _set_glific_sync_status(sync_status_doctype, sync_status_docname, "failed")
             return False
 
         contact_data = fetch_data.get("data", {}).get("contact", {}).get("contact")
         if not contact_data:
             frappe.logger().error(f"Glific contact not found: {contact_id}")
+            _set_glific_sync_status(sync_status_doctype, sync_status_docname, "failed")
             return False
 
         # ── Step 2: Merge our fields into existing ─────────────
-        existing_fields = {}
-        if contact_data.get("fields"):
-            try:
-                existing_fields = json.loads(contact_data["fields"])
-            except (json.JSONDecodeError, TypeError):
-                existing_fields = {}
+        existing_fields = _parse_glific_fields_blob(contact_data.get("fields"))
 
         # Only update the fields we care about; preserve everything else
         for key, value in fields_to_update.items():
@@ -361,24 +413,41 @@ def update_contact_fields(contact_id, fields_to_update, language_id=None):
 
         if "errors" in update_data:
             frappe.logger().error(f"Glific updateContact error for {contact_id}: {update_data['errors']}")
+            _set_glific_sync_status(sync_status_doctype, sync_status_docname, "failed")
             return False
 
         result = update_data.get("data", {}).get("updateContact", {})
         if result.get("errors"):
             frappe.logger().error(f"Glific updateContact mutation error for {contact_id}: {result['errors']}")
+            _set_glific_sync_status(sync_status_doctype, sync_status_docname, "failed")
             return False
 
-        if result.get("contact"):
+        if result.get("contact") and _glific_fields_match(
+            result["contact"].get("fields"),
+            fields_to_update,
+        ):
+            _set_glific_sync_status(sync_status_doctype, sync_status_docname, "synced")
             return True
 
+        if result.get("contact"):
+            frappe.logger().error(
+                f"Glific updateContact verification failed for {contact_id}: "
+                f"requested_fields={fields_to_update}, returned_fields={result['contact'].get('fields')}"
+            )
+            _set_glific_sync_status(sync_status_doctype, sync_status_docname, "failed")
+            return False
+
         frappe.logger().error(f"Glific updateContact unexpected response for {contact_id}: {update_data}")
+        _set_glific_sync_status(sync_status_doctype, sync_status_docname, "failed")
         return False
 
     except requests.exceptions.RequestException as e:
         frappe.logger().error(f"Glific API request error for contact {contact_id}: {str(e)}")
+        _set_glific_sync_status(sync_status_doctype, sync_status_docname, "failed")
         raise  # FIX 2: transient network errors must propagate
     except Exception as e:
         frappe.logger().error(f"Glific update_contact_fields error for {contact_id}: {str(e)}")
+        _set_glific_sync_status(sync_status_doctype, sync_status_docname, "failed")
         return False
 
 

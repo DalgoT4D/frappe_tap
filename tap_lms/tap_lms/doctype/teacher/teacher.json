@@ -20,6 +20,7 @@
   "email_id",
   "department",
   "glific_id",
+  "glific_sync_status",
   "phone_number",
   "course_level",
   "teacher_role",
@@ -56,6 +57,13 @@
    "fieldname": "glific_id",
    "fieldtype": "Data",
    "label": "Glific ID"
+  },
+  {
+   "default": "pending",
+   "fieldname": "glific_sync_status",
+   "fieldtype": "Select",
+   "label": "Glific Sync Status",
+   "options": "pending\nsynced\nfailed"
   },
   {
    "fieldname": "phone_number",
