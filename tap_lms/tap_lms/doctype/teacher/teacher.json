@@ -12,7 +12,9 @@
   "first_name",
   "last_name",
   "school_id",
+  "state",
   "teacher_batch",
+  "enrollment",
   "gender",
   "language",
   "email_id",
@@ -67,6 +69,12 @@
    "options": "School"
   },
   {
+   "fieldname": "state",
+   "fieldtype": "Link",
+   "label": "State",
+   "options": "State"
+  },
+  {
    "fieldname": "course_level",
    "fieldtype": "Link",
    "label": "Course Level ",
@@ -89,6 +97,12 @@
    "fieldtype": "Link",
    "label": "Teacher Batch",
    "options": "Batch"
+  },
+  {
+   "fieldname": "enrollment",
+   "fieldtype": "Table",
+   "label": "Enrollments",
+   "options": "Enrollment"
   },
   {
    "fieldname": "swiftchat_id",

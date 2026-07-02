@@ -25,6 +25,7 @@
   "district",
   "state",
   "country",
+  "grade_course_verticals",
   "section_break_mjsn",
   "headmaster_name",
   "headmaster_phone",
@@ -110,6 +111,12 @@
    "fieldtype": "Link",
    "label": "Country",
    "options": "Country"
+  },
+  {
+   "fieldname": "grade_course_verticals",
+   "fieldtype": "Table",
+   "label": "Grade Course Verticals",
+   "options": "State Grade Course Vertical"
   },
   {
    "fieldname": "headmaster_name",

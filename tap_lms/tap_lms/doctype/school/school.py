@@ -13,4 +13,3 @@ def before_save(doc, method):
             while frappe.db.exists("School", {"keyword": unique_keyword}):
                 unique_keyword = generate_unique_keyword(doc.name1)
             doc.keyword = unique_keyword
-

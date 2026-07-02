@@ -1532,7 +1532,7 @@ def verify_otp():
 
 
 @frappe.whitelist(allow_guest=True)
-def create_teacher_web():
+def old_create_teacher_web():
     try:
         frappe.flags.ignore_permissions = True
         data = frappe.request.get_json()
@@ -1879,9 +1879,8 @@ def get_model_for_school(school_id):
         model_link = active_batch_onboardings[0].model
         frappe.logger().info(f"Using model from batch onboarding created on {active_batch_onboardings[0].creation} for school {school_id}")
     else:
-        # If no active batch onboarding, fall back to school's default model
         model_link = frappe.db.get_value("School", school_id, "model")
-        frappe.logger().info(f"No active batch onboarding found. Using default model for school {school_id}")
+        frappe.logger().info(f"No active batch onboarding found. Using school model for school {school_id}")
 
     # Get the model name from Tap Models
     model_name = frappe.db.get_value("Tap Models", model_link, "mname")
@@ -4385,39 +4384,6 @@ def resolve_student_id(identifier: str) -> str:
     
     return None
 
-def get_learning_units_by_week(course_level, week_no):
-    """
-    Get learning units for a specific course level and week number
-    
-    Args:
-        course_level: Course Level ID
-        week_no: Week number
-        
-    Returns:
-        list: List of learning unit IDs
-    """
-    try:
-        # Get Course Level document
-        course_doc = frappe.get_doc("Course Level", course_level)
-        
-        learning_units = []
-        
-        # Check if learning_units child table exists
-        if hasattr(course_doc, 'learning_units') and course_doc.learning_units:
-            for unit_row in course_doc.learning_units:
-                if unit_row.week_no == week_no and unit_row.learning_unit:
-                    learning_units.append(unit_row.learning_unit)
-        
-        return learning_units
-        
-    except Exception as e:
-        frappe.log_error(
-            f"Error getting learning units: {str(e)}",
-            "Student Quiz Content API"
-        )
-        return []
-
-
 def get_quizzes_from_unit(learning_unit_id):
     """
     Get Quiz IDs from a learning unit's content items
@@ -5093,5 +5059,3 @@ def get_teacher_batch_by_phone(api_key, phone_number, type="teacher"):
             "success": False,
             "message": f"An error occurred: {str(e)}"
         }
-
-

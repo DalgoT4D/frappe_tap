@@ -1,0 +1,41 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2026-07-02 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "grade",
+  "course_vertical"
+ ],
+ "fields": [
+  {
+   "fieldname": "grade",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Grade",
+   "reqd": 1
+  },
+  {
+   "fieldname": "course_vertical",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Course Vertical",
+   "options": "Course Verticals",
+   "reqd": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-07-02 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Tap Lms",
+ "name": "State Grade Course Vertical",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

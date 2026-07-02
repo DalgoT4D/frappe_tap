@@ -10,7 +10,8 @@
  "engine": "InnoDB",
  "field_order": [
   "state_name",
-  "country"
+  "country",
+  "model"
  ],
  "fields": [
   {
@@ -26,6 +27,12 @@
    "fieldtype": "Link",
    "label": "country",
    "options": "Country"
+  },
+  {
+   "fieldname": "model",
+   "fieldtype": "Link",
+   "label": "Model",
+   "options": "Tap Models"
   }
  ],
  "index_web_pages_for_search": 1,

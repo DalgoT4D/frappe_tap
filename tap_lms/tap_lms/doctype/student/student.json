@@ -15,6 +15,7 @@
   "alt_phone",
   "gender",
   "school_id",
+  "state",
   "grade",
   "section",
   "shared_users",
@@ -27,6 +28,7 @@
   "level",
   "rigour",
   "language",
+  "data_mismatch",
   "glific_id",
   "glific_sync_status",
   "backend_onboarding",
@@ -36,9 +38,7 @@
   "preferred_time",
   "preferred_day",
   "swiftchat_id",
-  "vocallabs_prospect_id",
-  "archetype",
-  "experiment_arm"
+  "vocallabs_prospect_id"
  ],
  "fields": [
   {
@@ -77,6 +77,12 @@
    "fieldtype": "Link",
    "label": "School",
    "options": "School"
+  },
+  {
+   "fieldname": "state",
+   "fieldtype": "Link",
+   "label": "State",
+   "options": "State"
   },
   {
    "fieldname": "shared_users",
@@ -141,6 +147,11 @@
    "options": "TAP Language"
   },
   {
+   "fieldname": "data_mismatch",
+   "fieldtype": "JSON",
+   "label": "Data Mismatch"
+  },
+  {
    "fieldname": "glific_id",
    "fieldtype": "Data",
    "label": "Glific ID"
@@ -199,18 +210,6 @@
    "label": "Vocallabs Prospect ID",
    "no_copy": 1,
    "read_only": 1
-  },
-  {
-   "fieldname": "archetype",
-   "fieldtype": "Select",
-   "label": "Archetype",
-   "options": "dormant\nfence_sitter\nirregular_submitter\nsubmitter"
-  },
-  {
-   "fieldname": "experiment_arm",
-   "fieldtype": "Select",
-   "label": "Experiment Arm",
-   "options": "default\narm_a\narm_b"
   }
  ],
  "index_web_pages_for_search": 1,

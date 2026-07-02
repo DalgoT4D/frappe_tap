@@ -12,7 +12,8 @@
   "course",
   "grade",
   "date_joining",
-  "school"
+  "school",
+  "whatsapp_response"
  ],
  "fields": [
   {
@@ -46,6 +47,12 @@
    "fieldtype": "Link",
    "label": "School",
    "options": "School"
+  },
+  {
+   "default": "0",
+   "fieldname": "whatsapp_response",
+   "fieldtype": "Check",
+   "label": "WhatsApp Response"
   }
  ],
  "index_web_pages_for_search": 1,
