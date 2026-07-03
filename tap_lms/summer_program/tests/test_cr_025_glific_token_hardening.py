@@ -144,23 +144,11 @@ class TestUpdateContactFieldsRecovery(unittest.TestCase):
     def test_update_contact_fields_recovers_from_401(
         self, mock_session, mock_headers, mock_invalidate
     ):
-        """Simulate 401 on the fetch step then 200 on retry. The function
+        """Simulate 401 on the update step then 200 on retry. The function
         should return True (success) because _glific_post_with_401_retry
         transparently handles the token refresh."""
-        # First call (fetch): 401 → retry with fresh token → 200 with valid data
-        fetch_401 = MagicMock(); fetch_401.status_code = 401; fetch_401.ok = False
-        fetch_200 = MagicMock(); fetch_200.status_code = 200; fetch_200.ok = True
-        fetch_200.json.return_value = {
-            "data": {
-                "contact": {
-                    "contact": {
-                        "id": GLIFIC_ID, "name": "Test Student",
-                        "fields": json.dumps({}),
-                    }
-                }
-            }
-        }
-        # Second call pair (update): 200 immediately
+        # First call (update): 401 → retry with fresh token → 200 with valid data
+        update_401 = MagicMock(); update_401.status_code = 401; update_401.ok = False
         update_200 = MagicMock(); update_200.status_code = 200; update_200.ok = True
         update_200.json.return_value = {
             "data": {
@@ -170,7 +158,24 @@ class TestUpdateContactFieldsRecovery(unittest.TestCase):
                 }
             }
         }
-        mock_session.post.side_effect = [fetch_401, fetch_200, update_200]
+        # Post-update verify fetch: 200 immediately with the written fields visible
+        verify_200 = MagicMock(); verify_200.status_code = 200; verify_200.ok = True
+        verify_200.json.return_value = {
+            "data": {
+                "contact": {
+                    "contact": {
+                        "id": GLIFIC_ID,
+                        "name": "T",
+                        "language": {"id": "1"},
+                        "fields": json.dumps({
+                            key: {"value": str(value)}
+                            for key, value in FIELDS.items()
+                        }),
+                    }
+                }
+            }
+        }
+        mock_session.post.side_effect = [update_401, update_200, verify_200]
         mock_headers.return_value = {"authorization": "token"}
 
         from tap_lms.glific_integration import update_contact_fields, get_glific_settings

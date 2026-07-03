@@ -70,20 +70,23 @@ class TestUpdateContactFieldsLanguage(FrappeTestCase):
 
         mock_headers.return_value = {"authorization": "test-token"}
 
-        # Mock both round-trips: fetch contact + write update
-        fetch_resp = MagicMock(status_code=200, ok=True)
-        fetch_resp.raise_for_status = MagicMock()
-        fetch_resp.json.return_value = {
-            "data": {"contact": {"contact": {
-                "id": "13325", "name": "X", "fields": "{}",
-            }}}
-        }
+        # Mock all round-trips: write update + verify fetch
         update_resp = MagicMock(status_code=200, ok=True)
         update_resp.raise_for_status = MagicMock()
         update_resp.json.return_value = {
             "data": {"updateContact": {"contact": {"id": "13325", "fields": "{}"}}}
         }
-        mock_session.post.side_effect = [fetch_resp, update_resp]
+        verify_resp = MagicMock(status_code=200, ok=True)
+        verify_resp.raise_for_status = MagicMock()
+        verify_resp.json.return_value = {
+            "data": {"contact": {"contact": {
+                "id": "13325",
+                "name": "X",
+                "language": {"id": "5"},
+                "fields": json.dumps({"course_level": {"value": "X"}}),
+            }}}
+        }
+        mock_session.post.side_effect = [update_resp, verify_resp]
 
         with patch("tap_lms.glific_integration.get_glific_settings") as mock_settings:
             mock_settings.return_value.api_url = "https://api.glific.example.com"
@@ -91,8 +94,7 @@ class TestUpdateContactFieldsLanguage(FrappeTestCase):
 
         self.assertTrue(ok)
 
-        # Inspect the second POST (the updateContact mutation)
-        update_call = mock_session.post.call_args_list[1]
+        update_call = mock_session.post.call_args_list[0]
         payload = update_call.kwargs.get("json") or update_call.args[1]
         mutation_input = payload["variables"]["input"]
         self.assertIn(
@@ -118,19 +120,22 @@ class TestUpdateContactFieldsLanguage(FrappeTestCase):
 
         mock_headers.return_value = {"authorization": "test-token"}
 
-        fetch_resp = MagicMock(status_code=200, ok=True)
-        fetch_resp.raise_for_status = MagicMock()
-        fetch_resp.json.return_value = {
-            "data": {"contact": {"contact": {
-                "id": "13325", "name": "X", "fields": "{}",
-            }}}
-        }
         update_resp = MagicMock(status_code=200, ok=True)
         update_resp.raise_for_status = MagicMock()
         update_resp.json.return_value = {
             "data": {"updateContact": {"contact": {"id": "13325", "fields": "{}"}}}
         }
-        mock_session.post.side_effect = [fetch_resp, update_resp]
+        verify_resp = MagicMock(status_code=200, ok=True)
+        verify_resp.raise_for_status = MagicMock()
+        verify_resp.json.return_value = {
+            "data": {"contact": {"contact": {
+                "id": "13325",
+                "name": "X",
+                "language": {"id": "1"},
+                "fields": json.dumps({"course_level": {"value": "X"}}),
+            }}}
+        }
+        mock_session.post.side_effect = [update_resp, verify_resp]
 
         with patch("tap_lms.glific_integration.get_glific_settings") as mock_settings:
             mock_settings.return_value.api_url = "https://api.glific.example.com"
@@ -138,7 +143,7 @@ class TestUpdateContactFieldsLanguage(FrappeTestCase):
 
         self.assertTrue(ok)
 
-        update_call = mock_session.post.call_args_list[1]
+        update_call = mock_session.post.call_args_list[0]
         payload = update_call.kwargs.get("json") or update_call.args[1]
         mutation_input = payload["variables"]["input"]
         self.assertNotIn(
@@ -160,19 +165,22 @@ class TestUpdateContactFieldsLanguage(FrappeTestCase):
 
         mock_headers.return_value = {"authorization": "test-token"}
 
-        fetch_resp = MagicMock(status_code=200, ok=True)
-        fetch_resp.raise_for_status = MagicMock()
-        fetch_resp.json.return_value = {
-            "data": {"contact": {"contact": {
-                "id": "13325", "name": "X", "fields": "{}",
-            }}}
-        }
         update_resp = MagicMock(status_code=200, ok=True)
         update_resp.raise_for_status = MagicMock()
         update_resp.json.return_value = {
             "data": {"updateContact": {"contact": {"id": "13325", "fields": "{}"}}}
         }
-        mock_session.post.side_effect = [fetch_resp, update_resp]
+        verify_resp = MagicMock(status_code=200, ok=True)
+        verify_resp.raise_for_status = MagicMock()
+        verify_resp.json.return_value = {
+            "data": {"contact": {"contact": {
+                "id": "13325",
+                "name": "X",
+                "language": {"id": "1"},
+                "fields": json.dumps({"course_level": {"value": "X"}}),
+            }}}
+        }
+        mock_session.post.side_effect = [update_resp, verify_resp]
 
         with patch("tap_lms.glific_integration.get_glific_settings") as mock_settings:
             mock_settings.return_value.api_url = "https://api.glific.example.com"
@@ -181,11 +189,100 @@ class TestUpdateContactFieldsLanguage(FrappeTestCase):
 
         self.assertTrue(ok)
 
-        update_call = mock_session.post.call_args_list[1]
+        update_call = mock_session.post.call_args_list[0]
         payload = update_call.kwargs.get("json") or update_call.args[1]
         mutation_input = payload["variables"]["input"]
         # Bad language_id is skipped, not propagated to mutation
         self.assertNotIn("languageId", mutation_input)
+
+    @patch("tap_lms.glific_integration.get_glific_auth_headers")
+    @patch("tap_lms.glific_integration._GLIFIC_SESSION")
+    def test_fails_when_post_update_fetch_does_not_reflect_write(self, mock_session, mock_headers):
+        """Verification must use a fresh post-update fetch, not the mutation body."""
+        from tap_lms.glific_integration import update_contact_fields
+
+        mock_headers.return_value = {"authorization": "test-token"}
+
+        update_resp = MagicMock(status_code=200, ok=True)
+        update_resp.raise_for_status = MagicMock()
+        update_resp.json.return_value = {
+            "data": {"updateContact": {"contact": {
+                "id": "13325",
+                "fields": json.dumps({"course_level": {"value": "X"}}),
+            }}}
+        }
+        verify_resp = MagicMock(status_code=200, ok=True)
+        verify_resp.raise_for_status = MagicMock()
+        verify_resp.json.return_value = {
+            "data": {"contact": {"contact": {
+                "id": "13325",
+                "name": "X",
+                "language": {"id": "1"},
+                "fields": "{}",
+            }}}
+        }
+        mock_session.post.side_effect = [update_resp, verify_resp]
+
+        with patch("tap_lms.glific_integration.get_glific_settings") as mock_settings:
+            mock_settings.return_value.api_url = "https://api.glific.example.com"
+            ok = update_contact_fields("13325", {"course_level": "X"})
+
+        self.assertFalse(ok)
+
+    @patch("tap_lms.glific_integration.get_glific_auth_headers")
+    @patch("tap_lms.glific_integration._GLIFIC_SESSION")
+    @patch("tap_lms.glific_integration.create_contact")
+    def test_creates_new_contact_when_update_target_is_missing(
+        self, mock_create_contact, mock_session, mock_headers
+    ):
+        from tap_lms.glific_integration import update_contact_fields
+
+        mock_headers.return_value = {"authorization": "test-token"}
+
+        missing_update_resp = MagicMock(status_code=200, ok=True)
+        missing_update_resp.raise_for_status = MagicMock()
+        missing_update_resp.json.return_value = {
+            "data": {"updateContact": {"contact": None, "errors": [
+                {"key": "contact", "message": "Contact not found"},
+            ]}}
+        }
+        retry_update_resp = MagicMock(status_code=200, ok=True)
+        retry_update_resp.raise_for_status = MagicMock()
+        retry_update_resp.json.return_value = {
+            "data": {"updateContact": {"contact": {"id": "999", "fields": "{}"}, "errors": []}}
+        }
+        verify_resp = MagicMock(status_code=200, ok=True)
+        verify_resp.raise_for_status = MagicMock()
+        verify_resp.json.return_value = {
+            "data": {"contact": {"contact": {
+                "id": "999",
+                "name": "X",
+                "language": {"id": "5"},
+                "fields": json.dumps({"course_level": {"value": "X"}}),
+            }}}
+        }
+        mock_session.post.side_effect = [missing_update_resp, retry_update_resp, verify_resp]
+        mock_create_contact.return_value = {"id": "999"}
+
+        with patch("tap_lms.glific_integration.get_glific_settings") as mock_settings:
+            mock_settings.return_value.api_url = "https://api.glific.example.com"
+            ok = update_contact_fields(
+                "13325",
+                {"course_level": "X"},
+                language_id=5,
+                create_contact_input={
+                    "name": "X",
+                    "phone": "9999999999",
+                    "school_name": "School",
+                    "model_name": "Model",
+                    "batch_id": "B1",
+                },
+            )
+
+        self.assertTrue(ok)
+        mock_create_contact.assert_called_once_with("X", "9999999999", "School", "Model", 5, "B1")
+        retry_payload = mock_session.post.call_args_list[1].kwargs.get("json") or mock_session.post.call_args_list[1].args[1]
+        self.assertEqual(retry_payload["variables"]["id"], "999")
 
 
 # ════════════════════════════════════════════════════════════

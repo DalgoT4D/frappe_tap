@@ -265,6 +265,84 @@ def _glific_fields_match(updated_fields, fields_to_update):
     return True
 
 
+def _fetch_glific_contact(contact_id, url):
+    """Fetch a single Glific contact for read/verify flows."""
+    fetch_payload = {
+        "query": """
+        query contact($id: ID!) {
+          contact(id: $id) {
+            contact {
+              id
+              name
+              language {
+                id
+              }
+              fields
+            }
+          }
+        }
+        """,
+        "variables": {"id": str(contact_id)},
+    }
+
+    fetch_response = _glific_post_with_401_retry(url, fetch_payload)
+    fetch_data = fetch_response.json()
+
+    if "errors" in fetch_data:
+        return None, fetch_data["errors"]
+
+    return fetch_data.get("data", {}).get("contact", {}).get("contact"), None
+
+
+def _glific_language_matches(contact_data, language_id):
+    """Return True only if the fetched contact reflects the requested language."""
+    if language_id is None or language_id == "":
+        return True
+
+    try:
+        expected_language_id = str(int(language_id))
+    except (TypeError, ValueError):
+        return True
+
+    actual_language = (contact_data or {}).get("language") or {}
+    return str(actual_language.get("id") or "") == expected_language_id
+
+
+def _glific_errors_indicate_missing_contact(errors):
+    """Best-effort detect 'contact not found' mutation failures."""
+    for err in errors or []:
+        key = str((err or {}).get("key") or "").lower()
+        msg = str((err or {}).get("message") or "").lower()
+        text = f"{key} {msg}"
+        if "not found" in text or "no contact" in text or "record not found" in text:
+            return True
+    return False
+
+
+def _create_missing_glific_contact(create_contact_input, language_id, fields_to_update):
+    """Create a new Glific contact when the target id no longer exists."""
+    create_contact_input = create_contact_input or {}
+    contact_name = create_contact_input.get("name")
+    phone = create_contact_input.get("phone")
+    school_name = create_contact_input.get("school_name") or fields_to_update.get("school") or ""
+    model_name = create_contact_input.get("model_name") or fields_to_update.get("model") or ""
+    batch_id = create_contact_input.get("batch_id")
+    if batch_id is None:
+        batch_id = fields_to_update.get("batch_id", "")
+
+    if not contact_name or not phone:
+        return None
+
+    return create_contact(
+        contact_name,
+        phone,
+        school_name,
+        model_name,
+        language_id,
+        batch_id,
+    )
+
+
 def _set_glific_sync_status(doctype, docname, status):
     """Write glific_sync_status only for doctypes that expose the field."""
     if not doctype or not docname:
@@ -293,18 +371,19 @@ def update_contact_fields(
     language_id=None,
     sync_status_doctype=None,
     sync_status_docname=None,
+    create_contact_input=None,
 ):
     """
-    Update Glific contact fields using fetch-merge-update pattern, optionally
-    updating the contact's CORE language at the same time.
+    Update Glific contact fields directly, optionally updating the contact's
+    CORE language at the same time, then verify via a post-write fetch.
 
-    Uses 2 GraphQL calls:
-      1. Fetch existing contact fields (preserves fields set by other tools)
-      2. Merge our fields into existing and write back via updateContact
+    Uses 2 GraphQL calls in the normal path:
+      1. updateContact
+      2. Fetch the contact again and verify the write persisted remotely
 
-    This pattern is necessary because Glific's updateContact mutation
-    replaces the entire fields JSON blob. Without fetching first, we'd
-    overwrite fields set by Glific flows, other integrations, or manual edits.
+    If the target contact id no longer exists and `create_contact_input` is
+    supplied, this helper creates a replacement contact, retries the update
+    against the new id, then verifies via fetch.
 
     Args:
         contact_id: Glific contact ID (string or int)
@@ -319,62 +398,33 @@ def update_contact_fields(
                      Glific's built-in language attribute. Added 2026-05-19
                      to fix the existing-contact-language-not-updated gap.
 
+        create_contact_input: Optional dict with `name`, `phone`, `school_name`,
+                     `model_name`, and optional `batch_id`. Used only when the
+                     target contact id is missing and a replacement contact
+                     must be created before retrying the update.
+
     Returns:
         True on success, False on failure
     """
     settings = get_glific_settings()
     url = f"{settings.api_url}/api"
 
-    # ── Step 1: Fetch existing contact fields ──────────────────
-    fetch_payload = {
-        "query": """
-        query contact($id: ID!) {
-          contact(id: $id) {
-            contact {
-              id
-              name
-              fields
-            }
-          }
-        }
-        """,
-        "variables": {"id": str(contact_id)}
-    }
-
     try:
-        # CR-025: 401-retry helper fetches headers internally; no headers arg
-        fetch_response = _glific_post_with_401_retry(url, fetch_payload)
-        fetch_data = fetch_response.json()
-
-        if "errors" in fetch_data:
-            frappe.logger().error(f"Glific fetch contact error for {contact_id}: {fetch_data['errors']}")
-            _set_glific_sync_status(sync_status_doctype, sync_status_docname, "failed")
-            return False
-
-        contact_data = fetch_data.get("data", {}).get("contact", {}).get("contact")
-        if not contact_data:
-            frappe.logger().error(f"Glific contact not found: {contact_id}")
-            _set_glific_sync_status(sync_status_doctype, sync_status_docname, "failed")
-            return False
-
-        # ── Step 2: Merge our fields into existing ─────────────
-        existing_fields = _parse_glific_fields_blob(contact_data.get("fields"))
-
-        # Only update the fields we care about; preserve everything else
+        # ── Step 1: Build direct update payload ────────────────
+        outgoing_fields = {}
         for key, value in fields_to_update.items():
-            existing_fields[key] = {
+            outgoing_fields[key] = {
                 "value": str(value),
                 "type": "string",
                 "inserted_at": datetime.now(timezone.utc).isoformat()
             }
 
-        # ── Step 3: Write merged fields back ───────────────────
+        # ── Step 2: Write fields directly ──────────────────────
         # If language_id was passed, include it in the mutation input so
         # Glific's CORE language attribute is updated alongside the custom
         # fields blob — single round-trip.
         mutation_input = {
-            "name": contact_data.get("name", ""),
-            "fields": json.dumps(existing_fields),
+            "fields": json.dumps(outgoing_fields),
         }
         if language_id is not None and language_id != "":
             try:
@@ -417,27 +467,91 @@ def update_contact_fields(
             return False
 
         result = update_data.get("data", {}).get("updateContact", {})
-        if result.get("errors"):
-            frappe.logger().error(f"Glific updateContact mutation error for {contact_id}: {result['errors']}")
-            _set_glific_sync_status(sync_status_doctype, sync_status_docname, "failed")
-            return False
+        result_errors = result.get("errors") or []
+        if result_errors:
+            if _glific_errors_indicate_missing_contact(result_errors) and create_contact_input:
+                new_contact = _create_missing_glific_contact(
+                    create_contact_input,
+                    language_id,
+                    fields_to_update,
+                )
+                if not new_contact or not new_contact.get("id"):
+                    frappe.logger().error(
+                        f"Glific missing-contact recovery create failed for {contact_id}: "
+                        f"{result_errors}"
+                    )
+                    _set_glific_sync_status(sync_status_doctype, sync_status_docname, "failed")
+                    return False
 
-        if result.get("contact") and _glific_fields_match(
-            result["contact"].get("fields"),
-            fields_to_update,
-        ):
-            _set_glific_sync_status(sync_status_doctype, sync_status_docname, "synced")
-            return True
+                contact_id = str(new_contact["id"])
+                if sync_status_doctype and sync_status_docname:
+                    frappe.db.set_value(
+                        sync_status_doctype,
+                        sync_status_docname,
+                        "glific_id",
+                        contact_id,
+                        update_modified=False,
+                    )
 
-        if result.get("contact"):
+                update_payload["variables"]["id"] = contact_id
+                retry_response = _glific_post_with_401_retry(url, update_payload)
+                update_data = retry_response.json()
+                if "errors" in update_data:
+                    frappe.logger().error(
+                        f"Glific updateContact error after create for {contact_id}: "
+                        f"{update_data['errors']}"
+                    )
+                    _set_glific_sync_status(sync_status_doctype, sync_status_docname, "failed")
+                    return False
+                result = update_data.get("data", {}).get("updateContact", {})
+                result_errors = result.get("errors") or []
+
+            if result_errors:
+                frappe.logger().error(
+                    f"Glific updateContact mutation error for {contact_id}: {result_errors}"
+                )
+                _set_glific_sync_status(sync_status_doctype, sync_status_docname, "failed")
+                return False
+
+        if not result.get("contact"):
             frappe.logger().error(
-                f"Glific updateContact verification failed for {contact_id}: "
-                f"requested_fields={fields_to_update}, returned_fields={result['contact'].get('fields')}"
+                f"Glific updateContact unexpected response for {contact_id}: {update_data}"
             )
             _set_glific_sync_status(sync_status_doctype, sync_status_docname, "failed")
             return False
 
-        frappe.logger().error(f"Glific updateContact unexpected response for {contact_id}: {update_data}")
+        # ── Step 3: Fetch-after-write verification ────────────
+        verified_contact, verify_errors = _fetch_glific_contact(contact_id, url)
+        if verify_errors:
+            frappe.logger().error(
+                f"Glific post-update fetch error for {contact_id}: {verify_errors}"
+            )
+            _set_glific_sync_status(sync_status_doctype, sync_status_docname, "failed")
+            return False
+
+        fields_match = _glific_fields_match(
+            (verified_contact or {}).get("fields"),
+            fields_to_update,
+        )
+        language_match = _glific_language_matches(verified_contact, language_id)
+
+        if fields_match and language_match:
+            _set_glific_sync_status(sync_status_doctype, sync_status_docname, "synced")
+            return True
+
+        if verified_contact:
+            frappe.logger().error(
+                f"Glific updateContact verification failed for {contact_id}: "
+                f"requested_fields={fields_to_update}, requested_language_id={language_id}, "
+                f"returned_language={verified_contact.get('language')}, "
+                f"returned_fields={verified_contact.get('fields')}"
+            )
+            _set_glific_sync_status(sync_status_doctype, sync_status_docname, "failed")
+            return False
+
+        frappe.logger().error(
+            f"Glific updateContact verification returned no contact for {contact_id}"
+        )
         _set_glific_sync_status(sync_status_doctype, sync_status_docname, "failed")
         return False
 

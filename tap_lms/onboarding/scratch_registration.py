@@ -2,13 +2,11 @@ import json
 import re
 
 import frappe
-import requests
 from frappe.utils import getdate, now_datetime
 
 from tap_lms.api import authenticate_api_key
 from tap_lms.glific_integration import (
     create_contact,
-    get_contact_by_phone,
     register_contact_field,
     update_contact_fields,
 )
@@ -414,12 +412,8 @@ def sync_registration_contact_to_glific(doctype, docname, retry_count=0):
 
         language_id = _get_glific_language_id(language_name)
 
-        try:
-            glific_contact = get_contact_by_phone(phone)
-        except requests.exceptions.RequestException:
-            raise
-
-        if not glific_contact or not glific_contact.get("id"):
+        glific_id = str(getattr(doc, "glific_id", "") or "").strip()
+        if not glific_id:
             glific_contact = create_contact(
                 contact_name,
                 phone,
@@ -429,11 +423,11 @@ def sync_registration_contact_to_glific(doctype, docname, retry_count=0):
                 fields_to_update["batch_id"],
             )
 
-        if not glific_contact or not glific_contact.get("id"):
-            raise RuntimeError(f"Failed to create or link Glific contact for {doctype} {docname}")
+            if not glific_contact or not glific_contact.get("id"):
+                raise RuntimeError(f"Failed to create or link Glific contact for {doctype} {docname}")
 
-        glific_id = str(glific_contact["id"])
-        frappe.db.set_value(doctype, docname, "glific_id", glific_id)
+            glific_id = str(glific_contact["id"])
+            frappe.db.set_value(doctype, docname, "glific_id", glific_id)
 
         ok = update_contact_fields(
             glific_id,
@@ -441,6 +435,13 @@ def sync_registration_contact_to_glific(doctype, docname, retry_count=0):
             language_id=language_id,
             sync_status_doctype=doctype,
             sync_status_docname=docname,
+            create_contact_input={
+                "name": contact_name,
+                "phone": phone,
+                "school_name": school_meta["school_name"],
+                "model_name": school_meta["model_name"],
+                "batch_id": fields_to_update.get("batch_id", ""),
+            },
         )
         if not ok:
             raise RuntimeError(
