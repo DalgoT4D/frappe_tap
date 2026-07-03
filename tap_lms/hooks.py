@@ -15,9 +15,9 @@ doc_events = {
     "School": {
         "before_save": "tap_lms.tap_lms.doctype.school.school.before_save"
     },
-    "Teacher": {
-        "on_update": "tap_lms.glific_webhook.update_glific_contact"
-    },
+    # "Teacher": {
+    #     "on_update": "tap_lms.glific_webhook.update_glific_contact"
+    # },
     "StudentStageProgress": {
         "after_insert": "tap_lms.tap_lms.doctype.studentonboardingprogress.studentonboardingprogress.update_student_progress",
         "on_update": "tap_lms.tap_lms.doctype.studentonboardingprogress.studentonboardingprogress.update_student_progress"
