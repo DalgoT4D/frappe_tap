@@ -15,6 +15,33 @@ GLIFIC_SYNC_MAX_RETRIES = 3
 _SCRATCH_REGISTRATION_FIELDS_BOOTSTRAPPED = False
 
 
+def _get_phone_lookup_variants(phone):
+    normalized_phone = str(phone or "").strip()
+    if not normalized_phone:
+        return []
+
+    variants = [normalized_phone]
+    if len(normalized_phone) == 10 and normalized_phone.isdigit():
+        variants.append(f"91{normalized_phone}")
+    elif (
+        len(normalized_phone) == 12
+        and normalized_phone.startswith("91")
+        and normalized_phone[2:].isdigit()
+    ):
+        variants.append(normalized_phone[2:])
+
+    # Preserve order while deduplicating.
+    return list(dict.fromkeys(variants))
+
+
+def _get_contact_by_phone_variants(phone):
+    for candidate in _get_phone_lookup_variants(phone):
+        contact = get_contact_by_phone(candidate)
+        if contact and contact.get("id"):
+            return contact
+    return None
+
+
 def _get_language_id_to_name(language_id):
     if not language_id:
         return ""
@@ -161,7 +188,7 @@ def sync_registration_contact_to_glific(doctype, docname, retry_count=0):
 
         language_name = _get_language_id_to_name(doc.language)
         language_id = _get_glific_language_id(language_name)
-        glific_contact = get_contact_by_phone(phone)
+        glific_contact = _get_contact_by_phone_variants(phone)
 
         if glific_contact and glific_contact.get("id"):
             glific_id = str(glific_contact["id"])
