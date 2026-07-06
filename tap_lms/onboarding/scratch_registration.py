@@ -9,6 +9,7 @@ from tap_lms.onboarding.glific_sync import (
     enqueue_registration_contact_sync,
     sync_registration_contact_to_glific as _sync_registration_contact_to_glific,
 )
+from tap_lms.utils.api_failures import log_api_failure
 
 
 DELHI_BATCH = "BT00000024" 
@@ -274,29 +275,39 @@ def list_school_details():
     # Expected input parameters:
     # - api_key
     data = _get_request_data()
-    api_key = data.get("api_key")
+    try:
+        api_key = data.get("api_key")
 
-    if not _validate_api_key_or_respond(api_key):
-        return
+        if not _validate_api_key_or_respond(api_key):
+            return
 
-    schools = frappe.db.sql(
-        """
-        SELECT
-            s.name AS school_id,
-            COALESCE(st.state_name, s.state, '') AS state,
-            COALESCE(d.district_name, s.district, '') AS district,
-            COALESCE(c.city_name, s.city, '') AS city,
-            s.name1 AS school_name
-        FROM `tabSchool` s
-        LEFT JOIN `tabState` st ON st.name = s.state
-        LEFT JOIN `tabDistrict` d ON d.name = s.district
-        LEFT JOIN `tabCity` c ON c.name = s.city
-        ORDER BY s.name1 ASC
-        """,
-        as_dict=True,
-    )
+        schools = frappe.db.sql(
+            """
+            SELECT
+                s.name AS school_id,
+                COALESCE(st.state_name, s.state, '') AS state,
+                COALESCE(d.district_name, s.district, '') AS district,
+                COALESCE(c.city_name, s.city, '') AS city,
+                s.name1 AS school_name
+            FROM `tabSchool` s
+            LEFT JOIN `tabState` st ON st.name = s.state
+            LEFT JOIN `tabDistrict` d ON d.name = s.district
+            LEFT JOIN `tabCity` c ON c.name = s.city
+            ORDER BY s.name1 ASC
+            """,
+            as_dict=True,
+        )
 
-    _respond(200, {"schools": schools})
+        _respond(200, {"schools": schools})
+    except frappe.ValidationError:
+        frappe.db.rollback()
+        log_api_failure("list_school_details", data, frappe.get_traceback())
+        raise
+    except Exception as exc:
+        frappe.db.rollback()
+        log_api_failure("list_school_details", data, frappe.get_traceback())
+        frappe.log_error(frappe.get_traceback(), "list_school_details failed")
+        _respond(500, {"status": "failure", "message": str(exc)})
 
 
 @frappe.whitelist(allow_guest=True)
@@ -304,14 +315,24 @@ def check_teacher_exists():
     # Expected input parameters:
     # - phone
     data = _get_request_data()
-    phone = str(data.get("phone") or "").strip()
+    try:
+        phone = str(data.get("phone") or "").strip()
 
-    if not _validate_phone(phone):
-        _respond(400, {"exists": False, "message": "Phone must be exactly 10 digits"})
-        return
+        if not _validate_phone(phone):
+            _respond(400, {"exists": False, "message": "Phone must be exactly 10 digits"})
+            return
 
-    exists = bool(frappe.db.exists("Teacher", {"phone_number": phone}))
-    _respond(200, {"exists": exists})
+        exists = bool(frappe.db.exists("Teacher", {"phone_number": phone}))
+        _respond(200, {"exists": exists})
+    except frappe.ValidationError:
+        frappe.db.rollback()
+        log_api_failure("check_teacher_exists", data, frappe.get_traceback())
+        raise
+    except Exception as exc:
+        frappe.db.rollback()
+        log_api_failure("check_teacher_exists", data, frappe.get_traceback())
+        frappe.log_error(frappe.get_traceback(), "check_teacher_exists failed")
+        _respond(500, {"status": "failure", "message": str(exc)})
 
 
 @frappe.whitelist(allow_guest=True)
@@ -319,44 +340,54 @@ def get_teacher_details():
     # Expected input parameters:
     # - phone
     data = _get_request_data()
-    phone = str(data.get("phone") or "").strip()
+    try:
+        phone = str(data.get("phone") or "").strip()
 
-    if not _validate_phone(phone):
-        _respond(400, {"message": "Phone must be exactly 10 digits"})
-        return
+        if not _validate_phone(phone):
+            _respond(400, {"message": "Phone must be exactly 10 digits"})
+            return
 
-    teacher = frappe.db.get_value(
-        "Teacher",
-        {"phone_number": phone},
-        [
-            "name",
-            "first_name",
-            "last_name",
-            "phone_number",
-            "school_id",
-            "teacher_role",
-            "language",
-        ],
-        as_dict=True,
-    )
+        teacher = frappe.db.get_value(
+            "Teacher",
+            {"phone_number": phone},
+            [
+                "name",
+                "first_name",
+                "last_name",
+                "phone_number",
+                "school_id",
+                "teacher_role",
+                "language",
+            ],
+            as_dict=True,
+        )
 
-    if not teacher:
-        _respond(404, {"message": "Teacher not found"})
-        return
+        if not teacher:
+            _respond(404, {"message": "Teacher not found"})
+            return
 
-    school_row = _get_school_row_by_id(teacher.school_id) if teacher.school_id else None
-    payload = {
-        "firstName": teacher.first_name or "",
-        "lastName": teacher.last_name or "",
-        "phone": teacher.phone_number or "",
-        "state": school_row["state"] if school_row else "",
-        "district": school_row["district"] if school_row else "",
-        "city": school_row["city"] if school_row else "",
-        "school": school_row["school_name"] if school_row else "",
-        "role": teacher.teacher_role or "",
-        "language": _get_language_id_to_name(teacher.language),
-    }
-    _respond(200, payload)
+        school_row = _get_school_row_by_id(teacher.school_id) if teacher.school_id else None
+        payload = {
+            "firstName": teacher.first_name or "",
+            "lastName": teacher.last_name or "",
+            "phone": teacher.phone_number or "",
+            "state": school_row["state"] if school_row else "",
+            "district": school_row["district"] if school_row else "",
+            "city": school_row["city"] if school_row else "",
+            "school": school_row["school_name"] if school_row else "",
+            "role": teacher.teacher_role or "",
+            "language": _get_language_id_to_name(teacher.language),
+        }
+        _respond(200, payload)
+    except frappe.ValidationError:
+        frappe.db.rollback()
+        log_api_failure("get_teacher_details", data, frappe.get_traceback())
+        raise
+    except Exception as exc:
+        frappe.db.rollback()
+        log_api_failure("get_teacher_details", data, frappe.get_traceback())
+        frappe.log_error(frappe.get_traceback(), "get_teacher_details failed")
+        _respond(500, {"status": "failure", "message": str(exc)})
 
 
 @frappe.whitelist(allow_guest=True)
@@ -404,9 +435,11 @@ def update_teacher_details():
         _respond(200, {"status": "success", "message": "Teacher details updated successfully."})
     except frappe.ValidationError:
         frappe.db.rollback()
+        log_api_failure("update_teacher_details", data, frappe.get_traceback())
         raise
     except Exception as exc:
         frappe.db.rollback()
+        log_api_failure("update_teacher_details", data, frappe.get_traceback())
         frappe.log_error(frappe.get_traceback(), "update_teacher_details failed")
         _respond(500, {"status": "failure", "message": str(exc)})
 
@@ -484,9 +517,11 @@ def create_teacher_web():
         }
     except frappe.ValidationError:
         frappe.db.rollback()
+        log_api_failure("create_teacher_web", data, frappe.get_traceback())
         raise
     except Exception as exc:
         frappe.db.rollback()
+        log_api_failure("create_teacher_web", data, frappe.get_traceback())
         frappe.log_error(frappe.get_traceback(), "create_teacher_web failed")
         _set_status(500)
         return {"status": "failure", "message": str(exc)}
@@ -564,9 +599,7 @@ def create_student_web():
                     "grade": grade,
                     "language": language_id,
                     "joined_on": now_datetime().date(),
-                    "status": "active",
-                    "archetype": None,
-                    "experiment_arm": None,
+                    "status": "active"
                 }
             )
             response_school_row = school_row
@@ -621,9 +654,11 @@ def create_student_web():
         }
     except frappe.ValidationError:
         frappe.db.rollback()
+        log_api_failure("create_student_web", data, frappe.get_traceback())
         raise
     except Exception as exc:
         frappe.db.rollback()
+        log_api_failure("create_student_web", data, frappe.get_traceback())
         frappe.log_error(frappe.get_traceback(), "create_student_web failed")
         _set_status(500)
         return {"status": "failure", "message": str(exc)}
@@ -656,9 +691,19 @@ def teacher_whatsapp_response(phone_number):
         }
     except frappe.ValidationError:
         frappe.db.rollback()
+        log_api_failure(
+            "teacher_whatsapp_response",
+            {"phone_number": phone_number},
+            frappe.get_traceback(),
+        )
         raise
     except Exception as exc:
         frappe.db.rollback()
+        log_api_failure(
+            "teacher_whatsapp_response",
+            {"phone_number": phone_number},
+            frappe.get_traceback(),
+        )
         frappe.log_error(frappe.get_traceback(), "teacher_whatsapp_response failed")
         _respond(500, {"status": "failure", "message": str(exc)})
 
@@ -693,9 +738,19 @@ def student_whatsapp_response(phone_number):
         }
     except frappe.ValidationError:
         frappe.db.rollback()
+        log_api_failure(
+            "student_whatsapp_response",
+            {"phone_number": phone_number},
+            frappe.get_traceback(),
+        )
         raise
     except Exception as exc:
         frappe.db.rollback()
+        log_api_failure(
+            "student_whatsapp_response",
+            {"phone_number": phone_number},
+            frappe.get_traceback(),
+        )
         frappe.log_error(frappe.get_traceback(), "student_whatsapp_response failed")
         _respond(500, {"status": "failure", "message": str(exc)})
 
@@ -777,8 +832,18 @@ def set_student_course_level(phone_number, course_name):
         )
     except frappe.ValidationError:
         frappe.db.rollback()
+        log_api_failure(
+            "set_student_course_level",
+            {"phone_number": phone_number, "course_name": course_name},
+            frappe.get_traceback(),
+        )
         raise
     except Exception as exc:
         frappe.db.rollback()
+        log_api_failure(
+            "set_student_course_level",
+            {"phone_number": phone_number, "course_name": course_name},
+            frappe.get_traceback(),
+        )
         frappe.log_error(frappe.get_traceback(), "set_student_course_level failed")
         _respond(500, {"status": "failure", "message": str(exc)})

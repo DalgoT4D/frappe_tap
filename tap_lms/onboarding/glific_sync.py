@@ -209,13 +209,20 @@ def sync_registration_contact_to_glific(doctype, docname, retry_count=0):
             glific_id = str(glific_contact["id"])
             frappe.db.set_value(doctype, docname, "glific_id", glific_id)
 
-        if doctype == "Teacher" and not optin_contact(phone, contact_name):
-            raise RuntimeError(f"optin_contact returned False for Teacher {docname} ({phone})")
+        canonical_phone = (
+            str((glific_contact or {}).get("phone") or "").strip()
+            or str(phone).strip()
+        )
+        if doctype in {"Teacher", "Student"} and not optin_contact(canonical_phone, contact_name):
+            raise RuntimeError(
+                f"optin_contact returned False for {doctype} {docname} ({canonical_phone})"
+            )
 
         ok = update_contact_fields(
             glific_id,
             fields_to_update,
             language_id=language_id,
+            contact_name=contact_name,
             sync_status_doctype=doctype,
             sync_status_docname=docname,
         )

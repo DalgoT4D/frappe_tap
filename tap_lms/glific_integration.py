@@ -308,6 +308,13 @@ def _glific_language_matches(contact_data, language_id):
     return str(actual_language.get("id") or "") == expected_language_id
 
 
+def _glific_name_matches(contact_data, contact_name):
+    """Return True only if the fetched contact reflects the requested name."""
+    if contact_name is None:
+        return True
+    return str((contact_data or {}).get("name") or "").strip() == str(contact_name or "").strip()
+
+
 def _glific_errors_indicate_missing_contact(errors):
     """Best-effort detect 'contact not found' mutation failures."""
     for err in errors or []:
@@ -369,6 +376,7 @@ def update_contact_fields(
     contact_id,
     fields_to_update,
     language_id=None,
+    contact_name=None,
     sync_status_doctype=None,
     sync_status_docname=None,
     create_contact_input=None,
@@ -397,6 +405,8 @@ def update_contact_fields(
                      the custom `language_id` contact field — this updates
                      Glific's built-in language attribute. Added 2026-05-19
                      to fix the existing-contact-language-not-updated gap.
+        contact_name: Optional Glific core contact name to set as part of the
+                     same updateContact mutation and verify after write.
 
         create_contact_input: Optional dict with `name`, `phone`, `school_name`,
                      `model_name`, and optional `batch_id`. Used only when the
@@ -426,6 +436,8 @@ def update_contact_fields(
         mutation_input = {
             "fields": json.dumps(outgoing_fields),
         }
+        if contact_name is not None:
+            mutation_input["name"] = str(contact_name or "").strip()
         if language_id is not None and language_id != "":
             try:
                 mutation_input["languageId"] = int(language_id)
@@ -534,8 +546,9 @@ def update_contact_fields(
             fields_to_update,
         )
         language_match = _glific_language_matches(verified_contact, language_id)
+        name_match = _glific_name_matches(verified_contact, contact_name)
 
-        if fields_match and language_match:
+        if fields_match and language_match and name_match:
             _set_glific_sync_status(sync_status_doctype, sync_status_docname, "synced")
             return True
 
@@ -543,6 +556,7 @@ def update_contact_fields(
             frappe.logger().error(
                 f"Glific updateContact verification failed for {contact_id}: "
                 f"requested_fields={fields_to_update}, requested_language_id={language_id}, "
+                f"requested_name={contact_name}, returned_name={verified_contact.get('name')}, "
                 f"returned_language={verified_contact.get('language')}, "
                 f"returned_fields={verified_contact.get('fields')}"
             )
