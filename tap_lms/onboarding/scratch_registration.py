@@ -729,13 +729,18 @@ def student_whatsapp_response(phone_number):
 
         latest_course_name = _get_course_name_from_course_level(latest_enrollment.course)
         if latest_course_name:
-            return {"course1": latest_course_name}
+            return {
+                "course1": latest_course_name,
+                "courses_num": 1,
+            }
 
         course_names = _get_school_course_vertical_names(latest_enrollment.school or student.school_id)
-        return {
+        response = {
             f"course{index}": course_name
             for index, course_name in enumerate(course_names, start=1)
         }
+        response["courses_num"] = len(course_names)
+        return response
     except frappe.ValidationError:
         frappe.db.rollback()
         log_api_failure(
