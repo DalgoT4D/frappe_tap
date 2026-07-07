@@ -40,6 +40,7 @@ import logging
 import os
 import sys
 import traceback
+from logging.handlers import RotatingFileHandler
 
 import frappe
 from frappe.utils import now_datetime
@@ -104,7 +105,12 @@ def _get_configured_logger() -> logging.Logger:
 
     try:
         os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
-        file_handler = logging.FileHandler(log_file_path, encoding="utf-8")
+        file_handler = RotatingFileHandler(
+            log_file_path,
+            maxBytes=10 * 1024 * 1024,  # 10MB
+            backupCount=5,  # keep last 5 files; so total 5 * 10 = 50MB of space
+            encoding="utf-8",
+        )
         file_handler.setFormatter(logging.Formatter("%(message)s"))
         logger.addHandler(file_handler)
     except Exception as e:
