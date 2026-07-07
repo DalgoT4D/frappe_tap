@@ -687,6 +687,10 @@ def teacher_whatsapp_response(phone_number):
             "student_registration_url": (
                 f"http://registration.theapprenticeproject.org/student/"
                 f"{latest_enrollment.school or teacher.school_id}"
+            ),
+            "student_consent_url": (
+                f"https://api.whatsapp.com/send?phone=918454812392&text=tapschool:"
+                f"{latest_enrollment.school or teacher.school_id}"
             )
         }
     except frappe.ValidationError:
