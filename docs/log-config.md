@@ -25,6 +25,8 @@ def save_submission(submission_id):
 
 ## 2. Automated Log File Rotation
 
+We use RotationLogger from the logger library to rotate the log files once they reach 10MB and to keep last 5 files available incase required. An alternative to this approach, suggested by Gemini, is to use the below (NOTE: Do not use both these methods at the same time):
+
 Because the structured log grows continuously in production, we use Linux's native `logrotate` engine with a `copytruncate` directive [STEM]. This ensures logs are safely truncated without forcing a restart of Gunicorn or dropping active TCP/HTTP client connections [STEM].
 
 By omitting explicit user and group names from the `create` directive, `logrotate` dynamically inspects who owns the existing log file and duplicates those exact permissions on the new, empty file [STEM]. This prevents the file from being hijacked by the `root` user context.
