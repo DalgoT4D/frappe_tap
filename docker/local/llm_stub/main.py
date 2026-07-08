@@ -22,6 +22,7 @@ Endpoints:
 """
 
 import json
+import logging
 import random
 import time
 import uuid
@@ -29,6 +30,15 @@ from typing import Any, Dict, List
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+
+
+# remove health check pings from logs
+class _HealthCheckFilter(logging.Filter):
+    def filter(self, record):
+        return "/health" not in record.getMessage()
+
+
+logging.getLogger("uvicorn.access").addFilter(_HealthCheckFilter())
 
 app = FastAPI(title="LLM Stub", description="Local LLM stub for pipeline testing")
 

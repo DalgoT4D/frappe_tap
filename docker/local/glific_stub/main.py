@@ -35,28 +35,37 @@ Usage:
 """
 
 import json
-import uuid
-import time
 import logging
+import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+
+# remove health check pings from logs
+class _HealthCheckFilter(logging.Filter):
+    def filter(self, record):
+        return "/health" not in record.getMessage()
+
+
 # ── Setup ─────────────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("glific-stub")
+logger = logging.getLogger("glific-stub").addFilter(_HealthCheckFilter())
 
-app = FastAPI(title="Glific Stub", description="Local Glific API stub for TAP LMS development")
+app = FastAPI(
+    title="Glific Stub", description="Local Glific API stub for TAP LMS development"
+)
 
 # ── In-memory state ───────────────────────────────────────────────────────────
 # Keeps fake contacts and groups alive for the duration of the process.
 # Resets on container restart — intentional for a dev stub.
 
-_contacts: Dict[str, Dict] = {}   # phone → contact
-_groups: Dict[str, Dict] = {}     # label → group
-_flow_calls: list = []             # audit log of all startContactFlow calls
+_contacts: Dict[str, Dict] = {}  # phone → contact
+_groups: Dict[str, Dict] = {}  # label → group
+_flow_calls: list = []  # audit log of all startContactFlow calls
 
 
 def _make_contact_id(phone: str) -> str:
@@ -90,6 +99,7 @@ def _make_group(label: str, description: str = "") -> Dict:
 
 # ── Authentication endpoint ───────────────────────────────────────────────────
 
+
 @app.post("/api/v1/session")
 async def session(request: Request):
     """
@@ -100,16 +110,19 @@ async def session(request: Request):
     """
     logger.info("AUTH: token requested")
     expiry = datetime.now(timezone.utc) + timedelta(days=36500)
-    return JSONResponse(content={
-        "data": {
-            "access_token": "stub-access-token-local-dev",
-            "renewal_token": "stub-renewal-token-local-dev",
-            "token_expiry_time": expiry.isoformat(),
+    return JSONResponse(
+        content={
+            "data": {
+                "access_token": "stub-access-token-local-dev",
+                "renewal_token": "stub-renewal-token-local-dev",
+                "token_expiry_time": expiry.isoformat(),
+            }
         }
-    })
+    )
 
 
 # ── GraphQL endpoint ──────────────────────────────────────────────────────────
+
 
 @app.post("/api")
 async def graphql(request: Request):
@@ -156,11 +169,14 @@ async def graphql(request: Request):
         return _list_groups(variables)
 
     # Unknown operation — return empty success so tap_lms doesn't crash
-    logger.warning(f"UNKNOWN GraphQL operation — returning empty success. Query: {query[:120]}")
+    logger.warning(
+        f"UNKNOWN GraphQL operation — returning empty success. Query: {query[:120]}"
+    )
     return JSONResponse(content={"data": {}})
 
 
 # ── Mutation handlers ─────────────────────────────────────────────────────────
+
 
 def _start_contact_flow(variables: Dict) -> JSONResponse:
     """
@@ -173,7 +189,11 @@ def _start_contact_flow(variables: Dict) -> JSONResponse:
     default_results_raw = variables.get("defaultResults", "{}")
 
     try:
-        default_results = json.loads(default_results_raw) if isinstance(default_results_raw, str) else default_results_raw
+        default_results = (
+            json.loads(default_results_raw)
+            if isinstance(default_results_raw, str)
+            else default_results_raw
+        )
     except Exception:
         default_results = {}
 
@@ -192,14 +212,9 @@ def _start_contact_flow(variables: Dict) -> JSONResponse:
         f"[WhatsApp message would be sent here in production]"
     )
 
-    return JSONResponse(content={
-        "data": {
-            "startContactFlow": {
-                "success": True,
-                "errors": []
-            }
-        }
-    })
+    return JSONResponse(
+        content={"data": {"startContactFlow": {"success": True, "errors": []}}}
+    )
 
 
 def _create_contact(variables: Dict) -> JSONResponse:
@@ -213,14 +228,20 @@ def _create_contact(variables: Dict) -> JSONResponse:
 
     logger.info(f"CREATE CONTACT | name={name} phone={phone} id={contact['id']}")
 
-    return JSONResponse(content={
-        "data": {
-            "createContact": {
-                "contact": {"id": contact["id"], "name": contact["name"], "phone": contact["phone"]},
-                "errors": []
+    return JSONResponse(
+        content={
+            "data": {
+                "createContact": {
+                    "contact": {
+                        "id": contact["id"],
+                        "name": contact["name"],
+                        "phone": contact["phone"],
+                    },
+                    "errors": [],
+                }
             }
         }
-    })
+    )
 
 
 def _update_contact(variables: Dict) -> JSONResponse:
@@ -236,14 +257,16 @@ def _update_contact(variables: Dict) -> JSONResponse:
 
     logger.info(f"UPDATE CONTACT | id={contact_id}")
 
-    return JSONResponse(content={
-        "data": {
-            "updateContact": {
-                "contact": {"id": contact_id, "fields": inp.get("fields", "{}")},
-                "errors": []
+    return JSONResponse(
+        content={
+            "data": {
+                "updateContact": {
+                    "contact": {"id": contact_id, "fields": inp.get("fields", "{}")},
+                    "errors": [],
+                }
             }
         }
-    })
+    )
 
 
 def _optin_contact(variables: Dict) -> JSONResponse:
@@ -257,21 +280,23 @@ def _optin_contact(variables: Dict) -> JSONResponse:
     contact = _contacts[phone]
     logger.info(f"OPTIN CONTACT | phone={phone} name={name} id={contact['id']}")
 
-    return JSONResponse(content={
-        "data": {
-            "optinContact": {
-                "contact": {
-                    "id": contact["id"],
-                    "phone": contact["phone"],
-                    "name": contact["name"],
-                    "lastMessageAt": contact["lastMessageAt"],
-                    "optinTime": contact["optinTime"],
-                    "bspStatus": contact["bspStatus"],
-                },
-                "errors": []
+    return JSONResponse(
+        content={
+            "data": {
+                "optinContact": {
+                    "contact": {
+                        "id": contact["id"],
+                        "phone": contact["phone"],
+                        "name": contact["name"],
+                        "lastMessageAt": contact["lastMessageAt"],
+                        "optinTime": contact["optinTime"],
+                        "bspStatus": contact["bspStatus"],
+                    },
+                    "errors": [],
+                }
             }
         }
-    })
+    )
 
 
 def _create_group(variables: Dict) -> JSONResponse:
@@ -284,14 +309,9 @@ def _create_group(variables: Dict) -> JSONResponse:
 
     logger.info(f"CREATE GROUP | label={label} id={group['id']}")
 
-    return JSONResponse(content={
-        "data": {
-            "createGroup": {
-                "group": group,
-                "errors": []
-            }
-        }
-    })
+    return JSONResponse(
+        content={"data": {"createGroup": {"group": group, "errors": []}}}
+    )
 
 
 def _update_group_contacts(variables: Dict) -> JSONResponse:
@@ -301,17 +321,20 @@ def _update_group_contacts(variables: Dict) -> JSONResponse:
 
     logger.info(f"ADD TO GROUP | group_id={group_id} contact_ids={add_ids}")
 
-    return JSONResponse(content={
-        "data": {
-            "updateGroupContacts": {
-                "groupContacts": [{"id": str(uuid.uuid4())} for _ in add_ids],
-                "numberDeleted": 0
+    return JSONResponse(
+        content={
+            "data": {
+                "updateGroupContacts": {
+                    "groupContacts": [{"id": str(uuid.uuid4())} for _ in add_ids],
+                    "numberDeleted": 0,
+                }
             }
         }
-    })
+    )
 
 
 # ── Query handlers ────────────────────────────────────────────────────────────
+
 
 def _contact_by_phone(variables: Dict) -> JSONResponse:
     phone = variables.get("phone", "")
@@ -322,13 +345,7 @@ def _contact_by_phone(variables: Dict) -> JSONResponse:
     else:
         logger.info(f"CONTACT BY PHONE | phone={phone} → not found")
 
-    return JSONResponse(content={
-        "data": {
-            "contactByPhone": {
-                "contact": contact
-            }
-        }
-    })
+    return JSONResponse(content={"data": {"contactByPhone": {"contact": contact}}})
 
 
 def _get_contact(variables: Dict) -> JSONResponse:
@@ -341,31 +358,24 @@ def _get_contact(variables: Dict) -> JSONResponse:
             found = contact
             break
 
-    return JSONResponse(content={
-        "data": {
-            "contact": {
-                "contact": found
-            }
-        }
-    })
+    return JSONResponse(content={"data": {"contact": {"contact": found}}})
 
 
 def _list_groups(variables: Dict) -> JSONResponse:
     label_filter = variables.get("filter", {}).get("label", "")
 
     if label_filter:
-        matching = [g for label, g in _groups.items() if label_filter.lower() in label.lower()]
+        matching = [
+            g for label, g in _groups.items() if label_filter.lower() in label.lower()
+        ]
     else:
         matching = list(_groups.values())
 
-    return JSONResponse(content={
-        "data": {
-            "groups": matching
-        }
-    })
+    return JSONResponse(content={"data": {"groups": matching}})
 
 
 # ── Audit log endpoint (bonus — useful for dev inspection) ───────────────────
+
 
 @app.get("/stub/flow-calls")
 def get_flow_calls():
@@ -376,16 +386,20 @@ def get_flow_calls():
 
       curl http://localhost:4000/stub/flow-calls | python3 -m json.tool
     """
-    return JSONResponse(content={
-        "total": len(_flow_calls),
-        "calls": _flow_calls,
-    })
+    return JSONResponse(
+        content={
+            "total": len(_flow_calls),
+            "calls": _flow_calls,
+        }
+    )
 
 
 @app.get("/stub/contacts")
 def get_contacts():
     """Returns all contacts created during this session."""
-    return JSONResponse(content={"total": len(_contacts), "contacts": list(_contacts.values())})
+    return JSONResponse(
+        content={"total": len(_contacts), "contacts": list(_contacts.values())}
+    )
 
 
 @app.get("/stub/reset")
@@ -400,14 +414,17 @@ def reset():
 
 @app.get("/health")
 def health():
-    return JSONResponse(content={
-        "status": "ok",
-        "service": "glific-stub",
-        "flow_calls_this_session": len(_flow_calls),
-        "contacts_this_session": len(_contacts),
-    })
+    return JSONResponse(
+        content={
+            "status": "ok",
+            "service": "glific-stub",
+            "flow_calls_this_session": len(_flow_calls),
+            "contacts_this_session": len(_contacts),
+        }
+    )
 
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=4000, log_level="info")
