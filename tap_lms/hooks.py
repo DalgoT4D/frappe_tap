@@ -18,25 +18,25 @@ doc_events = {
     # "Teacher": {
     #     "on_update": "tap_lms.glific_webhook.update_glific_contact"
     # },
-    "StudentStageProgress": {
-        "after_insert": "tap_lms.tap_lms.doctype.studentonboardingprogress.studentonboardingprogress.update_student_progress",
-        "on_update": "tap_lms.tap_lms.doctype.studentonboardingprogress.studentonboardingprogress.update_student_progress"
-    },
+    # "StudentStageProgress": {
+    #     "after_insert": "tap_lms.tap_lms.doctype.studentonboardingprogress.studentonboardingprogress.update_student_progress",
+    #     "on_update": "tap_lms.tap_lms.doctype.studentonboardingprogress.studentonboardingprogress.update_student_progress"
+    # },
     # CR-002 v2 gamification (2026-05-13): VideoClass completion via
     # StudentContentLog drives the activity-points handler. The handler also
     # arms the grace clock on the first VideoClass of each week (CR-003
     # follow-up 2: atomic Postgres CASE WHEN on `weekly_video_done`). Without
     # this hook the activity-points pipeline AND the grace clock are dead.
-    "StudentContentLog": {
-        "after_insert": "tap_lms.summer_program.activity_points.handle_content_log"
-    },
+    # "StudentContentLog": {
+    #     "after_insert": "tap_lms.summer_program.activity_points.handle_content_log"
+    # },
     # CR-002 v2 gamification (2026-05-13): quiz attempts award per-question
     # points (correct → q.points; wrong → q.failed_points). The handler is
     # idempotent via `attempt.points_earned` so re-saves of completed
     # attempts are no-ops.
-    "StudentQuizAttempt": {
-        "on_update": "tap_lms.summer_program.quiz_points.handle_attempt_update"
-    }
+    # "StudentQuizAttempt": {
+    #     "on_update": "tap_lms.summer_program.quiz_points.handle_attempt_update"
+    # }
 }
 
 # Scheduled Tasks

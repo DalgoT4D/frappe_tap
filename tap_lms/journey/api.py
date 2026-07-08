@@ -25,87 +25,87 @@ def track_interaction(**_kw):
 # _DEPRECATED_track_interaction_original ============================
 # Original body preserved for one release cycle in case any helper
 # below needs to be lifted out. Not callable from Glific anymore.
-def _DEPRECATED_track_interaction_original():
-    try:
-        # Get the request data
-        if frappe.request.method != "POST":
-            return {"success": False, "message": "Only POST method is supported"}
+# def _DEPRECATED_track_interaction_original():
+#     try:
+#         # Get the request data
+#         if frappe.request.method != "POST":
+#             return {"success": False, "message": "Only POST method is supported"}
             
-        data = frappe.request.get_json()
+#         data = frappe.request.get_json()
         
-        # Authentication check
-        if frappe.session.user == 'Guest':
-            frappe.throw(_("Authentication required"), frappe.AuthenticationError)
+#         # Authentication check
+#         if frappe.session.user == 'Guest':
+#             frappe.throw(_("Authentication required"), frappe.AuthenticationError)
         
-        # Extract basic information
-        event_type = data.get('event_type')
-        contact_info = data.get('contact', {})
+#         # Extract basic information
+#         event_type = data.get('event_type')
+#         contact_info = data.get('contact', {})
         
-        # REQUIRED: Direct stage references
-        stage_id = data.get('stage_id')  # OnboardingStage.stage_name or LearningStage name
-        stage_type = data.get('stage_type')
+#         # REQUIRED: Direct stage references
+#         stage_id = data.get('stage_id')  # OnboardingStage.stage_name or LearningStage name
+#         stage_type = data.get('stage_type')
         
-        # Extract course context
-        course_context = data.get('course_context')
+#         # Extract course context
+#         course_context = data.get('course_context')
         
-        # Content and progress information
-        content_info = data.get('content', {})
-        progress_info = data.get('progress', {})
+#         # Content and progress information
+#         content_info = data.get('content', {})
+#         progress_info = data.get('progress', {})
         
-        # Validate required data
-        if not event_type:
-            return {"success": False, "message": "Missing required field: event_type"}
+#         # Validate required data
+#         if not event_type:
+#             return {"success": False, "message": "Missing required field: event_type"}
             
-        if not contact_info.get('id') and not contact_info.get('phone'):
-            return {"success": False, "message": "Contact ID or phone number is required"}
+#         if not contact_info.get('id') and not contact_info.get('phone'):
+#             return {"success": False, "message": "Contact ID or phone number is required"}
         
-        if not stage_id or not stage_type:
-            return {"success": False, "message": "Both stage_id and stage_type are required"}
+#         if not stage_id or not stage_type:
+#             return {"success": False, "message": "Both stage_id and stage_type are required"}
         
-        # Find the student
-        student = find_student(contact_info)
-        if not student:
-            frappe.log_error(
-                f"Student not found for contact: {json.dumps(contact_info)}", 
-                "Journey Tracking Error"
-            )
-            return {"success": False, "message": "Student not found"}
+#         # Find the student
+#         student = find_student(contact_info)
+#         if not student:
+#             frappe.log_error(
+#                 f"Student not found for contact: {json.dumps(contact_info)}", 
+#                 "Journey Tracking Error"
+#             )
+#             return {"success": False, "message": "Student not found"}
         
-        # Get stage document
-        stage = get_stage_by_stage_name(stage_id, stage_type)
-        if not stage:
-            return {"success": False, "message": f"Stage '{stage_id}' of type '{stage_type}' not found"}
+#         # Get stage document
+#         stage = get_stage_by_stage_name(stage_id, stage_type)
+#         if not stage:
+#             return {"success": False, "message": f"Stage '{stage_id}' of type '{stage_type}' not found"}
         
-        # Derive status from event type
-        new_status = derive_status_from_event(event_type)
+#         # Derive status from event type
+#         new_status = derive_status_from_event(event_type)
         
-        # Create interaction log
-        interaction_log = create_interaction_log(
-            student, stage, stage_type, event_type, 
-            content_info.get('message', {}), progress_info, course_context
-        )
+#         # Create interaction log
+#         interaction_log = create_interaction_log(
+#             student, stage, stage_type, event_type, 
+#             content_info.get('message', {}), progress_info, course_context
+#         )
         
-        # Handle the stage event
-        result = handle_stage_event(
-            student, stage, stage_type, new_status, event_type, 
-            progress_info, course_context
-        )
+#         # Handle the stage event
+#         result = handle_stage_event(
+#             student, stage, stage_type, new_status, event_type, 
+#             progress_info, course_context
+#         )
         
-        # Add interaction log info to result
-        if result.get("success"):
-            if "data" not in result:
-                result["data"] = {}
-            result["data"]["interaction_log_id"] = interaction_log.name if interaction_log else None
+#         # Add interaction log info to result
+#         if result.get("success"):
+#             if "data" not in result:
+#                 result["data"] = {}
+#             result["data"]["interaction_log_id"] = interaction_log.name if interaction_log else None
         
-        return result
+#         return result
             
-    except frappe.AuthenticationError as e:
-        frappe.log_error(f"Authentication error: {str(e)}", "Journey Tracking Error")
-        return {"success": False, "message": str(e)}
-    except Exception as e:
-        error_traceback = traceback.format_exc()
-        frappe.log_error(f"Error tracking interaction: {str(e)}\n{error_traceback}", "Journey Tracking Error")
-        return {"success": False, "message": str(e)}
+#     except frappe.AuthenticationError as e:
+#         frappe.log_error(f"Authentication error: {str(e)}", "Journey Tracking Error")
+#         return {"success": False, "message": str(e)}
+#     except Exception as e:
+#         error_traceback = traceback.format_exc()
+#         frappe.log_error(f"Error tracking interaction: {str(e)}\n{error_traceback}", "Journey Tracking Error")
+#         return {"success": False, "message": str(e)}
 
 @frappe.whitelist(allow_guest=False)
 def update_student_stage(**_kw):
@@ -118,308 +118,308 @@ def update_student_stage(**_kw):
 
 # _DEPRECATED_update_student_stage_original =========================
 # Original body preserved for one release cycle. Not callable from Glific.
-def _DEPRECATED_update_student_stage_original(student_id, stage_name,
-                                                event_type="manual_assignment",
-                                                course_context=None):
-    try:
-        # Find student
-        if isinstance(student_id, dict):
-            student = find_student(student_id)
-        else:
-            student = find_student_by_id(student_id)
+# def _DEPRECATED_update_student_stage_original(student_id, stage_name,
+#                                                 event_type="manual_assignment",
+#                                                 course_context=None):
+#     try:
+#         # Find student
+#         if isinstance(student_id, dict):
+#             student = find_student(student_id)
+#         else:
+#             student = find_student_by_id(student_id)
             
-        if not student:
-            return {"success": False, "message": "Student not found"}
+#         if not student:
+#             return {"success": False, "message": "Student not found"}
         
-        # Determine stage type and get stage document
-        stage_doc, stage_type = get_stage_document_by_name(stage_name)
-        if not stage_doc:
-            return {"success": False, "message": f"Stage '{stage_name}' not found"}
+#         # Determine stage type and get stage document
+#         stage_doc, stage_type = get_stage_document_by_name(stage_name)
+#         if not stage_doc:
+#             return {"success": False, "message": f"Stage '{stage_name}' not found"}
         
-        # Derive status from event type
-        new_status = derive_status_from_event(event_type)
+#         # Derive status from event type
+#         new_status = derive_status_from_event(event_type)
         
-        # Handle the stage event
-        return handle_stage_event(
-            student, stage_doc, stage_type, new_status, event_type, 
-            {}, course_context
-        )
+#         # Handle the stage event
+#         return handle_stage_event(
+#             student, stage_doc, stage_type, new_status, event_type, 
+#             {}, course_context
+#         )
         
-    except Exception as e:
-        error_traceback = traceback.format_exc()
-        frappe.log_error(f"Error updating student stage: {str(e)}\n{error_traceback}", "External Stage Update Error")
-        return {"success": False, "message": str(e)}
+#     except Exception as e:
+#         error_traceback = traceback.format_exc()
+#         frappe.log_error(f"Error updating student stage: {str(e)}\n{error_traceback}", "External Stage Update Error")
+#         return {"success": False, "message": str(e)}
 
-def handle_stage_event(student, stage, stage_type, new_status, event_type, progress_info, course_context=None):
-    """
-    Core handler for stage events
-    """
-    try:
-        # Get current stage progress
-        current_progress = get_current_stage_progress(student, stage, stage_type, course_context)
+# def handle_stage_event(student, stage, stage_type, new_status, event_type, progress_info, course_context=None):
+#     """
+#     Core handler for stage events
+#     """
+#     try:
+#         # Get current stage progress
+#         current_progress = get_current_stage_progress(student, stage, stage_type, course_context)
         
-        if current_progress:
-            # Update existing stage
-            result = handle_existing_stage_update(
-                student, stage, stage_type, current_progress, new_status, 
-                event_type, progress_info, course_context
-            )
-        else:
-            # New stage assignment  
-            result = handle_new_stage_assignment(
-                student, stage, stage_type, new_status, event_type, 
-                progress_info, course_context
-            )
+#         if current_progress:
+#             # Update existing stage
+#             result = handle_existing_stage_update(
+#                 student, stage, stage_type, current_progress, new_status, 
+#                 event_type, progress_info, course_context
+#             )
+#         else:
+#             # New stage assignment  
+#             result = handle_new_stage_assignment(
+#                 student, stage, stage_type, new_status, event_type, 
+#                 progress_info, course_context
+#             )
         
-        return result
+#         return result
         
-    except Exception as e:
-        error_traceback = traceback.format_exc()
-        frappe.log_error(f"Error in stage event handler: {str(e)}\n{error_traceback}", "Stage Event Handler Error")
-        return {"success": False, "message": str(e)}
+#     except Exception as e:
+#         error_traceback = traceback.format_exc()
+#         frappe.log_error(f"Error in stage event handler: {str(e)}\n{error_traceback}", "Stage Event Handler Error")
+#         return {"success": False, "message": str(e)}
 
-def handle_existing_stage_update(student, stage, stage_type, current_progress, new_status, event_type, progress_info, course_context):
-    """
-    Update existing stage progress
-    """
-    try:
-        old_status = current_progress.status
+# def handle_existing_stage_update(student, stage, stage_type, current_progress, new_status, event_type, progress_info, course_context):
+#     """
+#     Update existing stage progress
+#     """
+#     try:
+#         old_status = current_progress.status
         
-        # Update progress record
-        current_progress.status = new_status
-        current_progress.last_activity_timestamp = now_datetime()
+#         # Update progress record
+#         current_progress.status = new_status
+#         current_progress.last_activity_timestamp = now_datetime()
         
-        # Set completion timestamp if completed
-        if new_status == "completed":
-            current_progress.completion_timestamp = now_datetime()
+#         # Set completion timestamp if completed
+#         if new_status == "completed":
+#             current_progress.completion_timestamp = now_datetime()
         
-        # Update performance metrics if available
-        update_performance_metrics(current_progress, progress_info)
+#         # Update performance metrics if available
+#         update_performance_metrics(current_progress, progress_info)
         
-        current_progress.save()
-        frappe.db.commit()
+#         current_progress.save()
+#         frappe.db.commit()
         
-        # Update student learning states
-        state_updates = update_student_states(student, event_type, stage_type, progress_info, course_context)
+#         # Update student learning states
+#         state_updates = update_student_states(student, event_type, stage_type, progress_info, course_context)
         
-        # Check for stage transitions using StageFlow
-        transition_info = evaluate_stage_transition(student, stage, stage_type, new_status, course_context)
+#         # Check for stage transitions using StageFlow
+#         transition_info = evaluate_stage_transition(student, stage, stage_type, new_status, course_context)
         
-        return {
-            "success": True,
-            "action": "existing_stage_updated",
-            "stage": get_stage_identifier(stage, stage_type),
-            "stage_type": stage_type,
-            "status_change": f"{old_status} → {new_status}",
-            "data": {
-                "student_id": student.name,
-                "stage_progress": {
-                    "id": current_progress.name,
-                    "status": new_status,
-                    "updated": True
-                },
-                "state_updates": state_updates,
-                "transitions": transition_info
-            },
-            "course_context": course_context
-        }
+#         return {
+#             "success": True,
+#             "action": "existing_stage_updated",
+#             "stage": get_stage_identifier(stage, stage_type),
+#             "stage_type": stage_type,
+#             "status_change": f"{old_status} → {new_status}",
+#             "data": {
+#                 "student_id": student.name,
+#                 "stage_progress": {
+#                     "id": current_progress.name,
+#                     "status": new_status,
+#                     "updated": True
+#                 },
+#                 "state_updates": state_updates,
+#                 "transitions": transition_info
+#             },
+#             "course_context": course_context
+#         }
         
-    except Exception as e:
-        frappe.log_error(f"Error updating existing stage: {str(e)}", "Existing Stage Update Error")
-        return {"success": False, "error": str(e)}
+#     except Exception as e:
+#         frappe.log_error(f"Error updating existing stage: {str(e)}", "Existing Stage Update Error")
+#         return {"success": False, "error": str(e)}
 
-def handle_new_stage_assignment(student, stage, stage_type, new_status, event_type, progress_info, course_context):
-    """
-    Assign student to new stage
-    """
-    try:
-        # Create new progress record
-        progress = frappe.new_doc("StudentStageProgress")
-        progress.student = student.name
-        progress.stage_type = stage_type
-        progress.stage = get_stage_identifier(stage, stage_type)
-        progress.status = new_status
-        progress.start_timestamp = now_datetime()
-        progress.last_activity_timestamp = now_datetime()
+# def handle_new_stage_assignment(student, stage, stage_type, new_status, event_type, progress_info, course_context):
+#     """
+#     Assign student to new stage
+#     """
+#     try:
+#         # Create new progress record
+#         progress = frappe.new_doc("StudentStageProgress")
+#         progress.student = student.name
+#         progress.stage_type = stage_type
+#         progress.stage = get_stage_identifier(stage, stage_type)
+#         progress.status = new_status
+#         progress.start_timestamp = now_datetime()
+#         progress.last_activity_timestamp = now_datetime()
         
-        if stage_type == "LearningStage" and course_context:
-            progress.course_context = course_context
+#         if stage_type == "LearningStage" and course_context:
+#             progress.course_context = course_context
         
-        # Set completion timestamp if status is completed
-        if new_status == "completed":
-            progress.completion_timestamp = now_datetime()
+#         # Set completion timestamp if status is completed
+#         if new_status == "completed":
+#             progress.completion_timestamp = now_datetime()
         
-        # Update performance metrics if available
-        update_performance_metrics(progress, progress_info)
+#         # Update performance metrics if available
+#         update_performance_metrics(progress, progress_info)
             
-        progress.insert()
+#         progress.insert()
         
-        # Update current stage pointer for onboarding stages
-        if stage_type == "OnboardingStage":
-            update_onboarding_current_stage(student, stage.stage_name)
+#         # Update current stage pointer for onboarding stages
+#         if stage_type == "OnboardingStage":
+#             update_onboarding_current_stage(student, stage.stage_name)
         
-        frappe.db.commit()
+#         frappe.db.commit()
         
-        # Update student learning states
-        state_updates = update_student_states(student, event_type, stage_type, progress_info, course_context)
+#         # Update student learning states
+#         state_updates = update_student_states(student, event_type, stage_type, progress_info, course_context)
         
-        # Check for stage transitions
-        transition_info = evaluate_stage_transition(student, stage, stage_type, new_status, course_context)
+#         # Check for stage transitions
+#         transition_info = evaluate_stage_transition(student, stage, stage_type, new_status, course_context)
         
-        return {
-            "success": True,
-            "action": "new_stage_assigned",
-            "stage": get_stage_identifier(stage, stage_type),
-            "stage_type": stage_type,
-            "status": new_status,
-            "data": {
-                "student_id": student.name,
-                "stage_progress": {
-                    "id": progress.name,
-                    "status": new_status,
-                    "updated": True
-                },
-                "state_updates": state_updates,
-                "transitions": transition_info
-            },
-            "course_context": course_context
-        }
+#         return {
+#             "success": True,
+#             "action": "new_stage_assigned",
+#             "stage": get_stage_identifier(stage, stage_type),
+#             "stage_type": stage_type,
+#             "status": new_status,
+#             "data": {
+#                 "student_id": student.name,
+#                 "stage_progress": {
+#                     "id": progress.name,
+#                     "status": new_status,
+#                     "updated": True
+#                 },
+#                 "state_updates": state_updates,
+#                 "transitions": transition_info
+#             },
+#             "course_context": course_context
+#         }
         
-    except Exception as e:
-        frappe.log_error(f"Error in new stage assignment: {str(e)}", "New Stage Assignment Error")
-        return {"success": False, "error": str(e)}
+#     except Exception as e:
+#         frappe.log_error(f"Error in new stage assignment: {str(e)}", "New Stage Assignment Error")
+#         return {"success": False, "error": str(e)}
 
-def evaluate_stage_transition(student, current_stage, stage_type, current_status, course_context=None):
-    """
-    Evaluate stage transitions using StageFlow configurations
-    Restores old graceful behavior for terminal stages
-    """
-    try:
-        # Check if stage has any flows configured
-        if not hasattr(current_stage, 'stage_flows') or not current_stage.stage_flows:
-            return {
-                "transitions_processed": False,
-                "reason": "No stage flows configured"
-            }
+# def evaluate_stage_transition(student, current_stage, stage_type, current_status, course_context=None):
+#     """
+#     Evaluate stage transitions using StageFlow configurations
+#     Restores old graceful behavior for terminal stages
+#     """
+#     try:
+#         # Check if stage has any flows configured
+#         if not hasattr(current_stage, 'stage_flows') or not current_stage.stage_flows:
+#             return {
+#                 "transitions_processed": False,
+#                 "reason": "No stage flows configured"
+#             }
         
-        # Find applicable StageFlow for current student situation
-        applicable_flow = find_applicable_stage_flow(current_stage, student, current_status)
+#         # Find applicable StageFlow for current student situation
+#         applicable_flow = find_applicable_stage_flow(current_stage, student, current_status)
         
-        if not applicable_flow:
-            return {
-                "transitions_processed": False,
-                "reason": "No applicable stage flow found for current status",
-                "current_status": current_status,
-                "available_flows": [flow.student_status for flow in current_stage.stage_flows]
-            }
+#         if not applicable_flow:
+#             return {
+#                 "transitions_processed": False,
+#                 "reason": "No applicable stage flow found for current status",
+#                 "current_status": current_status,
+#                 "available_flows": [flow.student_status for flow in current_stage.stage_flows]
+#             }
         
-        # Execute StageFlow-based transition (handles both terminal and progression)
-        return execute_stageflow_transition(student, current_stage, stage_type, applicable_flow, course_context)
+#         # Execute StageFlow-based transition (handles both terminal and progression)
+#         return execute_stageflow_transition(student, current_stage, stage_type, applicable_flow, course_context)
         
-    except Exception as e:
-        frappe.log_error(f"Error evaluating stage transition: {str(e)}", "Stage Transition Evaluation Error")
-        return {"transitions_processed": False, "error": str(e)}
+#     except Exception as e:
+#         frappe.log_error(f"Error evaluating stage transition: {str(e)}", "Stage Transition Evaluation Error")
+#         return {"transitions_processed": False, "error": str(e)}
 
-def find_applicable_stage_flow(stage, student, current_status):
-    """
-    Find the most appropriate StageFlow configuration for student's current situation
-    """
-    try:
-        # Look for exact status match first
-        for stage_flow in stage.stage_flows:
-            if stage_flow.student_status == current_status:
-                return stage_flow
+# def find_applicable_stage_flow(stage, student, current_status):
+#     """
+#     Find the most appropriate StageFlow configuration for student's current situation
+#     """
+#     try:
+#         # Look for exact status match first
+#         for stage_flow in stage.stage_flows:
+#             if stage_flow.student_status == current_status:
+#                 return stage_flow
         
-        # Look for default flow as fallback
-        for stage_flow in stage.stage_flows:
-            if stage_flow.student_status == "default":
-                return stage_flow
+#         # Look for default flow as fallback
+#         for stage_flow in stage.stage_flows:
+#             if stage_flow.student_status == "default":
+#                 return stage_flow
                 
-        return None
+#         return None
         
-    except Exception as e:
-        frappe.log_error(f"Error finding applicable stage flow: {str(e)}", "Stage Flow Resolution Error")
-        return None
+#     except Exception as e:
+#         frappe.log_error(f"Error finding applicable stage flow: {str(e)}", "Stage Flow Resolution Error")
+#         return None
 
-def execute_stageflow_transition(student, current_stage, stage_type, stage_flow, course_context=None):
-    """
-    Execute transition based on StageFlow configuration
-    Restored old graceful behavior for terminal stages (null next_stage)
-    """
-    try:
-        next_stage_name = stage_flow.next_stage
+# def execute_stageflow_transition(student, current_stage, stage_type, stage_flow, course_context=None):
+#     """
+#     Execute transition based on StageFlow configuration
+#     Restored old graceful behavior for terminal stages (null next_stage)
+#     """
+#     try:
+#         next_stage_name = stage_flow.next_stage
         
-        # ✅ RESTORED: Handle terminal stages gracefully (like old code)
-        if not next_stage_name:
-            # Check if this is a final stage (like old code did)
-            if hasattr(current_stage, 'is_final') and current_stage.is_final:
-                # Handle onboarding completion
-                completion_info = handle_onboarding_completion(student, current_stage)
+#         # ✅ RESTORED: Handle terminal stages gracefully (like old code)
+#         if not next_stage_name:
+#             # Check if this is a final stage (like old code did)
+#             if hasattr(current_stage, 'is_final') and current_stage.is_final:
+#                 # Handle onboarding completion
+#                 completion_info = handle_onboarding_completion(student, current_stage)
                 
-                return {
-                    "transitions_processed": True,
-                    "transition_type": "journey_completion",
-                    "stage": get_stage_identifier(current_stage, stage_type),
-                    "stage_type": stage_type,
-                    "triggered_by": "final_stage_completion",
-                    "flow_configuration": {
-                        "student_status": stage_flow.student_status,
-                        "glific_flow_id": stage_flow.glific_flow_id,
-                        "flow_type": stage_flow.flow_type,
-                        "description": stage_flow.description
-                    },
-                    "completion_details": completion_info,
-                    "course_context": course_context
-                }
-            else:
-                # Terminal stage - just like old code behavior (no error!)
-                return {
-                    "transitions_processed": False,  # ← Same as old code
-                    "reason": "Terminal stage - no next stage configured",  # ← Explanation, not error
-                    "flow_configuration": {
-                        "student_status": stage_flow.student_status,
-                        "glific_flow_id": stage_flow.glific_flow_id,
-                        "flow_type": stage_flow.flow_type,
-                        "description": stage_flow.description
-                    }
-                }
+#                 return {
+#                     "transitions_processed": True,
+#                     "transition_type": "journey_completion",
+#                     "stage": get_stage_identifier(current_stage, stage_type),
+#                     "stage_type": stage_type,
+#                     "triggered_by": "final_stage_completion",
+#                     "flow_configuration": {
+#                         "student_status": stage_flow.student_status,
+#                         "glific_flow_id": stage_flow.glific_flow_id,
+#                         "flow_type": stage_flow.flow_type,
+#                         "description": stage_flow.description
+#                     },
+#                     "completion_details": completion_info,
+#                     "course_context": course_context
+#                 }
+#             else:
+#                 # Terminal stage - just like old code behavior (no error!)
+#                 return {
+#                     "transitions_processed": False,  # ← Same as old code
+#                     "reason": "Terminal stage - no next stage configured",  # ← Explanation, not error
+#                     "flow_configuration": {
+#                         "student_status": stage_flow.student_status,
+#                         "glific_flow_id": stage_flow.glific_flow_id,
+#                         "flow_type": stage_flow.flow_type,
+#                         "description": stage_flow.description
+#                     }
+#                 }
         
-        # Regular transition logic for stages with next_stage
-        next_stage = get_stage_by_stage_name(next_stage_name, stage_type)
+#         # Regular transition logic for stages with next_stage
+#         next_stage = get_stage_by_stage_name(next_stage_name, stage_type)
         
-        if not next_stage:
-            return {"transitions_processed": False, "error": f"Next stage '{next_stage_name}' not found"}
+#         if not next_stage:
+#             return {"transitions_processed": False, "error": f"Next stage '{next_stage_name}' not found"}
         
-        # Create progress record for next stage
-        create_next_stage_progress(student, next_stage, stage_type, course_context)
+#         # Create progress record for next stage
+#         create_next_stage_progress(student, next_stage, stage_type, course_context)
         
-        # Update current stage pointer for onboarding
-        if stage_type == "OnboardingStage":
-            update_onboarding_current_stage(student, next_stage.stage_name)
+#         # Update current stage pointer for onboarding
+#         if stage_type == "OnboardingStage":
+#             update_onboarding_current_stage(student, next_stage.stage_name)
         
-        # Create transition history
-        create_transition_history(student, current_stage, next_stage)
+#         # Create transition history
+#         create_transition_history(student, current_stage, next_stage)
         
-        frappe.db.commit()
+#         frappe.db.commit()
         
-        return {
-            "transitions_processed": True,
-            "transition_type": "stage_progression",
-            "from_stage": get_stage_identifier(current_stage, stage_type),
-            "to_stage": get_stage_identifier(next_stage, stage_type),
-            "stage_type": stage_type,
-            "triggered_by": "stageflow_configuration",
-            "flow_configuration": {
-                "student_status": stage_flow.student_status,
-                "glific_flow_id": stage_flow.glific_flow_id,
-                "flow_type": stage_flow.flow_type
-            },
-            "course_context": course_context
-        }
+#         return {
+#             "transitions_processed": True,
+#             "transition_type": "stage_progression",
+#             "from_stage": get_stage_identifier(current_stage, stage_type),
+#             "to_stage": get_stage_identifier(next_stage, stage_type),
+#             "stage_type": stage_type,
+#             "triggered_by": "stageflow_configuration",
+#             "flow_configuration": {
+#                 "student_status": stage_flow.student_status,
+#                 "glific_flow_id": stage_flow.glific_flow_id,
+#                 "flow_type": stage_flow.flow_type
+#             },
+#             "course_context": course_context
+#         }
         
-    except Exception as e:
-        frappe.log_error(f"Error executing StageFlow transition: {str(e)}", "StageFlow Transition Error")
-        return {"transitions_processed": False, "error": str(e)}
+#     except Exception as e:
+#         frappe.log_error(f"Error executing StageFlow transition: {str(e)}", "StageFlow Transition Error")
+#         return {"transitions_processed": False, "error": str(e)}
 
 def handle_onboarding_completion(student, final_stage):
     """
@@ -577,43 +577,43 @@ def get_initial_learning_stage_for_course(course_context):
         frappe.log_error(f"Error getting initial learning stage for course {course_context}: {str(e)}", "Learning Stage Lookup Error")
         return None
 
-def derive_status_from_event(event_type):
-    """
-    Derive student status from event type - single source of truth
-    """
-    event_to_status_map = {
-        # Flow-based events
-        "flow_started": "assigned",
-        "message_received": "in_progress",
-        "flow_step_completed": "in_progress", 
-        "flow_completed": "completed",
-        "flow_expired": "incomplete",
-        "flow_loop":"in_loop",
-        "stage_failed":"failed",
-        "stage_skipped":"skipped",
+# def derive_status_from_event(event_type):
+#     """
+#     Derive student status from event type - single source of truth
+#     """
+#     event_to_status_map = {
+#         # Flow-based events
+#         "flow_started": "assigned",
+#         "message_received": "in_progress",
+#         "flow_step_completed": "in_progress", 
+#         "flow_completed": "completed",
+#         "flow_expired": "incomplete",
+#         "flow_loop":"in_loop",
+#         "stage_failed":"failed",
+#         "stage_skipped":"skipped",
 
 
-        # Assessment events
-        "assessment_started": "in_progress",
-        "assessment_submitted": "in_progress",
-        "assessment_passed": "completed",
-        "assessment_failed": "incomplete",
+#         # Assessment events
+#         "assessment_started": "in_progress",
+#         "assessment_submitted": "in_progress",
+#         "assessment_passed": "completed",
+#         "assessment_failed": "incomplete",
         
-        # Manual/External events
-        "manual_assignment": "assigned",
-        "manual_completion": "completed",
-        "external_update": "assigned",
-        "direct_stage_event": "assigned",
-        "stage_assigned": "assigned",
-        "stage_completed": "completed",
+#         # Manual/External events
+#         "manual_assignment": "assigned",
+#         "manual_completion": "completed",
+#         "external_update": "assigned",
+#         "direct_stage_event": "assigned",
+#         "stage_assigned": "assigned",
+#         "stage_completed": "completed",
         
-        # Administrative events
-        "teacher_override": "assigned",
-        "system_reset": "assigned",
-        "remediation_assigned": "assigned"
-    }
+#         # Administrative events
+#         "teacher_override": "assigned",
+#         "system_reset": "assigned",
+#         "remediation_assigned": "assigned"
+#     }
     
-    return event_to_status_map.get(event_type, "assigned")
+#     return event_to_status_map.get(event_type, "assigned")
 
 def update_performance_metrics(progress, progress_info):
     """
@@ -691,21 +691,21 @@ def get_learning_stage_by_name(stage_name):
         frappe.log_error(f"Error getting LearningStage by name '{stage_name}': {str(e)}", "Stage Lookup Error")
     return None
 
-def get_stage_document_by_name(stage_name):
-    """
-    Get stage document and determine type by stage_name
-    """
-    # Try OnboardingStage first
-    stage = get_onboarding_stage_by_name(stage_name)
-    if stage:
-        return stage, "OnboardingStage"
+# def get_stage_document_by_name(stage_name):
+#     """
+#     Get stage document and determine type by stage_name
+#     """
+#     # Try OnboardingStage first
+#     stage = get_onboarding_stage_by_name(stage_name)
+#     if stage:
+#         return stage, "OnboardingStage"
     
-    # Try LearningStage
-    stage = get_learning_stage_by_name(stage_name)
-    if stage:
-        return stage, "LearningStage"
+#     # Try LearningStage
+#     stage = get_learning_stage_by_name(stage_name)
+#     if stage:
+#         return stage, "LearningStage"
     
-    return None, None
+#     return None, None
 
 def get_stage_identifier(stage, stage_type):
     """
