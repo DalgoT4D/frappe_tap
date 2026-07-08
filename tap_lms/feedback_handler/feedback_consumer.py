@@ -32,7 +32,9 @@ class FeedbackConsumer:
                 port=int(self.settings.port),
                 virtual_host=self.settings.virtual_host,
                 credentials=credentials,
-                heartbeat=600,
+                heartbeat=60,
+                connection_attempts=3,  # Automatically retry connecting
+                retry_delay=5,  # Wait 5 seconds between retries
                 blocked_connection_timeout=300,
             )
 
@@ -128,7 +130,9 @@ class FeedbackConsumer:
             port=int(self.settings.port),
             virtual_host=self.settings.virtual_host,
             credentials=credentials,
-            heartbeat=600,
+            heartbeat=60,  # send keep-alive heartbeat every minute
+            connection_attempts=3,  # Automatically retry connecting
+            retry_delay=5,  # Wait 5 seconds between retries
             blocked_connection_timeout=300,
         )
 

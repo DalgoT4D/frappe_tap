@@ -289,6 +289,10 @@ def enqueue_submission(submission_id):
             rabbitmq_config["port"],
             rabbitmq_config["virtual_host"],
             credentials,
+            heartbeat=60,  # send keep-alive heartbeat every minute
+            connection_attempts=3,  # Automatically retry connecting
+            retry_delay=5,  # Wait 5 seconds between retries
+            blocked_connection_timeout=300,
         )
         connection = pika.BlockingConnection(parameters)
         channel = connection.channel()
