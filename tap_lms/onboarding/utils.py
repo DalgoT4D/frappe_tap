@@ -15,6 +15,13 @@ DELHI_BATCH = "BT00000024"
 PHONE_PATTERN = re.compile(r"^\d{10}$")
 
 
+def _normalize_phone(phone):
+    phone = str(phone or "").strip()
+    if len(phone) == 12 and phone.startswith("91"):
+        phone = phone[2:]
+    return phone
+
+
 def _set_status(code):
     frappe.response.http_status_code = code
 
@@ -56,18 +63,25 @@ def _validate_api_key_or_respond(api_key):
 
 
 def _validate_phone(phone):
-    return bool(phone and PHONE_PATTERN.fullmatch(str(phone).strip()))
+    return bool(PHONE_PATTERN.fullmatch(_normalize_phone(phone)))
 
 
 def _require_valid_phone(phone):
+    phone = _normalize_phone(phone)
     if not _validate_phone(phone):
-        frappe.throw("Phone must be exactly 10 digits")
-    return str(phone).strip()
+        return None, {
+            "code": 400,
+            "payload": {
+                "status": "failure",
+                "message": "Phone must be exactly 10 digits or 12 digits starting with 91",
+            },
+        }
+    return phone, None
 
 
 def _get_language_name_to_id(language_name):
     if not language_name:
-        return None
+        return None, None
 
     language_id = frappe.db.get_value(
         "TAP Language",
@@ -75,8 +89,14 @@ def _get_language_name_to_id(language_name):
         "name",
     )
     if not language_id:
-        frappe.throw(f"Invalid language: {language_name}")
-    return language_id
+        return None, {
+            "code": 400,
+            "payload": {
+                "status": "failure",
+                "message": f"Invalid language: {language_name}",
+            },
+        }
+    return language_id, None
 
 
 def _get_language_id_to_name(language_id):

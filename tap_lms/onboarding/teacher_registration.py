@@ -11,6 +11,7 @@ from tap_lms.onboarding.utils import (
     _get_school_row_by_id,
     _get_school_row_from_input,
     _is_delhi_school,
+    _normalize_phone,
     _require_valid_phone,
     _respond,
     _set_status,
@@ -62,10 +63,13 @@ def list_school_details():
 def check_teacher_exists():
     data = _get_request_data()
     try:
-        phone = str(data.get("phone") or "").strip()
+        phone = _normalize_phone(data.get("phone"))
 
         if not _validate_phone(phone):
-            _respond(400, {"exists": False, "message": "Phone must be exactly 10 digits"})
+            _respond(
+                400,
+                {"exists": False, "message": "Phone must be exactly 10 digits or 12 digits starting with 91"},
+            )
             return
 
         exists = bool(frappe.db.exists("Teacher", {"phone_number": phone}))
@@ -85,10 +89,10 @@ def check_teacher_exists():
 def get_teacher_details():
     data = _get_request_data()
     try:
-        phone = str(data.get("phone") or "").strip()
+        phone = _normalize_phone(data.get("phone"))
 
         if not _validate_phone(phone):
-            _respond(400, {"message": "Phone must be exactly 10 digits"})
+            _respond(400, {"message": "Phone must be exactly 10 digits or 12 digits starting with 91"})
             return
 
         teacher = frappe.db.get_value(
@@ -139,11 +143,16 @@ def update_teacher_details():
     data = _get_request_data()
 
     try:
-        phone = _require_valid_phone(data.get("phone"))
+        phone, phone_error = _require_valid_phone(data.get("phone"))
+        if phone_error:
+            _respond(phone_error["code"], phone_error["payload"])
+            return
+
         school_value = data.get("school")
         school_row = _get_school_row_from_input(school_value) if school_value else None
         if school_value and not school_row:
-            frappe.throw("School not found")
+            _respond(404, {"status": "failure", "message": "School not found"})
+            return
 
         teacher_name = frappe.db.get_value("Teacher", {"phone_number": phone}, "name")
         if not teacher_name:
@@ -155,7 +164,11 @@ def update_teacher_details():
         teacher.last_name = data.get("lastName") or teacher.last_name
         teacher.phone_number = phone
         teacher.teacher_role = data.get("role") or teacher.teacher_role
-        teacher.language = _get_language_name_to_id(data.get("language")) or teacher.language
+        language_id, language_error = _get_language_name_to_id(data.get("language"))
+        if language_error:
+            _respond(language_error["code"], language_error["payload"])
+            return
+        teacher.language = language_id or teacher.language
         if school_row:
             teacher.school_id = school_row["school_id"]
             teacher.state = school_row["state_id"]
@@ -167,10 +180,6 @@ def update_teacher_details():
         _enqueue_glific_contact_sync("Teacher", teacher.name)
         frappe.db.commit()
         _respond(200, {"status": "success", "message": "Teacher details updated successfully."})
-    except frappe.ValidationError:
-        frappe.db.rollback()
-        log_api_failure("update_teacher_details", data, frappe.get_traceback())
-        raise
     except Exception as exc:
         frappe.db.rollback()
         log_api_failure("update_teacher_details", data, frappe.get_traceback())
@@ -186,7 +195,11 @@ def create_teacher_web():
         if not _validate_api_key_or_respond(data.get("api_key")):
             return
 
-        phone = _require_valid_phone(data.get("phone"))
+        phone, phone_error = _require_valid_phone(data.get("phone"))
+        if phone_error:
+            _respond(phone_error["code"], phone_error["payload"])
+            return
+
         first_name = (data.get("firstName") or "").strip()
         school_value = (data.get("school") or "").strip()
         requested_state = (data.get("state") or "").strip()
@@ -211,6 +224,11 @@ def create_teacher_web():
             _set_status(404)
             return {"status": "failure", "message": "School not found"}
 
+        language_id, language_error = _get_language_name_to_id(data.get("language"))
+        if language_error:
+            _set_status(language_error["code"])
+            return language_error["payload"]
+
         teacher = frappe.get_doc(
             {
                 "doctype": "Teacher",
@@ -219,7 +237,7 @@ def create_teacher_web():
                 "gender": (data.get("gender") or "").strip(),
                 "phone_number": phone,
                 "teacher_role": (data.get("role") or "").strip(),
-                "language": _get_language_name_to_id(data.get("language")),
+                "language": language_id,
                 "school_id": school_row["school_id"],
                 "state": school_row["state_id"],
                 "teacher_batch": DELHI_BATCH if is_delhi_registration else None,
@@ -237,10 +255,6 @@ def create_teacher_web():
             "message": "Teacher created successfully.",
             "teacher_id": teacher.name,
         }
-    except frappe.ValidationError:
-        frappe.db.rollback()
-        log_api_failure("create_teacher_web", data, frappe.get_traceback())
-        raise
     except Exception as exc:
         frappe.db.rollback()
         log_api_failure("create_teacher_web", data, frappe.get_traceback())
@@ -252,7 +266,11 @@ def create_teacher_web():
 @frappe.whitelist(allow_guest=True)
 def teacher_whatsapp_response(phone_number):
     try:
-        phone = _require_valid_phone(phone_number)
+        phone, phone_error = _require_valid_phone(phone_number)
+        if phone_error:
+            _respond(phone_error["code"], phone_error["payload"])
+            return
+
         teacher_name = frappe.db.get_value("Teacher", {"phone_number": phone}, "name")
         if not teacher_name:
             _respond(404, {"status": "failure", "message": "Teacher not found"})
@@ -278,14 +296,6 @@ def teacher_whatsapp_response(phone_number):
                 f"{latest_enrollment.school or teacher.school_id}"
             ),
         }
-    except frappe.ValidationError:
-        frappe.db.rollback()
-        log_api_failure(
-            "teacher_whatsapp_response",
-            {"phone_number": phone_number},
-            frappe.get_traceback(),
-        )
-        raise
     except Exception as exc:
         frappe.db.rollback()
         log_api_failure(
