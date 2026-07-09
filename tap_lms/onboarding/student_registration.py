@@ -139,20 +139,33 @@ def _get_school_course_vertical_names(school_id):
     return course_names
 
 
-def _create_student_consent_record(phone_number, whatsapp_consent=0):
+def _upsert_student_consent(phone_number, school_id=None, whatsapp_consent=0):
     phone_number, phone_error = _require_valid_phone(phone_number)
     if phone_error:
-        frappe.log_error(phone_error["payload"]["message"], "create_student_consent_record failed")
+        frappe.log_error(phone_error["payload"]["message"], "upsert_student_consent failed")
         return
-    consent_doc = frappe.get_doc(
-        {
-            "doctype": "Student Consent",
-            "phone_number": str(phone_number).strip(),
-            "whatsapp_consent": int(whatsapp_consent or 0),
-        }
-    )
-    consent_doc.insert(ignore_permissions=True)
-    frappe.db.commit()
+    school_id = str(school_id or "").strip() or None
+
+    try:
+        consent_name = frappe.db.get_value("Student Consent", {"phone_number": phone_number}, "name")
+        if consent_name:
+            consent_doc = frappe.get_doc("Student Consent", consent_name)
+            consent_doc.school = school_id
+            consent_doc.whatsapp_consent = int(whatsapp_consent or 0)
+            consent_doc.save(ignore_permissions=True)
+            return
+
+        consent_doc = frappe.get_doc(
+            {
+                "doctype": "Student Consent",
+                "phone_number": phone_number,
+                "school": school_id,
+                "whatsapp_consent": int(whatsapp_consent or 0),
+            }
+        )
+        consent_doc.insert(ignore_permissions=True)
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "upsert_student_consent failed")
 
 
 @frappe.whitelist(allow_guest=True)
@@ -176,9 +189,10 @@ def verify_school_by_id(school_id, phone_number=None):
 
         if phone_number:
             frappe.enqueue(
-                "tap_lms.onboarding.student_registration._create_student_consent_record",
+                "tap_lms.onboarding.student_registration._upsert_student_consent",
                 queue="default",
                 phone_number=phone_number,
+                school_id=school_id,
                 whatsapp_consent=0,
             )
 
@@ -313,6 +327,8 @@ def create_student_web():
             student.save(ignore_permissions=True)
         else:
             student.insert(ignore_permissions=True)
+
+        _upsert_student_consent(phone, school_id=school_id, whatsapp_consent=1)
         _enqueue_glific_contact_sync("Student", student.name)
         frappe.db.commit()
 

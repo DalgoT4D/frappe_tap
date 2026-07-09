@@ -8,6 +8,7 @@
  "engine": "InnoDB",
  "field_order": [
   "phone_number",
+  "school",
   "whatsapp_consent",
   "timestamp"
  ],
@@ -18,6 +19,14 @@
    "in_list_view": 1,
    "label": "Phone Number",
    "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "school",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "School",
+   "options": "School",
    "search_index": 1
   },
   {
