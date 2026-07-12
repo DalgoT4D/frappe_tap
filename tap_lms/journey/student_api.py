@@ -1289,7 +1289,7 @@ def determine_student_type_api(phone_number, student_name, course_vertical):
         existing_enrollment = frappe.db.sql("""
             SELECT s.name 
             FROM `tabStudent` s
-            INNER JOIN `tabEnrollment` e ON e.parent = s.name  
+            INNER JOIN `tabStudent Enrollment` e ON e.parent = s.name  
             INNER JOIN `tabCourse Level` cl ON cl.name = e.course
             INNER JOIN `tabCourse Verticals` cv ON cv.name = cl.vertical
             WHERE s.phone = %s AND s.name1 = %s AND cv.name = %s

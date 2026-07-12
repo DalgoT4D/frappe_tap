@@ -23,7 +23,7 @@ services:
       - "${SOCKETIO_PORT:-9000}:9000"
     volumes:
       - bench-data:/home/frappe/frappe-bench
-      - ../..:/workspace/frappe_tap:cached
+      - ../..:/workspace/tap_lms:cached
     working_dir: /home/frappe
 
   postgres:

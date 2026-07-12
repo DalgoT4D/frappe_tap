@@ -110,7 +110,7 @@
    "fieldname": "enrollment",
    "fieldtype": "Table",
    "label": "Enrollments",
-   "options": "Enrollment"
+   "options": "Teacher Enrollment"
   },
   {
    "fieldname": "swiftchat_id",

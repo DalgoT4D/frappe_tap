@@ -24,9 +24,9 @@
   "pin",
   "district",
   "state",
-  "country",
-  "grade_course_verticals",
+  "country",  
   "section_break_mjsn",
+  "batch_enrollments",
   "headmaster_name",
   "headmaster_phone",
   "is_tfi",
@@ -91,7 +91,7 @@
    "fieldname": "year",
    "fieldtype": "Select",
    "label": "Onboarding Year",
-   "options": "2022\n2023\n2024\n2025"
+   "options": "2022\n2023\n2024\n2025\n2026"
   },
   {
    "fieldname": "status",
@@ -112,11 +112,12 @@
    "label": "Country",
    "options": "Country"
   },
+
   {
-   "fieldname": "grade_course_verticals",
+   "fieldname": "batch_enrollments",
    "fieldtype": "Table",
-   "label": "Grade Course Verticals",
-   "options": "State Grade Course Vertical"
+   "label": "School Batch Enrollment",
+   "options": "School Batch Enrollment"
   },
   {
    "fieldname": "headmaster_name",

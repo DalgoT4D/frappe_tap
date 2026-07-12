@@ -458,7 +458,7 @@ def create_student():
         # Adding the enrollment details to the student
         student.append("enrollment", {
             "batch": batch,
-            "course": course_level,
+            "level": frappe.db.get_value("Course Level", course_level, "level") if course_level else "",
             "grade": grade,
             "date_joining": now_datetime().date(),
             "school": school_id
@@ -503,7 +503,7 @@ def determine_student_type(phone_number, student_name, course_vertical):
         existing_enrollment = frappe.db.sql("""
             SELECT s.name 
             FROM `tabStudent` s
-            INNER JOIN `tabEnrollment` e ON e.parent = s.name  
+            INNER JOIN `tabStudent Enrollment` e ON e.parent = s.name  
             INNER JOIN `tabCourse Level` cl ON cl.name = e.course
             INNER JOIN `tabCourse Verticals` cv ON cv.name = cl.vertical
             WHERE s.phone = %s AND s.name1 = %s AND cv.name = %s

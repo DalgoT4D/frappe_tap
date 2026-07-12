@@ -1,0 +1,56 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2026-07-09 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "batch_number",
+  "model",
+  "doj",
+  "grades_courses"
+ ],
+ "fields": [
+  {
+   "fieldname": "batch_number",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Batch Number",
+   "options": "Batch",
+   "reqd": 1
+  },
+  {
+   "fieldname": "model",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Model",
+   "options": "Tap Models"
+  },
+  {
+   "default": "Now",
+   "fieldname": "doj",
+   "fieldtype": "Datetime",
+   "label": "DoJ",
+   "read_only": 1
+  },
+  {
+   "description": "Example: {\"4\": \"Arts\", \"5\": \"Science Lab\", \"9\": [\"Coding\", \"Financial Literacy\"]}",
+   "fieldname": "grades_courses",
+   "fieldtype": "JSON",
+   "label": "Grades-Courses"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-07-09 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Tap Lms",
+ "name": "School Batch Enrollment",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

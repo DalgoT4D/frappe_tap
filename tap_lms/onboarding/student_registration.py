@@ -2,17 +2,18 @@ import frappe
 from frappe.utils import now_datetime
 
 from tap_lms.onboarding.utils import (
-    DELHI_BATCH,
     _enqueue_glific_contact_sync,
+    _get_course_level_label_for_grade,
     _get_language_id_to_name,
     _get_language_name_to_id,
     _get_latest_enrollment,
+    _get_latest_child_row,
     _get_request_data,
     _get_school_row_by_id,
-    _is_delhi_school,
+    _phone_for_response,
+    _phone_filter,
     _require_valid_phone,
     _respond,
-    _set_status,
 )
 from tap_lms.utils.api_failures import log_api_failure
 
@@ -23,56 +24,6 @@ ALLOWED_STUDENT_COURSE_NAMES = {
     "Science Lab",
     "Financial Literacy",
 }
-DELHI_GRADE_COURSE_MAP = {
-    "4": "Arts",
-    "5": "Science Lab",
-    "6": "Coding",
-    "7": "Financial Literacy",
-    "8": "Science Lab",
-    "9": "Coding",
-    "11": "Financial Literacy",
-}
-
-
-def _get_course_name_from_course_level(course_level_name):
-    if not course_level_name:
-        return ""
-
-    vertical_name = frappe.db.get_value("Course Level", course_level_name, "vertical")
-    if not vertical_name:
-        return ""
-
-    return frappe.db.get_value("Course Verticals", vertical_name, "name2") or ""
-
-
-def _get_course_level_label_for_grade(grade):
-    try:
-        grade_num = int(str(grade).strip())
-    except Exception:
-        return None, {
-            "code": 400,
-            "payload": {
-                "status": "failure",
-                "message": f"Invalid grade: {grade}",
-            },
-        }
-
-    if grade_num <= 5:
-        return "Level 1", None
-    if 6 <= grade_num <= 8:
-        return "Level 2", None
-    if 9 <= grade_num <= 10:
-        return "Level 3", None
-    if 11 <= grade_num <= 12:
-        return "Level 4", None
-
-    return None, {
-        "code": 400,
-        "payload": {
-            "status": "failure",
-            "message": f"Unsupported grade for course level mapping: {grade}",
-        },
-    }
 
 
 def _get_course_vertical_and_level(course_name, grade):
@@ -94,64 +45,92 @@ def _get_course_vertical_and_level(course_name, grade):
     level_label, level_error = _get_course_level_label_for_grade(grade)
     if level_error:
         return None, level_error
-    course_level_name = frappe.db.get_value(
-        "Course Level",
-        {"vertical": course_vertical.name, "level": level_label},
-        "name",
-    )
-    if not course_level_name:
-        return None, {
-            "code": 404,
-            "payload": {
-                "status": "failure",
-                "message": "Matching course level not found",
-                "course_name": course_name,
-                "grade": grade,
-                "level": level_label,
-            },
-        }
-
     return {
         "course_vertical": course_vertical,
         "level_label": level_label,
-        "course_level_name": course_level_name,
     }, None
 
 
-def _get_school_course_vertical_names(school_id):
+def _get_school_course_vertical_names(school_id, grade):
     if not school_id:
-        return []
+        return {"batch": "", "course_names": [], "vertical": ""}
+    grade_key = str(grade or "").strip()
+    if not grade_key:
+        return {"batch": "", "course_names": [], "vertical": ""}
 
     school = frappe.get_doc("School", school_id)
-    course_names = []
+    latest_enrollment = _get_latest_child_row(
+        school.get("batch_enrollments") or [],
+        "doj",
+        "1900-01-01",
+    )
+    if not latest_enrollment:
+        return {"batch": "", "course_names": [], "vertical": ""}
+    result = {
+        "batch": latest_enrollment.batch_number or "",
+        "course_names": [],
+        "vertical": "",
+    }
+    grades_courses = latest_enrollment.grades_courses
+    if not grades_courses:
+        return result
 
-    for row in school.get("grade_course_verticals") or []:
-        if not row.course_vertical:
-            continue
-        course_name = frappe.db.get_value(
-            "Course Verticals",
-            row.course_vertical,
-            "name2",
+    try:
+        grades_courses = frappe.parse_json(grades_courses)
+    except Exception:
+        return result
+
+    if not isinstance(grades_courses, dict):
+        return result
+
+    value = grades_courses.get(grade_key)
+    if isinstance(value, str) and value.strip():
+        result["course_names"] = [value.strip()]
+    elif isinstance(value, list):
+        result["course_names"] = [str(item).strip() for item in value if str(item or "").strip()]
+
+    if len(result["course_names"]) == 1:
+        result["vertical"] = (
+            frappe.db.get_value("Course Verticals", {"name2": result["course_names"][0]}, "name") or ""
         )
-        if course_name:
-            course_names.append(course_name)
 
-    return course_names
+    return result
 
 
 def _upsert_student_consent(phone_number, school_id=None, whatsapp_consent=0):
+    operation = "upsert_student_consent"
     phone_number, phone_error = _require_valid_phone(phone_number)
     if phone_error:
-        frappe.log_error(phone_error["payload"]["message"], "upsert_student_consent failed")
+        error_context = {
+            "operation": operation,
+            "phone_number": phone_number,
+            "school_id": school_id,
+            "whatsapp_consent": int(whatsapp_consent or 0),
+            "validation_error": phone_error["payload"]["message"],
+        }
+        log_api_failure(operation, error_context, phone_error["payload"]["message"])
+        frappe.log_error(
+            message=frappe.as_json(error_context),
+            title="upsert_student_consent validation failed",
+        )
         return
     school_id = str(school_id or "").strip() or None
+    requested_consent = int(whatsapp_consent or 0)
 
     try:
-        consent_name = frappe.db.get_value("Student Consent", {"phone_number": phone_number}, "name")
+        consent_name = frappe.db.get_value(
+            "Student Consent",
+            _phone_filter("phone_number", phone_number),
+            "name",
+        )
         if consent_name:
             consent_doc = frappe.get_doc("Student Consent", consent_name)
+            consent_doc.phone_number = phone_number
             consent_doc.school = school_id
-            consent_doc.whatsapp_consent = int(whatsapp_consent or 0)
+            consent_doc.whatsapp_consent = max(
+                int(consent_doc.whatsapp_consent or 0),
+                requested_consent,
+            )
             consent_doc.save(ignore_permissions=True)
             return
 
@@ -160,12 +139,23 @@ def _upsert_student_consent(phone_number, school_id=None, whatsapp_consent=0):
                 "doctype": "Student Consent",
                 "phone_number": phone_number,
                 "school": school_id,
-                "whatsapp_consent": int(whatsapp_consent or 0),
+                "whatsapp_consent": requested_consent,
             }
         )
         consent_doc.insert(ignore_permissions=True)
     except Exception:
-        frappe.log_error(frappe.get_traceback(), "upsert_student_consent failed")
+        error_context = {
+            "operation": operation,
+            "phone_number": phone_number,
+            "school_id": school_id,
+            "whatsapp_consent": requested_consent,
+        }
+        error_trace = frappe.get_traceback()
+        log_api_failure(operation, error_context, error_trace)
+        frappe.log_error(
+            message=f"{frappe.as_json(error_context)}\n\n{error_trace}",
+            title="upsert_student_consent failed",
+        )
 
 
 @frappe.whitelist(allow_guest=True)
@@ -191,6 +181,7 @@ def verify_school_by_id(school_id, phone_number=None):
             frappe.enqueue(
                 "tap_lms.onboarding.student_registration._upsert_student_consent",
                 queue="default",
+                enqueue_after_commit=True,
                 phone_number=phone_number,
                 school_id=school_id,
                 whatsapp_consent=0,
@@ -237,22 +228,28 @@ def create_student_web():
 
         required = [student_name, school_id, gender, grade, data.get("language")]
         if not all(required):
-            _set_status(400)
-            return {
+            _respond(400, {
                 "status": "failure",
                 "message": "school_id, student_name, phone, gender, grade and language are required.",
-            }
+            })
+            return
 
         school_row = _get_school_row_by_id(school_id)
         if not school_row:
-            _set_status(404)
-            return {"status": "failure", "message": "School not found"}
+            _respond(404, {"status": "failure", "message": "School not found"})
+            return
 
-        existing_student_name = frappe.db.get_value("Student", {"phone": phone}, "name")
+        existing_student_name = frappe.db.get_value("Student", _phone_filter("phone", phone), "name")
         requested_language = (data.get("language") or "").strip()
+        language_id, language_error = _get_language_name_to_id(requested_language)
+        if language_error:
+            _respond(language_error["code"], language_error["payload"])
+            return
 
         if existing_student_name:
             student = frappe.get_doc("Student", existing_student_name)
+            student.phone = phone
+            student.language = language_id
             response_school_row = (
                 _get_school_row_by_id(student.school_id) if student.school_id else None
             )
@@ -264,7 +261,6 @@ def create_student_web():
 
             comparisons = {
                 "school_name": (existing_school_name, received_school_name),
-                "state": (student.state or "", school_row["state_id"] or ""),
                 "student_name": (student.name1 or "", student_name),
                 "gender": (student.gender or "", gender),
                 "grade": (student.grade or "", grade),
@@ -277,10 +273,6 @@ def create_student_web():
 
             student.data_mismatch = data_mismatch
         else:
-            language_id, language_error = _get_language_name_to_id(requested_language)
-            if language_error:
-                _respond(language_error["code"], language_error["payload"])
-                return
             student = frappe.get_doc(
                 {
                     "doctype": "Student",
@@ -298,26 +290,22 @@ def create_student_web():
             response_school_row = school_row
             student.data_mismatch = {}
 
-        if _is_delhi_school(school_row):
+        school_batch_data = _get_school_course_vertical_names(school_id, grade)
+        school_batch = str(school_batch_data.get("batch") or "").strip()
+        if school_batch:
+            level_label, _ = _get_course_level_label_for_grade(grade)
             enrollment_row = {
-                "batch": DELHI_BATCH,
+                "batch": school_batch,
+                "vertical": school_batch_data["vertical"],
+                "level": level_label or "",
                 "grade": grade,
                 "date_joining": now_datetime().date(),
                 "school": school_id,
                 "whatsapp_response": 0,
             }
-            delhi_course_name = DELHI_GRADE_COURSE_MAP.get(str(grade).strip())
-            if delhi_course_name:
-                course_level_data, course_level_error = _get_course_vertical_and_level(
-                    delhi_course_name, grade
-                )
-                if course_level_error:
-                    _respond(course_level_error["code"], course_level_error["payload"])
-                    return
-                enrollment_row["course"] = course_level_data["course_level_name"]
 
             has_matching_enrollment = any(
-                enrollment.batch == DELHI_BATCH and enrollment.school == school_id
+                str(enrollment.batch or "").strip() == school_batch
                 for enrollment in (student.get("enrollment") or [])
             )
             if not has_matching_enrollment:
@@ -332,8 +320,7 @@ def create_student_web():
         _enqueue_glific_contact_sync("Student", student.name)
         frappe.db.commit()
 
-        _set_status(200)
-        return {
+        _respond(200, {
             "status": "success",
             "message": (
                 "Student enrollment added successfully."
@@ -344,17 +331,17 @@ def create_student_web():
                 response_school_row["school_name"] if response_school_row else ""
             ),
             "student_name": student.name1,
-            "phone": student.phone,
+            "phone": _phone_for_response(student.phone),
             "gender": student.gender,
             "grade": student.grade,
             "language": _get_language_id_to_name(student.language),
-        }
+        })
+        return
     except Exception as exc:
         frappe.db.rollback()
         log_api_failure("create_student_web", data, frappe.get_traceback())
         frappe.log_error(frappe.get_traceback(), "create_student_web failed")
-        _set_status(500)
-        return {"status": "failure", "message": str(exc)}
+        _respond(500, {"status": "failure", "message": str(exc)})
 
 
 @frappe.whitelist(allow_guest=True)
@@ -364,7 +351,7 @@ def student_whatsapp_response(phone_number):
         if phone_error:
             _respond(phone_error["code"], phone_error["payload"])
             return
-        student_name = frappe.db.get_value("Student", {"phone": phone}, "name")
+        student_name = frappe.db.get_value("Student", _phone_filter("phone", phone), "name")
         if not student_name:
             _respond(404, {"status": "failure", "message": "Student not found"})
             return
@@ -379,20 +366,26 @@ def student_whatsapp_response(phone_number):
         student.save(ignore_permissions=True)
         frappe.db.commit()
 
-        latest_course_name = _get_course_name_from_course_level(latest_enrollment.course)
+        latest_course_name = latest_enrollment.vertical or ""
         if latest_course_name:
-            return {
+            _respond(200, {
                 "course1": latest_course_name,
                 "courses_num": 1,
-            }
+            })
+            return
 
-        course_names = _get_school_course_vertical_names(latest_enrollment.school or student.school_id)
+        school_batch_data = _get_school_course_vertical_names(
+            latest_enrollment.school or student.school_id,
+            latest_enrollment.grade or student.grade,
+        )
+        course_names = school_batch_data["course_names"]
         response = {
             f"course{index}": course_name
             for index, course_name in enumerate(course_names, start=1)
         }
         response["courses_num"] = len(course_names)
-        return response
+        _respond(200, response)
+        return
     except Exception as exc:
         frappe.db.rollback()
         log_api_failure(
@@ -424,7 +417,7 @@ def set_student_course_level(phone_number, course_name):
             )
             return
 
-        student_name = frappe.db.get_value("Student", {"phone": phone}, "name")
+        student_name = frappe.db.get_value("Student", _phone_filter("phone", phone), "name")
         if not student_name:
             _respond(404, {"status": "failure", "message": "Student not found"})
             return
@@ -435,7 +428,7 @@ def set_student_course_level(phone_number, course_name):
             _respond(404, {"status": "failure", "message": "Student enrollment not found"})
             return
 
-        grade_value = latest_enrollment.grade or student.grade
+        grade_value = latest_enrollment.grade
         if not grade_value:
             _respond(400, {"status": "failure", "message": "Student grade not found"})
             return
@@ -445,7 +438,8 @@ def set_student_course_level(phone_number, course_name):
             _respond(course_level_error["code"], course_level_error["payload"])
             return
 
-        latest_enrollment.course = course_level_data["course_level_name"]
+        latest_enrollment.vertical = course_level_data["course_vertical"].name
+        latest_enrollment.level = course_level_data["level_label"]
         student.save(ignore_permissions=True)
         _enqueue_glific_contact_sync("Student", student.name)
         frappe.db.commit()
@@ -455,11 +449,11 @@ def set_student_course_level(phone_number, course_name):
             {
                 "status": "success",
                 "student_id": student.name,
-                "phone": student.phone,
+                "phone": _phone_for_response(student.phone),
                 "course_name": course_level_data["course_vertical"].name2,
+                "course_vertical": course_level_data["course_vertical"].name,
                 "grade": grade_value,
                 "level": course_level_data["level_label"],
-                "course_level": course_level_data["course_level_name"],
             },
         )
     except Exception as exc:

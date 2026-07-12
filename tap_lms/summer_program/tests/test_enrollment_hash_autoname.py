@@ -1,15 +1,15 @@
 """
-CR-2026-06-19 review — the Enrollment child doctype uses hash autoname.
+CR-2026-06-19 review — the Student Enrollment child doctype uses hash autoname.
 
-The backend onboarding path appends one Enrollment per student
+The backend onboarding path appends one enrollment per student
 (`process_student_record`).  Its old `format:ER{########}` autoname locked the
 shared `tabSeries.current` row FOR UPDATE on every insert, so running >1 `long`
-worker serialised new-Enrollment creation across workers on the single `ER`
+worker serialised new-enrollment creation across workers on the single `ER`
 counter and could raise SerializationFailure under contention — the same
 mechanism BR-003 fixed for the hot SP doctypes (L-071 / L-075).
 
 This guards against an accidental revert of the autoname.  (Unlike BR-003's
-StudentStageProgress test, Enrollment is a child table — `istable: 1` — so it
+StudentStageProgress test, Student Enrollment is a child table — `istable: 1` — so it
 isn't inserted standalone here; the meta assertion plus the framework's
 hash-naming behaviour cover the conversion, and nothing in the codebase
 constructs or parses `ER…` names — verified 2026-06-19.)
@@ -24,10 +24,10 @@ from frappe.tests.utils import FrappeTestCase
 class TestEnrollmentHashAutoname(FrappeTestCase):
 
     def test_enrollment_meta_autoname_is_hash(self):
-        meta = frappe.get_meta("Enrollment")
+        meta = frappe.get_meta("Student Enrollment")
         self.assertEqual(
             meta.autoname, "hash",
-            "Enrollment must use hash autoname (CR-2026-06-19) — counter "
+            "Student Enrollment must use hash autoname (CR-2026-06-19) — counter "
             "autoname reintroduces tabSeries FOR UPDATE contention under "
             "parallel onboarding workers (L-075)."
         )

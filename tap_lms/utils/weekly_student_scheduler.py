@@ -88,7 +88,7 @@ def get_eligible_students(week_start_date, week_end_date):
         try:
             # Get student's enrollments
             enrollments = frappe.get_all(
-                "Enrollment",
+                "Student Enrollment",
                 filters={"parent": student.name},
                 fields=["batch", "school", "grade"]
             )

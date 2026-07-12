@@ -1,20 +1,20 @@
 import frappe
-
 from tap_lms.onboarding.utils import (
-    DELHI_BATCH,
+    _get_all_school_rows,
     _enqueue_glific_contact_sync,
     _ensure_teacher_enrollment,
     _get_language_id_to_name,
     _get_language_name_to_id,
     _get_latest_enrollment,
+    _get_latest_school_batch_id,
     _get_request_data,
     _get_school_row_by_id,
     _get_school_row_from_input,
-    _is_delhi_school,
     _normalize_phone,
+    _phone_for_response,
+    _phone_filter,
     _require_valid_phone,
     _respond,
-    _set_status,
     _validate_api_key_or_respond,
     _validate_phone,
 )
@@ -30,23 +30,7 @@ def list_school_details():
         if not _validate_api_key_or_respond(api_key):
             return
 
-        schools = frappe.db.sql(
-            """
-            SELECT
-                s.name AS school_id,
-                COALESCE(st.state_name, s.state, '') AS state,
-                COALESCE(d.district_name, s.district, '') AS district,
-                COALESCE(c.city_name, s.city, '') AS city,
-                s.name1 AS school_name
-            FROM `tabSchool` s
-            LEFT JOIN `tabState` st ON st.name = s.state
-            LEFT JOIN `tabDistrict` d ON d.name = s.district
-            LEFT JOIN `tabCity` c ON c.name = s.city
-            ORDER BY s.name1 ASC
-            """,
-            as_dict=True,
-        )
-
+        schools = _get_all_school_rows()
         _respond(200, {"schools": schools})
     except frappe.ValidationError:
         frappe.db.rollback()
@@ -72,7 +56,7 @@ def check_teacher_exists():
             )
             return
 
-        exists = bool(frappe.db.exists("Teacher", {"phone_number": phone}))
+        exists = bool(frappe.db.exists("Teacher", _phone_filter("phone_number", phone)))
         _respond(200, {"exists": exists})
     except frappe.ValidationError:
         frappe.db.rollback()
@@ -97,7 +81,7 @@ def get_teacher_details():
 
         teacher = frappe.db.get_value(
             "Teacher",
-            {"phone_number": phone},
+            _phone_filter("phone_number", phone),
             [
                 "name",
                 "first_name",
@@ -118,7 +102,7 @@ def get_teacher_details():
         payload = {
             "firstName": teacher.first_name or "",
             "lastName": teacher.last_name or "",
-            "phone": teacher.phone_number or "",
+            "phone": _phone_for_response(teacher.phone_number),
             "state": school_row["state"] if school_row else "",
             "district": school_row["district"] if school_row else "",
             "city": school_row["city"] if school_row else "",
@@ -154,7 +138,7 @@ def update_teacher_details():
             _respond(404, {"status": "failure", "message": "School not found"})
             return
 
-        teacher_name = frappe.db.get_value("Teacher", {"phone_number": phone}, "name")
+        teacher_name = frappe.db.get_value("Teacher", _phone_filter("phone_number", phone), "name")
         if not teacher_name:
             _respond(404, {"status": "failure", "message": "Teacher not found"})
             return
@@ -172,9 +156,9 @@ def update_teacher_details():
         if school_row:
             teacher.school_id = school_row["school_id"]
             teacher.state = school_row["state_id"]
-            if _is_delhi_school(school_row):
-                teacher.teacher_batch = DELHI_BATCH
-                _ensure_teacher_enrollment(teacher, school_row, DELHI_BATCH)
+            teacher.teacher_batch = _get_latest_school_batch_id(school_row["school_id"])
+            if teacher.teacher_batch:
+                _ensure_teacher_enrollment(teacher, school_row, teacher.teacher_batch)
 
         teacher.save(ignore_permissions=True)
         _enqueue_glific_contact_sync("Teacher", teacher.name)
@@ -202,32 +186,29 @@ def create_teacher_web():
 
         first_name = (data.get("firstName") or "").strip()
         school_value = (data.get("school") or "").strip()
-        requested_state = (data.get("state") or "").strip()
-        is_delhi_registration = requested_state.upper() == "DELHI"
-
         if not first_name or not school_value:
-            _set_status(400)
-            return {
+            _respond(400, {
                 "status": "failure",
                 "message": "Missing required field: firstName or school",
-            }
+            })
+            return
 
-        if frappe.db.exists("Teacher", {"phone_number": phone}):
-            _set_status(409)
-            return {
+        if frappe.db.exists("Teacher", _phone_filter("phone_number", phone)):
+            _respond(409, {
                 "status": "failure",
                 "message": "A teacher with this phone number already exists",
-            }
+            })
+            return
 
         school_row = _get_school_row_from_input(school_value)
         if not school_row:
-            _set_status(404)
-            return {"status": "failure", "message": "School not found"}
+            _respond(404, {"status": "failure", "message": "School not found"})
+            return
 
         language_id, language_error = _get_language_name_to_id(data.get("language"))
         if language_error:
-            _set_status(language_error["code"])
-            return language_error["payload"]
+            _respond(language_error["code"], language_error["payload"])
+            return
 
         teacher = frappe.get_doc(
             {
@@ -240,7 +221,7 @@ def create_teacher_web():
                 "language": language_id,
                 "school_id": school_row["school_id"],
                 "state": school_row["state_id"],
-                "teacher_batch": DELHI_BATCH if is_delhi_registration else None,
+                "teacher_batch": _get_latest_school_batch_id(school_row["school_id"]),
             }
         )
         if teacher.teacher_batch:
@@ -249,18 +230,17 @@ def create_teacher_web():
         _enqueue_glific_contact_sync("Teacher", teacher.name)
         frappe.db.commit()
 
-        _set_status(200)
-        return {
+        _respond(200, {
             "status": "success",
             "message": "Teacher created successfully.",
             "teacher_id": teacher.name,
-        }
+        })
+        return
     except Exception as exc:
         frappe.db.rollback()
         log_api_failure("create_teacher_web", data, frappe.get_traceback())
         frappe.log_error(frappe.get_traceback(), "create_teacher_web failed")
-        _set_status(500)
-        return {"status": "failure", "message": str(exc)}
+        _respond(500, {"status": "failure", "message": str(exc)})
 
 
 @frappe.whitelist(allow_guest=True)
@@ -271,7 +251,7 @@ def teacher_whatsapp_response(phone_number):
             _respond(phone_error["code"], phone_error["payload"])
             return
 
-        teacher_name = frappe.db.get_value("Teacher", {"phone_number": phone}, "name")
+        teacher_name = frappe.db.get_value("Teacher", _phone_filter("phone_number", phone), "name")
         if not teacher_name:
             _respond(404, {"status": "failure", "message": "Teacher not found"})
             return
@@ -286,7 +266,7 @@ def teacher_whatsapp_response(phone_number):
         teacher.save(ignore_permissions=True)
         frappe.db.commit()
 
-        return {
+        _respond(200, {
             "student_registration_url": (
                 f"http://registration.theapprenticeproject.org/student/"
                 f"{latest_enrollment.school or teacher.school_id}"
@@ -295,7 +275,8 @@ def teacher_whatsapp_response(phone_number):
                 f"https://api.whatsapp.com/send?phone=918454812392&text=tapschool:"
                 f"{latest_enrollment.school or teacher.school_id}"
             ),
-        }
+        })
+        return
     except Exception as exc:
         frappe.db.rollback()
         log_api_failure(

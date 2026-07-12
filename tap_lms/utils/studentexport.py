@@ -32,7 +32,7 @@ def export_students_simple(site_name=None, batch_size=10000):
         total_count = frappe.db.sql("""
             SELECT COUNT(*) as count
             FROM "tabStudent" s
-            LEFT JOIN "tabEnrollment" e ON s.name = e.parent
+            LEFT JOIN "tabStudent Enrollment" e ON s.name = e.parent
         """, as_dict=True)[0]['count']
         
         print(f"Total records to export: {total_count}")
@@ -69,7 +69,7 @@ def export_students_simple(site_name=None, batch_size=10000):
                     e.grade as enrollment_grade,
                     e.school as enrollment_school
                 FROM "tabStudent" s
-                LEFT JOIN "tabEnrollment" e ON s.name = e.parent
+                LEFT JOIN "tabStudent Enrollment" e ON s.name = e.parent
                 ORDER BY s.name, e.idx
                 LIMIT %s OFFSET %s
             """, (batch_size, offset), as_dict=True)
@@ -223,8 +223,8 @@ def create_index_file(output_dir, timestamp, file_info, summary):
         <li><strong>course</strong> - Course</li>
         <li><strong>date_joining</strong> - Date of Joining</li>
         <li><strong>batch</strong> - Batch</li>
-        <li><strong>enrollment_grade</strong> - Grade (from Enrollment)</li>
-        <li><strong>enrollment_school</strong> - School (from Enrollment)</li>
+        <li><strong>enrollment_grade</strong> - Grade (from Student Enrollment)</li>
+        <li><strong>enrollment_school</strong> - School (from Student Enrollment)</li>
     </ul>
 </body>
 </html>

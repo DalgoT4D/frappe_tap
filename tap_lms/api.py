@@ -22,6 +22,14 @@ def authenticate_api_key(api_key):
 
 
 
+def canonicalize_response_phone(phone):
+    if not phone:
+        return phone
+
+    phone_12, _phone_10 = normalize_phone_number(phone)
+    return phone_12 or str(phone).strip()
+
+
 def get_active_batch_for_school(school_id):
     today = frappe.utils.today()
 
@@ -458,7 +466,7 @@ def create_student():
         # Adding the enrollment details to the student
         student.append("enrollment", {
             "batch": batch,
-            "course": course_level,
+            "level": frappe.db.get_value("Course Level", course_level, "level") if course_level else "",
             "grade": grade,
             "date_joining": now_datetime().date(),
             "school": school_id
@@ -503,7 +511,7 @@ def determine_student_type(phone_number, student_name, course_vertical):
         existing_enrollment = frappe.db.sql("""
             SELECT s.name 
             FROM `tabStudent` s
-            INNER JOIN `tabEnrollment` e ON e.parent = s.name  
+            INNER JOIN `tabStudent Enrollment` e ON e.parent = s.name  
             INNER JOIN `tabCourse Level` cl ON cl.name = e.course
             INNER JOIN `tabCourse Verticals` cv ON cv.name = cl.vertical
             WHERE s.phone = %s AND s.name1 = %s AND cv.name = %s
@@ -2069,7 +2077,7 @@ def get_teacher_by_glific_id():
                 "full_name": f"{teacher_data.first_name} {teacher_data.last_name}",
                 "teacher_role": teacher_data.teacher_role,
                 "glific_id": glific_id,
-                "phone_number": teacher_data.phone_number,
+                "phone_number": canonicalize_response_phone(teacher_data.phone_number),
                 "email_id": teacher_data.email_id,
                 "department": teacher_data.department,
                 "gender": teacher_data.gender,
@@ -2517,7 +2525,7 @@ def get_batch_keywords_by_phone(api_key,phone_number):
         return {
             "success": True,
             "teacher_name": f"{teacher.first_name or ''} {teacher.last_name or ''}".strip(),
-            "phone_number": phone_number,
+            "phone_number": canonicalize_response_phone(teacher.phone_number or phone_number),
             "school_id": school_id,
             "batch_onboarding_id": latest_batch_onboarding.name,
             "batch_id": latest_batch_onboarding.batch,
@@ -3273,7 +3281,7 @@ def get_student_by_phone_and_name(api_key, phone_number, buddy_name):
                 "success": True,
                 "data": {
                     "student_id": student.name,
-                    "phone_number": student.phone,
+                    "phone_number": canonicalize_response_phone(student.phone),
                     "buddy_name": student.name1,
                     "current_grade": student.grade,
                     "current_school": student.school_id,
@@ -3310,7 +3318,7 @@ def get_student_by_phone_and_name(api_key, phone_number, buddy_name):
             "success": True,
             "data": {
                 "student_id": student.name,
-                "phone_number": student.phone,
+                "phone_number": canonicalize_response_phone(student.phone),
                 "buddy_name": student.name1,
                 "course_level": latest_enrollment.course if latest_enrollment else None,
                 "batch": latest_enrollment.batch if latest_enrollment else None,
@@ -3423,7 +3431,7 @@ def get_student_all_enrollments(phone_number, buddy_name):
             "success": True,
             "data": {
                 "student_id": student.name,
-                "phone_number": student.phone,
+                "phone_number": canonicalize_response_phone(student.phone),
                 "buddy_name": student.name1,
                 "current_grade": student.grade,
                 "current_school": student.school_id,

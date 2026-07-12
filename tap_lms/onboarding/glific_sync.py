@@ -1,5 +1,4 @@
 import frappe
-from frappe.utils import getdate
 
 from tap_lms.glific_integration import (
     create_contact,
@@ -8,6 +7,7 @@ from tap_lms.glific_integration import (
     register_contact_field,
     update_contact_fields,
 )
+from tap_lms.onboarding.utils import _get_language_id_to_name, _get_latest_enrollment
 from tap_lms.school_utils import get_school_state_model_details
 
 
@@ -41,13 +41,6 @@ def _get_contact_by_phone_variants(phone):
             return contact
     return None
 
-
-def _get_language_id_to_name(language_id):
-    if not language_id:
-        return ""
-    return frappe.db.get_value("TAP Language", language_id, "language_name") or language_id
-
-
 def _get_glific_language_id(language_name):
     if language_name:
         language_docname = frappe.db.get_value(
@@ -70,20 +63,6 @@ def _get_glific_language_id(language_name):
         "glific_language_id",
     )
 
-
-def _get_latest_enrollment(doc):
-    enrollments = list(doc.get("enrollment") or [])
-    if not enrollments:
-        return None
-
-    def _sort_key(item):
-        if item.date_joining:
-            return (1, getdate(item.date_joining), item.idx or 0)
-        return (0, getdate("1900-01-01"), item.idx or 0)
-
-    return max(enrollments, key=_sort_key)
-
-
 def _get_student_batch_id(student_doc):
     for enrollment in student_doc.get("enrollment") or []:
         if enrollment.batch:
@@ -93,18 +72,10 @@ def _get_student_batch_id(student_doc):
 
 def _get_student_course_name(student_doc):
     latest_enrollment = _get_latest_enrollment(student_doc)
-    if not latest_enrollment or not latest_enrollment.course:
+    if not latest_enrollment or not latest_enrollment.vertical:
         return ""
 
-    vertical_name = frappe.db.get_value(
-        "Course Level",
-        latest_enrollment.course,
-        "vertical",
-    )
-    if not vertical_name:
-        return ""
-
-    return frappe.db.get_value("Course Verticals", vertical_name, "name2") or ""
+    return frappe.db.get_value("Course Verticals", latest_enrollment.vertical, "name2") or ""
 
 
 def _build_teacher_glific_fields(teacher_doc, school_meta):
@@ -213,7 +184,7 @@ def sync_registration_contact_to_glific(doctype, docname, retry_count=0):
             str((glific_contact or {}).get("phone") or "").strip()
             or str(phone).strip()
         )
-        if doctype in {"Teacher", "Student"} and not optin_contact(canonical_phone, contact_name):
+        if not optin_contact(canonical_phone, contact_name):
             raise RuntimeError(
                 f"optin_contact returned False for {doctype} {docname} ({canonical_phone})"
             )

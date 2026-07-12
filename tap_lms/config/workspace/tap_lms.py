@@ -33,8 +33,14 @@
                 },
                 {
                     "type": "doctype",
-                    "label": "Enrollment",
-                    "name": "Enrollment",
+                    "label": "Student Enrollment",
+                    "name": "Student Enrollment",
+                    "onboard": 1
+                },
+                {
+                    "type": "doctype",
+                    "label": "Teacher Enrollment",
+                    "name": "Teacher Enrollment",
                     "onboard": 1
                 }
             ]

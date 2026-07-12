@@ -15,9 +15,7 @@
   "alt_phone",
   "gender",
   "school_id",
-  "state",
   "grade",
-  "section",
   "shared_users",
   "joined_on",
   "status",
@@ -31,10 +29,7 @@
   "data_mismatch",
   "glific_id",
   "glific_sync_status",
-  "backend_onboarding",
   "peer_groups",
-  "mentor_role",
-  "mentee_role",
   "preferred_time",
   "preferred_day",
   "swiftchat_id",
@@ -68,21 +63,10 @@
    "options": "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12"
   },
   {
-   "fieldname": "section",
-   "fieldtype": "Data",
-   "label": "Section"
-  },
-  {
    "fieldname": "school_id",
    "fieldtype": "Link",
    "label": "School",
    "options": "School"
-  },
-  {
-   "fieldname": "state",
-   "fieldtype": "Link",
-   "label": "State",
-   "options": "State"
   },
   {
    "fieldname": "shared_users",
@@ -104,7 +88,7 @@
    "fieldname": "enrollment",
    "fieldtype": "Table",
    "label": "enrollments",
-   "options": "Enrollment"
+   "options": "Student Enrollment"
   },
   {
    "fieldname": "access_rate",
@@ -164,28 +148,10 @@
    "options": "pending\nsynced\nfailed"
   },
   {
-   "fieldname": "backend_onboarding",
-   "fieldtype": "Link",
-   "label": "Backend Onboarding",
-   "options": "Backend Student Onboarding"
-  },
-  {
    "fieldname": "peer_groups",
    "fieldtype": "Table",
    "label": "Peer Groups",
    "options": "StudentPeerGroup"
-  },
-  {
-   "fieldname": "mentor_role",
-   "fieldtype": "Table",
-   "label": "Mentor Role",
-   "options": "StudentMentorRole"
-  },
-  {
-   "fieldname": "mentee_role",
-   "fieldtype": "Table",
-   "label": "Mentee Role",
-   "options": "StudentMenteeRole"
   },
   {
    "fieldname": "preferred_time",

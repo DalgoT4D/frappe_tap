@@ -853,7 +853,7 @@ def determine_student_type_backend(phone_number, student_name, course_vertical):
         # Get all enrollments for this student
         enrollments = frappe.db.sql("""
             SELECT name, course, batch, grade, school
-            FROM `tabEnrollment` 
+            FROM `tabStudent Enrollment` 
             WHERE parent = %s
         """, (student_id,), as_dict=True)
         
@@ -1018,7 +1018,7 @@ def validate_enrollment_data(student_name, phone_number):
         enrollments = frappe.db.sql("""
             SELECT s.name as student_id, e.name as enrollment_id, e.course, e.batch, e.grade
             FROM `tabStudent` s
-            INNER JOIN `tabEnrollment` e ON e.parent = s.name 
+            INNER JOIN `tabStudent Enrollment` e ON e.parent = s.name 
             WHERE (s.phone = %s OR s.phone = %s) AND s.name1 = %s
         """, (phone_10, phone_12, student_name), as_dict=True)
         
@@ -1351,9 +1351,9 @@ def process_student_record(student, glific_contact, batch_id, initial_stage, cou
                             "school": student.school
                         }
 
-                        # Add course level if we found one (can be None)
+                        # Student Enrollment now stores grade-derived level only.
                         if course_level:
-                            enrollment["course"] = course_level
+                            enrollment["level"] = frappe.db.get_value("Course Level", course_level, "level") or ""
 
                         existing_student.append("enrollment", enrollment)
 
@@ -1485,9 +1485,9 @@ def process_student_record(student, glific_contact, batch_id, initial_stage, cou
                         "school": student.school
                     }
                     
-                    # Add course level if we found one (can be None)
+                    # Student Enrollment now stores grade-derived level only.
                     if course_level:
-                        enrollment["course"] = course_level
+                        enrollment["level"] = frappe.db.get_value("Course Level", course_level, "level") or ""
                     
                     student_doc.append("enrollment", enrollment)
                     
@@ -1815,4 +1815,3 @@ def get_job_status(job_id):
     except Exception as e:
         #frappe.logger().error(f"[get_job_status] {e}")
         return {"status": "Not Found"}
-

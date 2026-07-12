@@ -41,7 +41,8 @@ Fill in at least these values:
 
 ```dotenv
 SITE_NAME=tap_lms.localhost
-FRAPPE_BRANCH=version-16
+FRAPPE_BRANCH=v14.29.0
+FRAPPE_PYTHON_VERSION=3.10.20
 ADMIN_PASSWORD=admin
 POSTGRES_PASSWORD=postgres
 BUSINESS_THEME_REPO=https://github.com/Midocean-Technologies/business_theme_v14.git
@@ -85,16 +86,24 @@ The script will:
 - start Postgres and two Redis containers under the `tap_lms_local` Compose project
 - create `/home/frappe/frappe-bench` in a Docker volume if it does not exist
 - create the `tap_lms.localhost` site with Postgres
-- symlink `/home/frappe/frappe-bench/apps/tap_lms` to the mounted local repository at `/workspace/frappe_tap`
+- symlink `/home/frappe/frappe-bench/apps/tap_lms` to the mounted local repository at `/workspace/tap_lms`
 - install the local `tap_lms` app from that mounted path
 - install `business_theme_v14` from the configured theme repository
 - run migrations
 - seed `RabbitMQ Settings`, `GCS Settings`, `ElevenLabs Settings`, and `VoiceAgentSettings`
 
-After setup, start Frappe:
+If you change `FRAPPE_BRANCH`, reset the local Docker volumes before re-running
+the setup so bench and site are recreated on that branch:
 
 ```sh
-docker compose --env-file .env -f docker/local/docker-compose.yml exec dev bash -lc "cd /home/frappe/frappe-bench && bench start"
+docker compose --env-file env.local -f docker/local/docker-compose.yml down -v
+```
+
+After setup, the script also starts Frappe in the background inside the `dev`
+container. If you need to start it again manually:
+
+```sh
+docker compose --env-file env.local -f docker/local/docker-compose.yml exec -d dev bash -lc "cd /home/frappe/frappe-bench && nohup bench start > logs/local-bench-start.log 2>&1 </dev/null &"
 ```
 
 Open:
@@ -156,10 +165,22 @@ Start containers:
 docker compose --env-file env.local -f docker/local/docker-compose.yml up -d
 ```
 
-Start Frappe:
+Restart after backend code changes:
 
 ```sh
-docker compose --env-file env.local -f docker/local/docker-compose.yml exec dev bash -lc "cd /home/frappe/frappe-bench && bench start"
+./scripts/restart_local_docker.sh
+```
+
+Rebuild assets first when JS/CSS changes:
+
+```sh
+./scripts/restart_local_docker.sh --build
+```
+
+Tail runtime logs:
+
+```sh
+docker compose --env-file env.local -f docker/local/docker-compose.yml exec dev bash -lc "tail -f /home/frappe/frappe-bench/logs/local-bench-start.log"
 ```
 
 Run migrations:

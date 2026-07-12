@@ -8,10 +8,62 @@ from frappe.model.document import Document
 
 logger = frappe.logger("custom_student_webhook", with_more_info=True)
 logger.setLevel("INFO")
+PHONE_PATTERN = re.compile(r"^\d{10}$")
 
 
 class Student(Document):
     pass
+
+
+def _get_level_for_grade(grade):
+    try:
+        grade_num = int(str(grade).strip())
+    except Exception:
+        return ""
+    if grade_num <= 3:
+        return "Level 0"
+    if 4 <= grade_num <= 5:
+        return "Level 1"
+    if 6 <= grade_num <= 8:
+        return "Level 2"
+    if 9 <= grade_num <= 10:
+        return "Level 3"
+    if 11 <= grade_num <= 12:
+        return "Level 4"
+    return ""
+
+
+def _get_phone_lookup_variants(phone):
+    phone = str(phone or "").strip()
+    if len(phone) == 10 and PHONE_PATTERN.fullmatch(phone):
+        return [f"91{phone}", phone]
+    if len(phone) == 12 and phone.startswith("91") and PHONE_PATTERN.fullmatch(phone[2:]):
+        return [phone, phone[2:]]
+    return []
+
+
+def _canonicalize_phone(phone):
+    variants = _get_phone_lookup_variants(phone)
+    if variants:
+        return variants[0]
+    raise ValueError("Phone must be exactly 10 digits or 12 digits starting with 91")
+
+
+def _find_student_for_profile_update(phone):
+    variants = _get_phone_lookup_variants(phone)
+    if not variants:
+        return None
+
+    matches = frappe.get_all(
+        "Student",
+        filters={"phone": ["in", variants], "profile_id": ""},
+        fields=["name"],
+        order_by="modified desc",
+        limit=1,
+    )
+    if not matches:
+        return None
+    return frappe.get_doc("Student", matches[0].name)
 
 
 @frappe.whitelist()
@@ -22,9 +74,10 @@ def register_student():
             "Entered tap's registration webhook with payload %s", frappe.request.data
         )
         payload = json.loads(frappe.request.data)
+        canonical_phone = _canonicalize_phone(payload.get("phone"))
         doc = frappe.new_doc("Student")
         doc.name1 = payload.get("name1")
-        doc.phone = re.sub("^91", "", payload.get("phone"), count=0, flags=0)
+        doc.phone = canonical_phone
         doc.section = payload.get("section")
         doc.grade = payload.get("grade")
         doc.gender = payload.get("gender")
@@ -32,7 +85,11 @@ def register_student():
         doc.rigour = ""
         doc.append(
             "enrollment",
-            {"course": payload.get("course"), "batch": payload.get("batch")},
+            {
+                "batch": payload.get("batch"),
+                "grade": payload.get("grade"),
+                "level": _get_level_for_grade(payload.get("grade")),
+            },
         )
         if payload.get("keyword") and payload.get("keyword") != "":
             try:
@@ -61,25 +118,21 @@ def update_student_profile():
             payload.get("profile_id"),
         )
 
-        # phone number should be 10 digit
-        payload_phone = re.sub("^91", "", payload.get("phone"), count=0, flags=0)
+        payload_phone = _canonicalize_phone(payload.get("phone"))
         payload_name = payload.get("name1")
         payload_profile_id = payload.get("profile_id")
-        payload_course = payload.get("course")
         payload_batch = payload.get("batch")
+        payload_grade = payload.get("grade")
 
-        query = {"phone": payload_phone, "profile_id": ""}
-        student = None
-        try:
-            doc = frappe.get_last_doc("Student", filters=query)
-            student = doc
-        except Exception:
-            pass
+        student = _find_student_for_profile_update(payload_phone)
 
         if student:
             # update the profile id
+            student.phone = payload_phone
             student.profile_id = payload_profile_id
             student.name1 = payload_name
+            if payload_grade:
+                student.grade = payload_grade
             student.save()
         else:
             # create a new student with the profile, name, phone number and enrollment
@@ -87,9 +140,17 @@ def update_student_profile():
             doc.name1 = payload_name
             doc.phone = payload_phone
             doc.profile_id = payload_profile_id
+            doc.grade = payload_grade
             doc.level = ""
             doc.rigour = ""
-            doc.append("enrollment", {"course": payload_course, "batch": payload_batch})
+            doc.append(
+                "enrollment",
+                {
+                    "batch": payload_batch,
+                    "grade": payload_grade,
+                    "level": _get_level_for_grade(payload_grade),
+                },
+            )
             doc.insert()
         logger.info("Updated profile for student with phone %s ", payload_phone)
 
