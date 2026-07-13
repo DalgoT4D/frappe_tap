@@ -96,7 +96,7 @@ def _validate_phone(phone):
 
 def _require_valid_phone(phone):
     phone = _canonicalize_phone(phone)
-    if not _validate_phone(phone):
+    if not phone:
         return None, {
             "code": 400,
             "payload": {
@@ -225,17 +225,21 @@ def _get_latest_child_row(rows, date_attr, empty_date_value):
     return max(rows, key=_sort_key)
 
 
-def _get_latest_school_batch_id(school_id):
+def _get_latest_school_enrollment(school_id):
     school_id = str(school_id or "").strip()
     if not school_id:
-        return ""
+        return None
 
     school = frappe.get_doc("School", school_id)
-    latest_enrollment = _get_latest_child_row(
+    return _get_latest_child_row(
         school.get("batch_enrollments") or [],
         "doj",
         "1900-01-01",
     )
+
+
+def _get_latest_school_batch_id(school_id):
+    latest_enrollment = _get_latest_school_enrollment(school_id)
     if not latest_enrollment:
         return ""
 

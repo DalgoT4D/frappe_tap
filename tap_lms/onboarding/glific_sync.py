@@ -1,37 +1,23 @@
 import frappe
 
 from tap_lms.glific_integration import (
+    _set_glific_sync_status,
     create_contact,
     get_contact_by_phone,
     optin_contact,
     register_contact_field,
     update_contact_fields,
 )
-from tap_lms.onboarding.utils import _get_language_id_to_name, _get_latest_enrollment
+from tap_lms.onboarding.utils import (
+    _get_language_id_to_name,
+    _get_latest_enrollment,
+    _get_phone_lookup_variants,
+)
 from tap_lms.school_utils import get_school_state_model_details
 
 
 GLIFIC_SYNC_MAX_RETRIES = 3
 _SCRATCH_REGISTRATION_FIELDS_BOOTSTRAPPED = False
-
-
-def _get_phone_lookup_variants(phone):
-    normalized_phone = str(phone or "").strip()
-    if not normalized_phone:
-        return []
-
-    variants = [normalized_phone]
-    if len(normalized_phone) == 10 and normalized_phone.isdigit():
-        variants.append(f"91{normalized_phone}")
-    elif (
-        len(normalized_phone) == 12
-        and normalized_phone.startswith("91")
-        and normalized_phone[2:].isdigit()
-    ):
-        variants.append(normalized_phone[2:])
-
-    # Preserve order while deduplicating.
-    return list(dict.fromkeys(variants))
 
 
 def _get_contact_by_phone_variants(phone):
@@ -40,6 +26,7 @@ def _get_contact_by_phone_variants(phone):
         if contact and contact.get("id"):
             return contact
     return None
+
 
 def _get_glific_language_id(language_name):
     if language_name:
@@ -63,11 +50,19 @@ def _get_glific_language_id(language_name):
         "glific_language_id",
     )
 
-def _get_student_batch_id(student_doc):
-    for enrollment in student_doc.get("enrollment") or []:
-        if enrollment.batch:
-            return enrollment.batch
+
+def _get_latest_enrollment_batch_id(doc):
+    latest_enrollment = _get_latest_enrollment(doc)
+    if latest_enrollment and latest_enrollment.batch:
+        return latest_enrollment.batch
     return ""
+
+
+def _get_latest_enrollment_school_id(doc):
+    latest_enrollment = _get_latest_enrollment(doc)
+    if latest_enrollment and latest_enrollment.school:
+        return latest_enrollment.school
+    return getattr(doc, "school_id", None) or ""
 
 
 def _get_student_course_name(student_doc):
@@ -78,24 +73,24 @@ def _get_student_course_name(student_doc):
     return frappe.db.get_value("Course Verticals", latest_enrollment.vertical, "name2") or ""
 
 
-def _build_teacher_glific_fields(teacher_doc, school_meta):
+def _build_teacher_glific_fields(teacher_doc, school_meta, school_id):
     return {
-        "school": school_meta["school_name"],
+        "school": school_id,
         "state": school_meta["state_name"],
         "model": school_meta["model_name"],
         "buddy_name": (teacher_doc.first_name or "").strip(),
-        "batch_id": teacher_doc.teacher_batch or "",
+        "batch_id": _get_latest_enrollment_batch_id(teacher_doc),
         "role": teacher_doc.teacher_role or "",
     }
 
 
-def _build_student_glific_fields(student_doc, school_meta):
+def _build_student_glific_fields(student_doc, school_meta, school_id):
     return {
-        "school": school_meta["school_name"],
+        "school": school_id,
         "state": school_meta["state_name"],
         "model": school_meta["model_name"],
         "buddy_name": (student_doc.name1 or "").strip(),
-        "batch_id": _get_student_batch_id(student_doc),
+        "batch_id": _get_latest_enrollment_batch_id(student_doc),
         "grade": student_doc.grade or "",
         "course": _get_student_course_name(student_doc),
     }
@@ -144,7 +139,8 @@ def sync_registration_contact_to_glific(doctype, docname, retry_count=0):
 
         _ensure_glific_registration_fields()
         doc = frappe.get_doc(doctype, docname)
-        school_meta = get_school_state_model_details(getattr(doc, "school_id", None))
+        school_id = _get_latest_enrollment_school_id(doc)
+        school_meta = get_school_state_model_details(school_id)
         phone = getattr(doc, "phone_number", None) or getattr(doc, "phone", None)
 
         if not phone:
@@ -152,14 +148,15 @@ def sync_registration_contact_to_glific(doctype, docname, retry_count=0):
 
         if doctype == "Teacher":
             contact_name = (doc.first_name or "").strip() or docname
-            fields_to_update = _build_teacher_glific_fields(doc, school_meta)
+            fields_to_update = _build_teacher_glific_fields(doc, school_meta, school_id)
         else:
             contact_name = (doc.name1 or "").strip() or docname
-            fields_to_update = _build_student_glific_fields(doc, school_meta)
+            fields_to_update = _build_student_glific_fields(doc, school_meta, school_id)
 
         language_name = _get_language_id_to_name(doc.language)
         language_id = _get_glific_language_id(language_name)
         glific_contact = _get_contact_by_phone_variants(phone)
+        created_contact = False
 
         if glific_contact and glific_contact.get("id"):
             glific_id = str(glific_contact["id"])
@@ -169,16 +166,18 @@ def sync_registration_contact_to_glific(doctype, docname, retry_count=0):
             glific_contact = create_contact(
                 contact_name,
                 phone,
-                school_meta["school_name"],
+                fields_to_update["school"],
                 school_meta["model_name"],
                 language_id,
                 fields_to_update["batch_id"],
+                fields_to_update,
             )
             if not glific_contact or not glific_contact.get("id"):
                 raise RuntimeError(f"Failed to create or link Glific contact for {doctype} {docname}")
 
             glific_id = str(glific_contact["id"])
             frappe.db.set_value(doctype, docname, "glific_id", glific_id)
+            created_contact = True
 
         canonical_phone = (
             str((glific_contact or {}).get("phone") or "").strip()
@@ -188,6 +187,11 @@ def sync_registration_contact_to_glific(doctype, docname, retry_count=0):
             raise RuntimeError(
                 f"optin_contact returned False for {doctype} {docname} ({canonical_phone})"
             )
+
+        if created_contact:
+            _set_glific_sync_status(doctype, docname, "synced")
+            frappe.db.commit()
+            return
 
         ok = update_contact_fields(
             glific_id,

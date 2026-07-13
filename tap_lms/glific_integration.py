@@ -165,7 +165,7 @@ def get_glific_auth_headers():
             "Content-Type": "application/json"
         }
 
-def create_contact(name, phone, school_name, model_name, language_id, batch_id):
+def create_contact(name, phone, school_name, model_name, language_id, batch_id, extra_fields=None):
     settings = get_glific_settings()
     url = f"{settings.api_url}/api"
     headers = get_glific_auth_headers()
@@ -193,6 +193,12 @@ def create_contact(name, phone, school_name, model_name, language_id, batch_id):
             "inserted_at": datetime.now(timezone.utc).isoformat()
         }
     }
+    for fieldname, value in (extra_fields or {}).items():
+        fields[fieldname] = {
+            "value": str(value),
+            "type": "string",
+            "inserted_at": datetime.now(timezone.utc).isoformat()
+        }
 
     payload = {
         "query": "mutation createContact($input:ContactInput!) { createContact(input: $input) { contact { id name phone } errors { key message } } }",
@@ -347,6 +353,7 @@ def _create_missing_glific_contact(create_contact_input, language_id, fields_to_
         model_name,
         language_id,
         batch_id,
+        fields_to_update,
     )
 
 

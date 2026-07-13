@@ -7,7 +7,7 @@ from tap_lms.onboarding.utils import (
     _get_language_id_to_name,
     _get_language_name_to_id,
     _get_latest_enrollment,
-    _get_latest_child_row,
+    _get_latest_school_enrollment,
     _get_request_data,
     _get_school_row_by_id,
     _phone_for_response,
@@ -58,12 +58,7 @@ def _get_school_course_vertical_names(school_id, grade):
     if not grade_key:
         return {"batch": "", "course_names": [], "vertical": ""}
 
-    school = frappe.get_doc("School", school_id)
-    latest_enrollment = _get_latest_child_row(
-        school.get("batch_enrollments") or [],
-        "doj",
-        "1900-01-01",
-    )
+    latest_enrollment = _get_latest_school_enrollment(school_id)
     if not latest_enrollment:
         return {"batch": "", "course_names": [], "vertical": ""}
     result = {
