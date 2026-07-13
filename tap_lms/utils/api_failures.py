@@ -38,6 +38,7 @@ def _write_api_failure(method_name, input_payload, error_trace=None):
 
 def log_api_failure(method_name, input_payload, error_trace=None):
     """Enqueue best-effort API failure logging without blocking the caller."""
+    frappe.flags.api_failure_logged = True
     try:
         frappe.enqueue(
             "tap_lms.utils.api_failures._write_api_failure",

@@ -54,7 +54,47 @@ def _set_status(code):
     frappe.response.http_status_code = code
 
 
+def _get_current_method_name():
+    cmd = (frappe.form_dict or {}).get("cmd")
+    if cmd:
+        return str(cmd).split(".")[-1]
+
+    path = getattr(getattr(frappe, "request", None), "path", "") or ""
+    if path:
+        return path.rstrip("/").split("/")[-1].split(".")[-1]
+
+    return "unknown_onboarding_api"
+
+
+def _log_non_200_response(code, payload):
+    if code == 200 or getattr(frappe.flags, "api_failure_logged", False):
+        return
+
+    try:
+        from tap_lms.utils.api_failures import log_api_failure
+
+        input_payload = _get_request_data()
+        log_api_failure(
+            _get_current_method_name(),
+            input_payload,
+            json.dumps(
+                {
+                    "http_status_code": code,
+                    "response_payload": payload,
+                },
+                default=str,
+                ensure_ascii=True,
+            ),
+        )
+    except Exception:
+        frappe.log_error(
+            frappe.get_traceback(),
+            f"Failed to log non-200 onboarding response: {code}",
+        )
+
+
 def _respond(code, payload):
+    _log_non_200_response(code, payload)
     _set_status(code)
     frappe.response.update(payload)
     return
