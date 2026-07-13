@@ -200,6 +200,7 @@ def sync_registration_contact_to_glific(doctype, docname, retry_count=0):
             contact_name=contact_name,
             sync_status_doctype=doctype,
             sync_status_docname=docname,
+            existing_fields=(glific_contact or {}).get("fields"),
         )
         if not ok:
             raise RuntimeError(

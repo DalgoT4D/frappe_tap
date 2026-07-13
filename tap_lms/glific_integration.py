@@ -387,6 +387,7 @@ def update_contact_fields(
     sync_status_doctype=None,
     sync_status_docname=None,
     create_contact_input=None,
+    existing_fields=None,
 ):
     """
     Update Glific contact fields directly, optionally updating the contact's
@@ -428,7 +429,7 @@ def update_contact_fields(
 
     try:
         # ── Step 1: Build direct update payload ────────────────
-        outgoing_fields = {}
+        outgoing_fields = _parse_glific_fields_blob(existing_fields)
         for key, value in fields_to_update.items():
             outgoing_fields[key] = {
                 "value": str(value),
