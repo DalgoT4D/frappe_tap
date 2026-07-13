@@ -25,6 +25,15 @@ ALLOWED_STUDENT_COURSE_NAMES = {
     "Financial Literacy",
 }
 
+STUDENT_COURSE_NAME_ALIASES = {
+    "Science": "Science Lab",
+}
+
+
+def _normalize_student_course_name(course_name):
+    course_name = (course_name or "").strip()
+    return STUDENT_COURSE_NAME_ALIASES.get(course_name, course_name)
+
 
 def _get_course_vertical_and_level(course_name, grade):
     course_vertical = frappe.db.get_value(
@@ -401,7 +410,7 @@ def set_student_course_level(phone_number, course_name):
         if phone_error:
             _respond(phone_error["code"], phone_error["payload"])
             return
-        course_name = (course_name or "").strip()
+        course_name = _normalize_student_course_name(course_name)
 
         if course_name not in ALLOWED_STUDENT_COURSE_NAMES:
             _respond(
