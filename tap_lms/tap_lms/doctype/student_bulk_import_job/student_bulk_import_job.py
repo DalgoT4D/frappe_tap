@@ -27,10 +27,31 @@ def _parse_tab_names(tab_names_json: str) -> list[str]:
 
 def _append_log(docname: str, message: str) -> None:
     timestamp = frappe.utils.now_datetime().strftime("%Y-%m-%d %H:%M:%S")
-    existing = frappe.db.get_value("Student Bulk Import Job", docname, "processing_log") or ""
-    entry = f"[{timestamp}] {message}"
-    next_value = f"{existing}\n\n{entry}".strip() if existing else entry
-    frappe.db.set_value("Student Bulk Import Job", docname, "processing_log", next_value, update_modified=False)
+    existing = frappe.db.get_value("Student Bulk Import Job", docname, "processing_log")
+    if isinstance(existing, str) and existing.strip():
+        try:
+            existing = json.loads(existing)
+        except Exception:
+            existing = {"entries": [{"timestamp": None, "message": existing}]}
+
+    if isinstance(existing, dict):
+        raw_entries = existing.get("entries")
+        log_entries = raw_entries if isinstance(raw_entries, list) else []
+    elif isinstance(existing, list):
+        log_entries = existing
+    else:
+        log_entries = []
+    log_entries.append({
+        "timestamp": timestamp,
+        "message": message,
+    })
+    frappe.db.set_value(
+        "Student Bulk Import Job",
+        docname,
+        "processing_log",
+        {"entries": log_entries},
+        update_modified=False,
+    )
 
 
 def _update_progress(docname: str, payload: dict) -> None:
@@ -40,6 +61,10 @@ def _update_progress(docname: str, payload: dict) -> None:
         updates["batches_processed"] = int(summary["batches_processed"] or 0)
     if "effective_rows" in payload:
         updates["effective_rows"] = int(payload["effective_rows"] or 0)
+    if "failed_rows" in summary:
+        updates["failed_rows"] = int(summary["failed_rows"] or 0)
+    if "failed_rows_file_url" in summary:
+        updates["failed_rows_file_url"] = str(summary["failed_rows_file_url"] or "")
     if payload.get("event") == "completed":
         updates["summary_json"] = json.dumps(summary, indent=2, sort_keys=True)
         updates["elapsed"] = str(summary.get("elapsed") or "")
@@ -67,9 +92,11 @@ def start_student_bulk_import_job(docname: str) -> dict:
         elapsed="",
         batches_processed=0,
         effective_rows=0,
+        failed_rows=0,
+        failed_rows_file_url="",
         summary_json="",
         last_error="",
-        processing_log="",
+        processing_log={"entries": []},
     )
     frappe.db.commit()
 

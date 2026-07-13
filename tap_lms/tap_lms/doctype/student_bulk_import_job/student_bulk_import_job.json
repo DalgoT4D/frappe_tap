@@ -20,6 +20,8 @@
   "elapsed",
   "batches_processed",
   "effective_rows",
+  "failed_rows",
+  "failed_rows_file_url",
   "summary_json",
   "last_error",
   "processing_log"
@@ -100,6 +102,19 @@
    "read_only": 1
   },
   {
+   "default": "0",
+   "fieldname": "failed_rows",
+   "fieldtype": "Int",
+   "label": "Failed Rows",
+   "read_only": 1
+  },
+  {
+   "fieldname": "failed_rows_file_url",
+   "fieldtype": "Data",
+   "label": "Failed Rows File URL",
+   "read_only": 1
+  },
+  {
    "fieldname": "summary_json",
    "fieldtype": "Long Text",
    "label": "Summary JSON",
@@ -113,7 +128,7 @@
   },
   {
    "fieldname": "processing_log",
-   "fieldtype": "Long Text",
+   "fieldtype": "JSON",
    "label": "Processing Log",
    "read_only": 1
   }

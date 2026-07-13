@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from dataclasses import dataclass
 from datetime import date
 from io import BytesIO
@@ -10,7 +11,11 @@ from urllib.parse import urlparse
 
 import frappe
 import requests
-from openpyxl import load_workbook
+from google.auth.transport.requests import AuthorizedSession
+from google.cloud import storage
+from google.oauth2 import service_account
+from openpyxl import Workbook, load_workbook
+from openpyxl.styles import PatternFill
 from psycopg2.extras import execute_values
 
 
@@ -30,6 +35,8 @@ TAB_NAMES = ["Existing Students", "New Students"]
 SAMPLE_TEST = 0
 BATCH_SIZE = 100
 IMPORT_USER = "Administrator"
+GCP_CREDENTIALS_PROJECT_ID = "rubrics-data-migration"
+FAILED_ROWS_GCP_PROJECT_ID = "axiomatic-treat-417617"
 
 EXPECTED_COLUMNS = {
     "Student Name": "student_name_raw",
@@ -42,6 +49,16 @@ EXPECTED_COLUMNS = {
     "Course": "course_raw",
 }
 
+FAILED_WORKBOOK_HEADERS = [
+    "Student Name",
+    "Contact No.",
+    "Gender",
+    "Batch",
+    "Course",
+    "Grade",
+    "School ID",
+    "Language",
+]
 
 @dataclass(frozen=True)
 class RawRow:
@@ -106,26 +123,34 @@ def run_import(
     )
     try:
         workbook = _download_workbook(spreadsheet_url)
-        rows = _read_selected_tabs(workbook, tab_names)
-        if not rows:
-            raise ValueError("No rows found in selected tabs")
-        _emit(log_fn, f"[student-import] loaded raw rows={len(rows)}")
-
         _prepare_temp_tables()
-        _bulk_insert_stage(rows)
+        raw_rows = _stage_selected_tabs(workbook, tab_names, log_fn=log_fn)
+        if not raw_rows:
+            raise ValueError("No rows found in selected tabs")
+        _emit(log_fn, f"[student-import] loaded raw rows={raw_rows}")
         _build_clean_stage(sample_test)
+        _build_validation_tables(sample_test)
 
         precheck = _run_prechecks()
         _print_precheck(precheck, log_fn=log_fn)
-        _raise_if_blocking_precheck(precheck)
+        failed_rows_file_url = ""
+        if precheck["invalid_rows"] > 0:
+            try:
+                failed_rows_file_url = _create_and_upload_failed_rows_workbook(tab_names)
+                _emit(log_fn, f"[student-import] failed_rows_file_url={failed_rows_file_url}")
+            except Exception as exc:
+                _emit(log_fn, f"[student-import] failed_rows_workbook_upload_failed error={exc}")
 
-        total_effective_rows = precheck["effective_rows"]
+        total_effective_rows = precheck["valid_rows"]
         summary = {
             "updated_students": 0,
             "inserted_students": 0,
             "inserted_enrollments": 0,
             "batches_processed": 0,
             "effective_rows": total_effective_rows,
+            "failed_rows": precheck["invalid_rows"],
+            "skipped_rows": precheck["invalid_rows"],
+            "failed_rows_file_url": failed_rows_file_url,
         }
         for batch_no, offset in enumerate(range(0, total_effective_rows, batch_size), start=1):
             _prepare_batch_subset(offset=offset, batch_size=batch_size)
@@ -182,14 +207,20 @@ def run_import(
 def _download_workbook(spreadsheet_url: str):
     download_url = _build_download_url(spreadsheet_url)
     response = requests.get(download_url, timeout=120)
-    response.raise_for_status()
-    return load_workbook(BytesIO(response.content), read_only=True, data_only=True)
+    if response.ok:
+        return load_workbook(BytesIO(response.content), read_only=True, data_only=True)
+
+    file_id = _extract_sheet_id(spreadsheet_url)
+    if not file_id:
+        response.raise_for_status()
+
+    private_response = _download_private_workbook(file_id)
+    return load_workbook(BytesIO(private_response.content), read_only=True, data_only=True)
 
 
 def _build_download_url(spreadsheet_url: str) -> str:
-    match = re.search(r"/spreadsheets/d/([a-zA-Z0-9-_]+)", spreadsheet_url)
-    if match:
-        sheet_id = match.group(1)
+    sheet_id = _extract_sheet_id(spreadsheet_url)
+    if sheet_id:
         return f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=xlsx"
 
     parsed = urlparse(spreadsheet_url)
@@ -198,7 +229,182 @@ def _build_download_url(spreadsheet_url: str) -> str:
     raise ValueError("Unsupported spreadsheet URL")
 
 
-def _read_selected_tabs(workbook, tab_names: list[str]) -> list[RawRow]:
+def _extract_sheet_id(spreadsheet_url: str) -> str | None:
+    match = re.search(r"/spreadsheets/d/([a-zA-Z0-9-_]+)", spreadsheet_url)
+    return match.group(1) if match else None
+
+
+def _get_google_service_account_credentials(project_id: str = GCP_CREDENTIALS_PROJECT_ID):
+    settings_name = frappe.db.get_value(
+        "GCS Settings",
+        {"project_id": project_id},
+        "name",
+    )
+    if not settings_name:
+        frappe.throw(f"GCS Settings not found for project_id '{project_id}'")
+
+    settings = frappe.get_doc("GCS Settings", settings_name)
+    credentials_dict = json.loads(settings.credentials_json)
+    return service_account.Credentials.from_service_account_info(
+        credentials_dict,
+        scopes=[
+            "https://www.googleapis.com/auth/drive.readonly",
+            "https://www.googleapis.com/auth/spreadsheets.readonly",
+        ],
+    )
+
+
+def _get_google_service_account_email(project_id: str = GCP_CREDENTIALS_PROJECT_ID) -> str:
+    settings_name = frappe.db.get_value(
+        "GCS Settings",
+        {"project_id": project_id},
+        "name",
+    )
+    if not settings_name:
+        return ""
+
+    settings = frappe.get_doc("GCS Settings", settings_name)
+    try:
+        credentials_dict = json.loads(settings.credentials_json)
+    except Exception:
+        return ""
+    return str(credentials_dict.get("client_email") or "").strip()
+
+
+def _download_private_workbook(file_id: str) -> requests.Response:
+    credentials = _get_google_service_account_credentials()
+    session = AuthorizedSession(credentials)
+    response = session.get(
+        "https://www.googleapis.com/drive/v3/files/{file_id}/export".format(file_id=file_id),
+        params={
+            "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        },
+        timeout=120,
+    )
+    if response.status_code == 403:
+        service_account_email = _get_google_service_account_email()
+        raise frappe.ValidationError(
+            "Private Google Sheet access denied (403). "
+            f"Share the sheet with the service account '{service_account_email}' "
+            f"from GCS Settings project_id '{GCP_CREDENTIALS_PROJECT_ID}', "
+            "or verify that the Google Drive API is enabled for that project."
+        )
+    response.raise_for_status()
+    return response
+
+
+def _get_gcs_settings(project_id: str):
+    settings_name = frappe.db.get_value(
+        "GCS Settings",
+        {"project_id": project_id},
+        "name",
+    )
+    if not settings_name:
+        frappe.throw(f"GCS Settings not found for project_id '{project_id}'")
+    return frappe.get_doc("GCS Settings", settings_name)
+
+
+def _upload_bytes_to_gcs(content: bytes, object_name: str, project_id: str) -> str:
+    settings = _get_gcs_settings(project_id)
+    credentials_dict = json.loads(settings.credentials_json)
+    client = storage.Client.from_service_account_info(credentials_dict)
+    bucket = client.bucket(settings.bucket_name)
+    blob = bucket.blob(object_name)
+    blob.upload_from_string(
+        content,
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    return f"https://storage.cloud.google.com/{settings.bucket_name}/{object_name}"
+
+
+def _create_and_upload_failed_rows_workbook(tab_names: list[str]) -> str:
+    wb = Workbook()
+    default_sheet = wb.active
+    wb.remove(default_sheet)
+    header = FAILED_WORKBOOK_HEADERS + ["Validation Errors"]
+    highlight = PatternFill(fill_type="solid", fgColor="FFF59D")
+    field_to_col = {
+        "student_name_raw": 1,
+        "contact_no_raw": 2,
+        "gender_raw": 3,
+        "batch_raw": 4,
+        "course_raw": 5,
+        "grade_raw": 6,
+        "school_id_raw": 7,
+        "language_raw": 8,
+    }
+
+    invalid_rows = _rows("""
+        SELECT
+            source_tab,
+            row_in_tab,
+            student_name_raw,
+            contact_no_raw,
+            gender_raw,
+            school_id_raw,
+            language_raw,
+            batch_raw,
+            grade_raw,
+            course_raw,
+            validation_errors,
+            fail_phone,
+            fail_duplicate_phone,
+            fail_grade,
+            fail_school,
+            fail_batch,
+            fail_language,
+            fail_course,
+            fail_ambiguous_phone
+        FROM tmp_student_import_invalid
+        ORDER BY source_priority, row_in_tab
+    """)
+
+    rows_by_tab: dict[str, list[dict]] = {tab_name: [] for tab_name in tab_names}
+    for row in invalid_rows:
+        rows_by_tab.setdefault(row["source_tab"], []).append(row)
+
+    for tab_name in tab_names:
+        ws = wb.create_sheet(title=tab_name[:31] or "Sheet")
+        ws.append(header)
+        for row in rows_by_tab.get(tab_name, []):
+            ws.append([
+                row.get("student_name_raw") or "",
+                row.get("contact_no_raw") or "",
+                row.get("gender_raw") or "",
+                row.get("batch_raw") or "",
+                row.get("course_raw") or "",
+                row.get("grade_raw") or "",
+                row.get("school_id_raw") or "",
+                row.get("language_raw") or "",
+                row.get("validation_errors") or "",
+            ])
+            excel_row = ws.max_row
+            if row.get("fail_phone") or row.get("fail_duplicate_phone") or row.get("fail_ambiguous_phone"):
+                ws.cell(row=excel_row, column=field_to_col["contact_no_raw"]).fill = highlight
+            if row.get("fail_grade"):
+                ws.cell(row=excel_row, column=field_to_col["grade_raw"]).fill = highlight
+            if row.get("fail_school"):
+                ws.cell(row=excel_row, column=field_to_col["school_id_raw"]).fill = highlight
+            if row.get("fail_batch"):
+                ws.cell(row=excel_row, column=field_to_col["batch_raw"]).fill = highlight
+            if row.get("fail_language"):
+                ws.cell(row=excel_row, column=field_to_col["language_raw"]).fill = highlight
+            if row.get("fail_course"):
+                ws.cell(row=excel_row, column=field_to_col["course_raw"]).fill = highlight
+            ws.cell(row=excel_row, column=len(header)).fill = highlight
+
+    buffer = BytesIO()
+    wb.save(buffer)
+    object_name = f"student-bulk-import-failures/{frappe.utils.now_datetime().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex}.xlsx"
+    return _upload_bytes_to_gcs(buffer.getvalue(), object_name, FAILED_ROWS_GCP_PROJECT_ID)
+
+
+def _stage_selected_tabs(
+    workbook,
+    tab_names: list[str],
+    log_fn: Callable[[str], None] | None = None,
+    chunk_size: int = 2000,
+) -> int:
     missing_tabs = [tab_name for tab_name in tab_names if tab_name not in workbook.sheetnames]
     if missing_tabs:
         raise ValueError(
@@ -206,7 +412,7 @@ def _read_selected_tabs(workbook, tab_names: list[str]) -> list[RawRow]:
             f"Available tabs: {workbook.sheetnames}"
         )
 
-    rows: list[RawRow] = []
+    total_rows = 0
     for priority, tab_name in enumerate(tab_names, start=1):
         ws = workbook[tab_name]
         header = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), None)
@@ -214,6 +420,8 @@ def _read_selected_tabs(workbook, tab_names: list[str]) -> list[RawRow]:
             raise ValueError(f"Tab '{tab_name}' is empty")
 
         header_map = _resolve_header_map(tab_name, header)
+        tab_rows: list[RawRow] = []
+        tab_count = 0
         for row_in_tab, row_values in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
             row_dict = {
                 canonical_key: _stringify(row_values[idx] if idx < len(row_values) else None)
@@ -221,7 +429,7 @@ def _read_selected_tabs(workbook, tab_names: list[str]) -> list[RawRow]:
             }
             if not any(value.strip() for value in row_dict.values()):
                 continue
-            rows.append(
+            tab_rows.append(
                 RawRow(
                     source_tab=tab_name,
                     source_priority=priority,
@@ -236,7 +444,17 @@ def _read_selected_tabs(workbook, tab_names: list[str]) -> list[RawRow]:
                     course_raw=row_dict["course_raw"],
                 )
             )
-    return rows
+            if len(tab_rows) >= chunk_size:
+                _bulk_insert_stage(tab_rows, chunk_size=chunk_size)
+                tab_count += len(tab_rows)
+                total_rows += len(tab_rows)
+                tab_rows = []
+        if tab_rows:
+            _bulk_insert_stage(tab_rows, chunk_size=chunk_size)
+            tab_count += len(tab_rows)
+            total_rows += len(tab_rows)
+        _emit(log_fn, f"[student-import] staged tab='{tab_name}' raw_rows={tab_count}")
+    return total_rows
 
 
 def _resolve_header_map(tab_name: str, header: Iterable[object]) -> dict[str, int]:
@@ -261,6 +479,9 @@ def _prepare_temp_tables() -> None:
     DROP TABLE IF EXISTS tmp_student_import_raw;
     DROP TABLE IF EXISTS tmp_student_import_clean;
     DROP TABLE IF EXISTS tmp_student_import_effective;
+    DROP TABLE IF EXISTS tmp_student_import_validation;
+    DROP TABLE IF EXISTS tmp_student_import_valid;
+    DROP TABLE IF EXISTS tmp_student_import_invalid;
     DROP TABLE IF EXISTS tmp_student_import_match;
     DROP TABLE IF EXISTS tmp_student_import_to_insert;
     DROP TABLE IF EXISTS tmp_student_import_inserted;
@@ -326,12 +547,6 @@ def _bulk_insert_stage(rows: list[RawRow], chunk_size: int = 2000) -> None:
 
 
 def _build_clean_stage(sample_test: int) -> None:
-    sample_limit_sql = ""
-    params: tuple[object, ...] = ()
-    if sample_test > 0:
-        sample_limit_sql = "LIMIT %s"
-        params = (sample_test,)
-
     sql = f"""
     CREATE TEMP TABLE tmp_student_import_clean AS
     WITH base AS (
@@ -340,6 +555,12 @@ def _build_clean_stage(sample_test: int) -> None:
             source_priority,
             row_in_tab,
             trim(coalesce(student_name_raw, '')) AS student_name_raw,
+            trim(coalesce(contact_no_raw, '')) AS contact_no_raw,
+            trim(coalesce(school_id_raw, '')) AS school_id_raw,
+            trim(coalesce(language_raw, '')) AS language_raw,
+            trim(coalesce(batch_raw, '')) AS batch_raw,
+            trim(coalesce(grade_raw, '')) AS grade_raw,
+            trim(coalesce(course_raw, '')) AS course_raw,
             regexp_replace(
                 regexp_replace(trim(coalesce(contact_no_raw, '')), '\\.0+$', ''),
                 '\\D',
@@ -394,6 +615,12 @@ def _build_clean_stage(sample_test: int) -> None:
         source_priority,
         row_in_tab,
         student_name_raw,
+        contact_no_raw,
+        school_id_raw,
+        language_raw,
+        batch_raw,
+        grade_raw,
+        course_raw,
         CASE
             WHEN cleaned_name_tmp IS NULL OR cleaned_name_tmp = '' THEN 'Champ'
             ELSE cleaned_name_tmp
@@ -479,120 +706,161 @@ def _build_clean_stage(sample_test: int) -> None:
     FROM cleaned
     """
     frappe.db.sql(sql)
+    
+    
+def _build_validation_tables(sample_test: int) -> None:
+    sample_limit_sql = ""
+    params: tuple[object, ...] = ()
+    if sample_test > 0:
+        sample_limit_sql = "LIMIT %s"
+        params = (sample_test,)
+
+    frappe.db.sql("DROP TABLE IF EXISTS tmp_student_import_validation")
+    frappe.db.sql("DROP TABLE IF EXISTS tmp_student_import_valid")
+    frappe.db.sql("DROP TABLE IF EXISTS tmp_student_import_invalid")
+
+    sql = f"""
+    CREATE TEMP TABLE tmp_student_import_validation AS
+    WITH sampled AS (
+        SELECT *
+        FROM tmp_student_import_clean
+        ORDER BY source_priority, row_in_tab
+        {sample_limit_sql}
+    ),
+    ranked AS (
+        SELECT
+            s.*,
+            CASE
+                WHEN s.phone_12 IS NOT NULL THEN
+                    row_number() OVER (PARTITION BY s.phone_12 ORDER BY s.source_priority, s.row_in_tab)
+                ELSE 1
+            END AS phone_rank
+        FROM sampled s
+    ),
+    enriched AS (
+        SELECT
+            r.*,
+            EXISTS (
+                SELECT 1
+                FROM "tabSchool" s
+                WHERE s.name = r.school_id_in
+                   OR substring(s.name from '(SC[0-9]+)$') = r.school_id_in
+            ) AS school_exists,
+            EXISTS (
+                SELECT 1
+                FROM "tabBatch" b
+                WHERE b.name = r.batch_in
+                   OR b.batch_id = r.batch_in
+            ) AS batch_exists,
+            EXISTS (
+                SELECT 1
+                FROM "tabTAP Language" l
+                WHERE l.language_name = r.language_name_in
+            ) AS language_exists,
+            EXISTS (
+                SELECT 1
+                FROM "tabCourse Verticals" cv
+                WHERE cv.name2 = r.course_name_in
+                   OR cv.name = r.course_name_in
+                   OR cv.vertical_id = r.course_name_in
+            ) AS vertical_exists,
+            COALESCE((
+                SELECT count(*)
+                FROM "tabStudent" st
+                WHERE st.phone IN (r.phone_12, r.phone_10)
+            ), 0) AS existing_phone_match_count
+        FROM ranked r
+    )
+    SELECT
+        *,
+        (phone_12 IS NULL) AS fail_phone,
+        (phone_12 IS NOT NULL AND phone_rank > 1) AS fail_duplicate_phone,
+        (derived_level IS NULL) AS fail_grade,
+        (NOT school_exists) AS fail_school,
+        (NOT batch_exists) AS fail_batch,
+        (NOT language_exists) AS fail_language,
+        (NOT vertical_exists) AS fail_course,
+        (existing_phone_match_count > 1) AS fail_ambiguous_phone,
+        concat_ws(
+            '; ',
+            CASE WHEN phone_12 IS NULL THEN 'Invalid Contact No.' END,
+            CASE WHEN phone_12 IS NOT NULL AND phone_rank > 1 THEN 'Duplicate Contact No. in selected import set' END,
+            CASE WHEN derived_level IS NULL THEN 'Invalid Grade' END,
+            CASE WHEN NOT school_exists THEN 'School ID not found in this site' END,
+            CASE WHEN NOT batch_exists THEN 'Batch not found in this site' END,
+            CASE WHEN NOT language_exists THEN 'Language not found in this site' END,
+            CASE WHEN NOT vertical_exists THEN 'Course not found in this site' END,
+            CASE WHEN existing_phone_match_count > 1 THEN 'Multiple existing students found for Contact No.' END
+        ) AS validation_errors,
+        NOT (
+            (phone_12 IS NULL)
+            OR (phone_12 IS NOT NULL AND phone_rank > 1)
+            OR (derived_level IS NULL)
+            OR (NOT school_exists)
+            OR (NOT batch_exists)
+            OR (NOT language_exists)
+            OR (NOT vertical_exists)
+            OR (existing_phone_match_count > 1)
+        ) AS is_valid
+    FROM enriched
+    """
+    frappe.db.sql(sql, params)
 
     frappe.db.sql("""
-        CREATE TEMP TABLE tmp_student_import_effective AS
+        CREATE TEMP TABLE tmp_student_import_valid AS
         SELECT *
-        FROM (
-            SELECT *
-            FROM (
-                SELECT
-                    c.*,
-                    row_number() OVER (
-                        PARTITION BY phone_12
-                        ORDER BY source_priority, row_in_tab
-                    ) AS phone_rank
-                FROM tmp_student_import_clean c
-                WHERE c.phone_12 IS NOT NULL
-            ) ranked
-            WHERE phone_rank = 1
-            ORDER BY source_priority, row_in_tab
-        ) limited
+        FROM tmp_student_import_validation
+        WHERE is_valid
+        ORDER BY source_priority, row_in_tab
     """)
 
-    if sample_limit_sql:
-        frappe.db.sql(f"""
-            CREATE TEMP TABLE tmp_student_import_effective_limited AS
-            SELECT *
-            FROM tmp_student_import_effective
-            ORDER BY source_priority, row_in_tab
-            {sample_limit_sql}
-        """, params)
-        frappe.db.sql("DROP TABLE tmp_student_import_effective")
-        frappe.db.sql("""
-            ALTER TABLE tmp_student_import_effective_limited
-            RENAME TO tmp_student_import_effective
-        """)
+    frappe.db.sql("""
+        CREATE TEMP TABLE tmp_student_import_invalid AS
+        SELECT *
+        FROM tmp_student_import_validation
+        WHERE NOT is_valid
+        ORDER BY source_priority, row_in_tab
+    """)
 
 
 def _run_prechecks() -> dict:
     return {
         "raw_rows": _scalar("SELECT count(*) FROM tmp_student_import_raw"),
-        "effective_rows": _scalar("SELECT count(*) FROM tmp_student_import_effective"),
-        "invalid_phone_rows": _scalar("""
-            SELECT count(*)
-            FROM tmp_student_import_clean
-            WHERE phone_12 IS NULL
-        """),
+        "effective_rows": _scalar("SELECT count(*) FROM tmp_student_import_valid"),
+        "valid_rows": _scalar("SELECT count(*) FROM tmp_student_import_valid"),
+        "invalid_rows": _scalar("SELECT count(*) FROM tmp_student_import_invalid"),
+        "invalid_phone_rows": _scalar("SELECT count(*) FROM tmp_student_import_invalid WHERE fail_phone"),
         "duplicate_input_phones": _scalar("""
             SELECT count(*)
-            FROM (
-                SELECT phone_12
-                FROM tmp_student_import_clean
-                WHERE phone_12 IS NOT NULL
-                GROUP BY phone_12
-                HAVING count(*) > 1
-            ) x
+            FROM tmp_student_import_invalid
+            WHERE fail_duplicate_phone
         """),
         "ignored_gender_rows": _scalar("""
             SELECT count(*)
-            FROM tmp_student_import_effective
+            FROM tmp_student_import_validation
             WHERE normalized_gender IS NULL
         """),
-        "invalid_grade_rows": _scalar("""
-            SELECT count(*)
-            FROM tmp_student_import_effective
-            WHERE derived_level IS NULL
+        "invalid_grade_rows": _scalar("SELECT count(*) FROM tmp_student_import_invalid WHERE fail_grade"),
+        "missing_school_rows": _scalar("SELECT count(*) FROM tmp_student_import_invalid WHERE fail_school"),
+        "missing_batch_rows": _scalar("SELECT count(*) FROM tmp_student_import_invalid WHERE fail_batch"),
+        "missing_language_rows": _scalar("SELECT count(*) FROM tmp_student_import_invalid WHERE fail_language"),
+        "missing_vertical_rows": _scalar("SELECT count(*) FROM tmp_student_import_invalid WHERE fail_course"),
+        "ambiguous_existing_phone_matches": _scalar("SELECT count(*) FROM tmp_student_import_invalid WHERE fail_ambiguous_phone"),
+        "missing_school_examples": _rows("""
+            SELECT school_id_in AS school_id, count(*) AS row_count
+            FROM tmp_student_import_invalid
+            WHERE fail_school
+            GROUP BY school_id_in
+            ORDER BY count(*) DESC, school_id_in ASC
+            LIMIT 10
         """),
-        "missing_school_rows": _scalar("""
-            SELECT count(*)
-            FROM tmp_student_import_effective e
-            WHERE NOT EXISTS (
-                SELECT 1
-                FROM "tabSchool" s
-                WHERE s.name = e.school_id_in
-                   OR substring(s.name from '(SC[0-9]+)$') = e.school_id_in
-            )
-        """),
-        "missing_batch_rows": _scalar("""
-            SELECT count(*)
-            FROM tmp_student_import_effective e
-            WHERE NOT EXISTS (
-                SELECT 1
-                FROM "tabBatch" b
-                WHERE b.name = e.batch_in
-                   OR b.batch_id = e.batch_in
-            )
-        """),
-        "missing_language_rows": _scalar("""
-            SELECT count(*)
-            FROM tmp_student_import_effective e
-            LEFT JOIN "tabTAP Language" l
-              ON l.language_name = e.language_name_in
-            WHERE l.name IS NULL
-        """),
-        "missing_vertical_rows": _scalar("""
-            SELECT count(*)
-            FROM tmp_student_import_effective e
-            WHERE NOT EXISTS (
-                SELECT 1
-                FROM "tabCourse Verticals" cv
-                WHERE cv.name2 = e.course_name_in
-                   OR cv.name = e.course_name_in
-                   OR cv.vertical_id = e.course_name_in
-            )
-        """),
-        "ambiguous_existing_phone_matches": _scalar("""
-            SELECT count(*)
-            FROM (
-                SELECT
-                    e.phone_12
-                FROM tmp_student_import_effective e
-                JOIN "tabStudent" s
-                  ON s.phone IN (e.phone_12, e.phone_10)
-                GROUP BY e.phone_12
-                HAVING count(*) > 1
-            ) x
+        "missing_batch_examples": _rows("""
+            SELECT batch_in AS batch, count(*) AS row_count
+            FROM tmp_student_import_invalid
+            WHERE fail_batch
+            GROUP BY batch_in
+            ORDER BY count(*) DESC, batch_in ASC
+            LIMIT 10
         """),
     }
 
@@ -600,22 +868,17 @@ def _run_prechecks() -> dict:
 def _print_precheck(precheck: dict, log_fn: Callable[[str], None] | None = None) -> None:
     _emit(log_fn, "[student-import] precheck")
     for key, value in precheck.items():
+        if key.endswith("_examples"):
+            if value:
+                _emit(log_fn, f"  - {key}:")
+                for row in value:
+                    _emit(log_fn, f"      {row}")
+            continue
         _emit(log_fn, f"  - {key}: {value}")
 
 
 def _raise_if_blocking_precheck(precheck: dict) -> None:
-    blocking = [
-        "invalid_phone_rows",
-        "invalid_grade_rows",
-        "missing_school_rows",
-        "missing_batch_rows",
-        "missing_language_rows",
-        "missing_vertical_rows",
-        "ambiguous_existing_phone_matches",
-    ]
-    failures = {key: precheck[key] for key in blocking if precheck.get(key)}
-    if failures:
-        raise ValueError(f"Precheck failed: {failures}")
+    return None
 
 
 def _prepare_batch_subset(offset: int, batch_size: int) -> None:
@@ -623,14 +886,14 @@ def _prepare_batch_subset(offset: int, batch_size: int) -> None:
     frappe.db.sql("""
         CREATE TEMP TABLE tmp_student_import_batch AS
         SELECT *
-        FROM tmp_student_import_effective
+        FROM tmp_student_import_valid
         ORDER BY source_priority, row_in_tab
         OFFSET %s
         LIMIT %s
     """, (offset, batch_size))
 
 
-def _execute_import(import_date: date, import_user: str, source_table: str = "tmp_student_import_effective") -> dict:
+def _execute_import(import_date: date, import_user: str, source_table: str = "tmp_student_import_valid") -> dict:
     source_sql = f"""
         CREATE TEMP TABLE tmp_student_import_match AS
         SELECT
@@ -945,3 +1208,7 @@ def _insert_enrollments(import_date: date, import_user: str) -> int:
 def _scalar(sql: str, params: object | None = None) -> int:
     result = frappe.db.sql(sql, params)
     return int(result[0][0]) if result else 0
+
+
+def _rows(sql: str, params: object | None = None) -> list[dict]:
+    return frappe.db.sql(sql, params, as_dict=True) or []
