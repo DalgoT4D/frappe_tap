@@ -9,6 +9,8 @@ app_description = "Lms system for tap"
 app_email = "tech4dev@gmail.com"
 app_license = "MIT"
 
+before_migrate = "tap_lms.migrate.before_migrate"
+
 
 # Document Events
 doc_events = {
