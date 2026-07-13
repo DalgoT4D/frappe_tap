@@ -26,6 +26,7 @@
   "level",
   "rigour",
   "language",
+  "whatsapp_consent",
   "data_mismatch",
   "glific_id",
   "glific_sync_status",
@@ -129,6 +130,12 @@
    "fieldtype": "Link",
    "label": "Language",
    "options": "TAP Language"
+  },
+  {
+   "default": "0",
+   "fieldname": "whatsapp_consent",
+   "fieldtype": "Check",
+   "label": "WhatsApp Consent"
   },
   {
    "fieldname": "data_mismatch",

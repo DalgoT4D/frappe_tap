@@ -1,0 +1,148 @@
+{
+ "actions": [],
+ "allow_import": 1,
+ "allow_rename": 1,
+ "autoname": "format:SBIJ-{#####}",
+ "creation": "2026-07-12 00:00:00.000000",
+ "default_view": "List",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "job_name",
+  "spreadsheet_url",
+  "tab_names_json",
+  "batch_size",
+  "sample_test",
+  "status",
+  "started_at",
+  "completed_at",
+  "elapsed",
+  "batches_processed",
+  "effective_rows",
+  "summary_json",
+  "last_error",
+  "processing_log"
+ ],
+ "fields": [
+  {
+   "fieldname": "job_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Job Name",
+   "reqd": 1
+  },
+  {
+   "fieldname": "spreadsheet_url",
+   "fieldtype": "Data",
+   "label": "Spreadsheet URL",
+   "reqd": 1
+  },
+  {
+   "default": "[\"Existing Students\", \"New Students\"]",
+   "fieldname": "tab_names_json",
+   "fieldtype": "Small Text",
+   "label": "Tab Names JSON",
+   "reqd": 1
+  },
+  {
+   "default": "100",
+   "fieldname": "batch_size",
+   "fieldtype": "Int",
+   "label": "Batch Size",
+   "reqd": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "sample_test",
+   "fieldtype": "Int",
+   "label": "Sample Test"
+  },
+  {
+   "default": "Draft",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Status",
+   "options": "Draft\nQueued\nProcessing\nCompleted\nFailed",
+   "read_only": 1
+  },
+  {
+   "fieldname": "started_at",
+   "fieldtype": "Datetime",
+   "label": "Started At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "completed_at",
+   "fieldtype": "Datetime",
+   "label": "Completed At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "elapsed",
+   "fieldtype": "Data",
+   "label": "Elapsed",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "batches_processed",
+   "fieldtype": "Int",
+   "label": "Batches Processed",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "effective_rows",
+   "fieldtype": "Int",
+   "label": "Effective Rows",
+   "read_only": 1
+  },
+  {
+   "fieldname": "summary_json",
+   "fieldtype": "Long Text",
+   "label": "Summary JSON",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_error",
+   "fieldtype": "Long Text",
+   "label": "Last Error",
+   "read_only": 1
+  },
+  {
+   "fieldname": "processing_log",
+   "fieldtype": "Long Text",
+   "label": "Processing Log",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-07-12 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Tap Lms",
+ "name": "Student Bulk Import Job",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "job_name",
+ "track_changes": 1
+}

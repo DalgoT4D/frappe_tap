@@ -250,6 +250,7 @@ def create_student_web():
             student = frappe.get_doc("Student", existing_student_name)
             student.phone = phone
             student.language = language_id
+            student.whatsapp_consent = 1
             response_school_row = (
                 _get_school_row_by_id(student.school_id) if student.school_id else None
             )
@@ -283,6 +284,7 @@ def create_student_web():
                     "state": school_row["state_id"],
                     "grade": grade,
                     "language": language_id,
+                    "whatsapp_consent": 0,
                     "joined_on": now_datetime().date(),
                     "status": "active",
                 }
