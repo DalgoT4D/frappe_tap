@@ -49,7 +49,7 @@ def _append_log(docname: str, message: str) -> None:
         "Student Bulk Import Job",
         docname,
         "processing_log",
-        {"entries": log_entries},
+        json.dumps({"entries": log_entries}, ensure_ascii=True),
         update_modified=False,
     )
 
@@ -73,6 +73,8 @@ def _update_progress(docname: str, payload: dict) -> None:
 
 
 def _set_job_state(docname: str, **updates) -> None:
+    if "processing_log" in updates and not isinstance(updates["processing_log"], str):
+        updates["processing_log"] = json.dumps(updates["processing_log"], ensure_ascii=True)
     frappe.db.set_value("Student Bulk Import Job", docname, updates, update_modified=False)
 
 
