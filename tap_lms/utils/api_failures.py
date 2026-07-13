@@ -25,6 +25,7 @@ def _write_api_failure(method_name, input_payload, error_trace=None):
                 "method_name": method_name,
                 "input_payload": _serialize_input_payload(input_payload),
                 "error": error_trace or frappe.get_traceback(),
+                "resolved": 0,
             }
         )
         doc.insert(ignore_permissions=True)

@@ -10,6 +10,7 @@
   "method_name",
   "input_payload",
   "error",
+  "resolved",
   "timestamp"
  ],
  "fields": [
@@ -32,6 +33,12 @@
    "fieldtype": "Long Text",
    "label": "Error",
    "reqd": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "resolved",
+   "fieldtype": "Check",
+   "label": "Resolved"
   },
   {
    "default": "Now",
