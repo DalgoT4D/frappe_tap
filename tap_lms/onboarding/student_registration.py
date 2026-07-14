@@ -63,6 +63,30 @@ def _is_student_name_duplicate(exc: Exception) -> bool:
     )
 
 
+def _rebuild_student_doc(student):
+    payload = student.as_dict()
+    payload.pop("name", None)
+    payload.pop("__islocal", None)
+    payload.pop("owner", None)
+    payload.pop("creation", None)
+    payload.pop("modified", None)
+    payload.pop("modified_by", None)
+    payload.pop("docstatus", None)
+
+    enrollments = []
+    for row in payload.get("enrollment") or []:
+        child = dict(row)
+        child.pop("name", None)
+        child.pop("parent", None)
+        child.pop("parenttype", None)
+        child.pop("parentfield", None)
+        child.pop("idx", None)
+        child.pop("__islocal", None)
+        enrollments.append(child)
+    payload["enrollment"] = enrollments
+    return frappe.get_doc(payload)
+
+
 def _insert_student_with_series_self_heal(student):
     try:
         student.insert(ignore_permissions=True)
@@ -73,7 +97,7 @@ def _insert_student_with_series_self_heal(student):
 
         frappe.db.rollback()
         _sync_student_series_counter()
-        student.name = None
+        student = _rebuild_student_doc(student)
         student.insert(ignore_permissions=True)
         return student
 
