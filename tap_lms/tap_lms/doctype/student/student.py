@@ -22,40 +22,47 @@ def _reserve_next_student_name():
         VALUES ('ST', 0)
         ON CONFLICT (name) DO NOTHING
     """)
-    next_no = frappe.db.sql("""
-        WITH max_student AS (
-            SELECT COALESCE(
-                max(CASE
-                    WHEN name ~ '^ST[0-9]{8}$' THEN substring(name from 3)::integer
-                    ELSE 0
-                END),
-                0
-            ) AS max_no
-            FROM "tabStudent"
-        ),
-        bumped AS (
-            UPDATE "tabSeries" ts
-               SET current = GREATEST(ts.current, ms.max_no) + 1
-              FROM max_student ms
-             WHERE ts.name = 'ST'
-         RETURNING ts.current
-        )
-        SELECT current
-        FROM bumped
-    """)
-    current = int(next_no[0][0]) if next_no else 0
-    if current <= 0:
-        frappe.throw("Unable to allocate Student ID")
+    for _attempt in range(20):
+        next_no = frappe.db.sql("""
+            WITH max_student AS (
+                SELECT COALESCE(
+                    max(CASE
+                        WHEN name ~ '^ST[0-9]{8}$' THEN substring(name from 3)::integer
+                        ELSE 0
+                    END),
+                    0
+                ) AS max_no
+                FROM "tabStudent"
+            ),
+            bumped AS (
+                UPDATE "tabSeries" ts
+                   SET current = GREATEST(ts.current, ms.max_no) + 1
+                  FROM max_student ms
+                 WHERE ts.name = 'ST'
+             RETURNING ts.current
+            )
+            SELECT current
+            FROM bumped
+        """)
+        current = int(next_no[0][0]) if next_no else 0
+        if current <= 0:
+            frappe.throw("Unable to allocate Student ID")
 
-    # Keep the legacy empty-string series row aligned during rollout so any
-    # stale workers still using the old meta do not regress.
-    frappe.db.sql("""
-        INSERT INTO "tabSeries" (name, current)
-        VALUES ('', %s)
-        ON CONFLICT (name) DO UPDATE
-              SET current = GREATEST("tabSeries".current, EXCLUDED.current)
-    """, (current,))
-    return f"ST{current:08d}"
+        candidate = f"ST{current:08d}"
+        if frappe.db.exists("Student", candidate):
+            continue
+
+        # Keep the legacy empty-string series row aligned during rollout so any
+        # stale workers still using the old meta do not regress.
+        frappe.db.sql("""
+            INSERT INTO "tabSeries" (name, current)
+            VALUES ('', %s)
+            ON CONFLICT (name) DO UPDATE
+                  SET current = GREATEST("tabSeries".current, EXCLUDED.current)
+        """, (current,))
+        return candidate
+
+    frappe.throw("Unable to allocate Student ID after 20 attempts")
 
 
 def _get_level_for_grade(grade):

@@ -1,6 +1,7 @@
 import frappe
 from frappe.utils import now_datetime
 
+from tap_lms.tap_lms.doctype.student.student import _reserve_next_student_name
 from tap_lms.onboarding.utils import (
     _enqueue_glific_contact_sync,
     _get_course_level_label_for_grade,
@@ -93,13 +94,19 @@ def _rebuild_student_doc(student):
 def _insert_student_with_series_self_heal(student):
     for _attempt in range(3):
         try:
-            student.insert(ignore_permissions=True)
+            student = _rebuild_student_doc(student)
+            student.name = _reserve_next_student_name()
+            old_in_import = getattr(frappe.flags, "in_import", False)
+            frappe.flags.in_import = True
+            try:
+                student.insert(ignore_permissions=True)
+            finally:
+                frappe.flags.in_import = old_in_import
             return student
         except frappe.DuplicateEntryError as exc:
             if not _is_student_name_duplicate(exc):
                 raise
             frappe.db.rollback()
-            student = _rebuild_student_doc(student)
 
     raise frappe.DuplicateEntryError(
         "Student",
