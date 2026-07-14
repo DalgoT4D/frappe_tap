@@ -49,7 +49,7 @@ def _sync_student_series_counter():
         )
         UPDATE "tabSeries" ts
            SET current = GREATEST(ts.current, ms.max_no)
-          FROM max_student ms
+         FROM max_student ms
          WHERE ts.name = 'ST'
     """)
 
@@ -88,18 +88,22 @@ def _rebuild_student_doc(student):
 
 
 def _insert_student_with_series_self_heal(student):
-    try:
-        student.insert(ignore_permissions=True)
-        return student
-    except frappe.DuplicateEntryError as exc:
-        if not _is_student_name_duplicate(exc):
-            raise
+    for _attempt in range(3):
+        try:
+            _sync_student_series_counter()
+            student.insert(ignore_permissions=True)
+            return student
+        except frappe.DuplicateEntryError as exc:
+            if not _is_student_name_duplicate(exc):
+                raise
+            frappe.db.rollback()
+            student = _rebuild_student_doc(student)
 
-        frappe.db.rollback()
-        _sync_student_series_counter()
-        student = _rebuild_student_doc(student)
-        student.insert(ignore_permissions=True)
-        return student
+    raise frappe.DuplicateEntryError(
+        "Student",
+        student.name,
+        "Unable to allocate a unique Student ID after 3 attempts",
+    )
 
 
 def _normalize_student_course_name(course_name):
