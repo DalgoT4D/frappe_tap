@@ -39,6 +39,8 @@ BENCH_PID=$! # gets the PID of the bench start command so we can kill it later
 ) &
 RAG_CONSUMER_PID=$! # gets the PID of the plagiarism_feedback listener
 
+# comment out below commands, if you want to test with dev_lms so that
+# we avoid race conditions between the two lms listeners (local and dev server)
 (
   cd sites
   ../env/bin/python ../apps/tap_lms/scripts/console_consumer.py
