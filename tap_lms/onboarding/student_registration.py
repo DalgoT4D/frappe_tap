@@ -30,6 +30,54 @@ STUDENT_COURSE_NAME_ALIASES = {
 }
 
 
+def _sync_student_series_counter():
+    frappe.db.sql("""
+        INSERT INTO "tabSeries" (name, current)
+        VALUES ('ST', 0)
+        ON CONFLICT (name) DO NOTHING
+    """)
+    frappe.db.sql("""
+        WITH max_student AS (
+            SELECT COALESCE(
+                max(CASE
+                    WHEN name ~ '^ST[0-9]{8}$' THEN substring(name from 3)::integer
+                    ELSE 0
+                END),
+                0
+            ) AS max_no
+            FROM "tabStudent"
+        )
+        UPDATE "tabSeries" ts
+           SET current = GREATEST(ts.current, ms.max_no)
+          FROM max_student ms
+         WHERE ts.name = 'ST'
+    """)
+
+
+def _is_student_name_duplicate(exc: Exception) -> bool:
+    message = str(exc or "")
+    return (
+        isinstance(exc, frappe.DuplicateEntryError)
+        and "Student" in message
+        and "ST" in message
+    )
+
+
+def _insert_student_with_series_self_heal(student):
+    try:
+        student.insert(ignore_permissions=True)
+        return student
+    except frappe.DuplicateEntryError as exc:
+        if not _is_student_name_duplicate(exc):
+            raise
+
+        frappe.db.rollback()
+        _sync_student_series_counter()
+        student.name = None
+        student.insert(ignore_permissions=True)
+        return student
+
+
 def _normalize_student_course_name(course_name):
     course_name = (course_name or "").strip()
     return STUDENT_COURSE_NAME_ALIASES.get(course_name, course_name)
@@ -320,7 +368,7 @@ def create_student_web():
         if existing_student_name:
             student.save(ignore_permissions=True)
         else:
-            student.insert(ignore_permissions=True)
+            _insert_student_with_series_self_heal(student)
 
         _upsert_student_consent(phone, school_id=school_id, whatsapp_consent=1)
         _enqueue_glific_contact_sync("Student", student.name)
