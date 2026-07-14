@@ -31,9 +31,12 @@ STUDENT_COURSE_NAME_ALIASES = {
 
 
 def _sync_student_series_counter():
+    # Legacy meta `format:ST{########}` uses the empty-string series key,
+    # while corrected meta `format:ST.########` uses the `ST` series key.
+    # Keep both aligned during rollout so web inserts work before/after migrate.
     frappe.db.sql("""
         INSERT INTO "tabSeries" (name, current)
-        VALUES ('ST', 0)
+        VALUES ('ST', 0), ('', 0)
         ON CONFLICT (name) DO NOTHING
     """)
     frappe.db.sql("""
@@ -50,7 +53,7 @@ def _sync_student_series_counter():
         UPDATE "tabSeries" ts
            SET current = GREATEST(ts.current, ms.max_no)
          FROM max_student ms
-         WHERE ts.name = 'ST'
+         WHERE ts.name IN ('ST', '')
     """)
 
 

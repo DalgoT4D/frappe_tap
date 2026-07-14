@@ -1077,15 +1077,15 @@ def _insert_new_students(import_date: date, import_user: str) -> int:
 
 
 def _sync_student_series_counter() -> None:
-    """Self-heal the ST counter from real Student rows before reserving IDs.
+    """Self-heal Student series counters from real Student rows.
 
-    Some sites have tabSeries.current behind the actual max Student name.
-    If we trust the stale counter, bulk inserts can reuse an existing ST id
-    and fail on the Student primary key.
+    Legacy meta `format:ST{########}` uses the empty-string series key,
+    while corrected meta `format:ST.########` uses the `ST` series key.
+    Keep both aligned so non-bulk Student inserts remain safe after import.
     """
     frappe.db.sql("""
         INSERT INTO "tabSeries" (name, current)
-        VALUES ('ST', 0)
+        VALUES ('ST', 0), ('', 0)
         ON CONFLICT (name) DO NOTHING
     """)
     frappe.db.sql("""
@@ -1102,7 +1102,7 @@ def _sync_student_series_counter() -> None:
         UPDATE "tabSeries" ts
            SET current = GREATEST(ts.current, ms.max_no)
           FROM max_student ms
-         WHERE ts.name = 'ST'
+         WHERE ts.name IN ('ST', '')
     """)
 
 
