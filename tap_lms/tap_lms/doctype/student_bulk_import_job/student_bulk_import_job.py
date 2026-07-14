@@ -15,6 +15,18 @@ class StudentBulkImportJob(Document):
     pass
 
 
+def _set_glific_contact_files(docname: str, files: list[dict]) -> None:
+    doc = frappe.get_doc("Student Bulk Import Job", docname)
+    doc.set("glific_contact_files", [])
+    for file_row in files:
+        doc.append("glific_contact_files", {
+            "file_name": str(file_row.get("file_name") or ""),
+            "file_path": str(file_row.get("file_path") or ""),
+            "row_count": int(file_row.get("row_count") or 0),
+        })
+    doc.save(ignore_permissions=True)
+
+
 def _parse_tab_names(tab_names_json: str) -> list[str]:
     try:
         parsed = json.loads(tab_names_json or "[]")
@@ -100,6 +112,7 @@ def start_student_bulk_import_job(docname: str) -> dict:
         last_error="",
         processing_log={"entries": []},
     )
+    _set_glific_contact_files(docname, [])
     frappe.db.commit()
 
     job = frappe.enqueue(
@@ -144,6 +157,7 @@ def run_student_bulk_import_job(docname: str) -> dict:
             progress_fn=progress_fn,
         )
 
+        _set_glific_contact_files(docname, summary.get("glific_contact_files") or [])
         _set_job_state(
             docname,
             status="Completed",

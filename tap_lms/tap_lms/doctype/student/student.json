@@ -10,33 +10,56 @@
  "editable_grid": 1,
  "engine": "InnoDB",
  "field_order": [
+  "profile_section",
   "name1",
-  "phone",
+  "profile_row_1_column_break",
   "alt_phone",
-  "gender",
-  "school_id",
-  "grade",
-  "shared_users",
-  "joined_on",
+  "profile_row_2_section_break",
+  "phone",
+  "profile_row_2_column_break",
   "status",
-  "enrollment",
-  "access_rate",
-  "submission_rate",
-  "profile_id",
-  "level",
-  "rigour",
+  "profile_row_3_section_break",
+  "gender",
+  "profile_row_3_column_break",
+  "grade",
+  "profile_row_4_section_break",
   "language",
+  "profile_row_4_column_break",
+  "joined_on",
+  "profile_row_5_section_break",
+  "level",
+  "profile_row_5_column_break",
+  "rigour",
+  "organization_section",
+  "school_id",
+  "organization_column_break",
+  "shared_users",
   "whatsapp_consent",
-  "data_mismatch",
+  "enrollment_section",
+  "enrollment",
+  "preferences_section",
+  "preferred_day",
+  "preferences_column_break",
+  "preferred_time",
+  "integration_section",
   "glific_id",
   "glific_sync_status",
-  "peer_groups",
-  "preferred_time",
-  "preferred_day",
+  "integration_column_break",
+  "profile_id",
   "swiftchat_id",
-  "vocallabs_prospect_id"
+  "vocallabs_prospect_id",
+  "data_quality_section",
+  "data_mismatch",
+  "peer_groups",
+  "access_rate",
+  "submission_rate"
  ],
  "fields": [
+  {
+   "fieldname": "profile_section",
+   "fieldtype": "Section Break",
+   "label": "Profile"
+  },
   {
    "fieldname": "name1",
    "fieldtype": "Data",
@@ -45,34 +68,29 @@
    "reqd": 1
   },
   {
+   "fieldname": "profile_row_1_column_break",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "alt_phone",
+   "fieldtype": "Data",
+   "label": "Alternate Phone"
+  },
+  {
+   "fieldname": "profile_row_2_section_break",
+   "fieldtype": "Section Break"
+  },
+  {
    "fieldname": "phone",
    "fieldtype": "Data",
+   "in_standard_filter": 1,
    "in_list_view": 1,
    "label": "Phone",
    "reqd": 1
   },
   {
-   "fieldname": "gender",
-   "fieldtype": "Select",
-   "label": "Gender",
-   "options": "Male\nFemale\nOthers\nNot Available"
-  },
-  {
-   "fieldname": "grade",
-   "fieldtype": "Select",
-   "label": "Grade",
-   "options": "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12"
-  },
-  {
-   "fieldname": "school_id",
-   "fieldtype": "Link",
-   "label": "School",
-   "options": "School"
-  },
-  {
-   "fieldname": "shared_users",
-   "fieldtype": "Int",
-   "label": "Shared Users"
+   "fieldname": "profile_row_2_column_break",
+   "fieldtype": "Column Break"
   },
   {
    "fieldname": "status",
@@ -81,49 +99,28 @@
    "options": "active\ninactive"
   },
   {
-   "fieldname": "joined_on",
-   "fieldtype": "Date",
-   "label": "Joined On"
+   "fieldname": "profile_row_3_section_break",
+   "fieldtype": "Section Break"
   },
   {
-   "fieldname": "enrollment",
-   "fieldtype": "Table",
-   "label": "enrollments",
-   "options": "Student Enrollment"
-  },
-  {
-   "fieldname": "access_rate",
-   "fieldtype": "Percent",
-   "label": "Access Rate",
-   "read_only": 1
-  },
-  {
-   "fieldname": "submission_rate",
-   "fieldtype": "Percent",
-   "label": "Submission Rate",
-   "read_only": 1
-  },
-  {
-   "fieldname": "alt_phone",
-   "fieldtype": "Data",
-   "label": "Alternate Phone"
-  },
-  {
-   "fieldname": "profile_id",
-   "fieldtype": "Data",
-   "label": "Profile ID"
-  },
-  {
-   "fieldname": "level",
+   "fieldname": "gender",
    "fieldtype": "Select",
-   "label": "Level",
-   "options": "L1\nL2\nL3"
+   "label": "Gender",
+   "options": "Male\nFemale\nOthers\nNot Available"
   },
   {
-   "fieldname": "rigour",
+   "fieldname": "profile_row_3_column_break",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "grade",
    "fieldtype": "Select",
-   "label": "Rigour",
-   "options": "Low rigour\nHigh rigour"
+   "label": "Grade",
+   "options": "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12"
+  },
+  {
+   "fieldname": "profile_row_4_section_break",
+   "fieldtype": "Section Break"
   },
   {
    "fieldname": "language",
@@ -132,15 +129,95 @@
    "options": "TAP Language"
   },
   {
+   "fieldname": "profile_row_4_column_break",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "joined_on",
+   "fieldtype": "Date",
+   "label": "Joined On"
+  },
+  {
+   "fieldname": "profile_row_5_section_break",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "level",
+   "fieldtype": "Select",
+   "label": "Level",
+   "options": "L1\nL2\nL3"
+  },
+  {
+   "fieldname": "profile_row_5_column_break",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "rigour",
+   "fieldtype": "Select",
+   "label": "Rigour",
+   "options": "Low rigour\nHigh rigour"
+  },
+  {
+   "fieldname": "organization_section",
+   "fieldtype": "Section Break",
+   "label": "Organization"
+  },
+  {
+   "fieldname": "school_id",
+   "fieldtype": "Link",
+   "label": "School",
+   "options": "School"
+  },
+  {
+   "fieldname": "organization_column_break",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "shared_users",
+   "fieldtype": "Int",
+   "label": "Shared Users"
+  },
+  {
    "default": "0",
    "fieldname": "whatsapp_consent",
    "fieldtype": "Check",
    "label": "WhatsApp Consent"
   },
   {
-   "fieldname": "data_mismatch",
-   "fieldtype": "JSON",
-   "label": "Data Mismatch"
+   "fieldname": "enrollment_section",
+   "fieldtype": "Section Break",
+   "label": "Enrollment"
+  },
+  {
+   "fieldname": "enrollment",
+   "fieldtype": "Table",
+   "label": "enrollments",
+   "options": "Student Enrollment"
+  },
+  {
+   "fieldname": "preferences_section",
+   "fieldtype": "Section Break",
+   "label": "Preferences"
+  },
+  {
+   "fieldname": "preferred_day",
+   "fieldtype": "Select",
+   "label": "Preferred Day",
+   "options": "Monday\nTuesday\nWednesday\nThursday\nFriday\nSaturday\nSunday\nDaily"
+  },
+  {
+   "fieldname": "preferences_column_break",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "preferred_time",
+   "fieldtype": "Time",
+   "label": "Preferred Time"
+  },
+  {
+   "fieldname": "integration_section",
+   "fieldtype": "Section Break",
+   "label": "Integrations / System"
   },
   {
    "fieldname": "glific_id",
@@ -155,21 +232,13 @@
    "options": "pending\nsynced\nfailed"
   },
   {
-   "fieldname": "peer_groups",
-   "fieldtype": "Table",
-   "label": "Peer Groups",
-   "options": "StudentPeerGroup"
+   "fieldname": "integration_column_break",
+   "fieldtype": "Column Break"
   },
   {
-   "fieldname": "preferred_time",
-   "fieldtype": "Time",
-   "label": "Preferred Time"
-  },
-  {
-   "fieldname": "preferred_day",
-   "fieldtype": "Select",
-   "label": "Preferred Day",
-   "options": "Monday\nTuesday\nWednesday\nThursday\nFriday\nSaturday\nSunday\nDaily"
+   "fieldname": "profile_id",
+   "fieldtype": "Data",
+   "label": "Profile ID"
   },
   {
    "fieldname": "swiftchat_id",
@@ -177,11 +246,39 @@
    "label": "SwiftChat ID"
   },
   {
+   "fieldname": "data_quality_section",
+   "fieldtype": "Section Break",
+   "label": "Data Quality"
+  },
+  {
+   "fieldname": "data_mismatch",
+   "fieldtype": "JSON",
+   "label": "Data Mismatch"
+  },
+  {
    "description": "Vocallabs UUID returned by addMultipleContactsToGroup the first time we register this student's parent phone with Vocallabs. Populated automatically by tap_lms.summer_program.vocallabs on first parent_call and reused for every subsequent call — this is what lets us re-call the same parent without hitting the (client_id, prospect_group_id, phone) uniqueness constraint. Read-only in UI; written via db.set_value from code.",
    "fieldname": "vocallabs_prospect_id",
    "fieldtype": "Data",
    "label": "Vocallabs Prospect ID",
    "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "peer_groups",
+   "fieldtype": "Table",
+   "label": "Peer Groups",
+   "options": "StudentPeerGroup"
+  },
+  {
+   "fieldname": "access_rate",
+   "fieldtype": "Percent",
+   "label": "Access Rate",
+   "read_only": 1
+  },
+  {
+   "fieldname": "submission_rate",
+   "fieldtype": "Percent",
+   "label": "Submission Rate",
    "read_only": 1
   }
  ],

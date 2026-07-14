@@ -8,9 +8,9 @@
  "engine": "InnoDB",
  "field_order": [
   "method_name",
+  "resolved",
   "input_payload",
   "error",
-  "resolved",
   "timestamp"
  ],
  "fields": [

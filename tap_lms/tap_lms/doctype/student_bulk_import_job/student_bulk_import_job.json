@@ -12,16 +12,26 @@
   "job_name",
   "spreadsheet_url",
   "tab_names_json",
+  "run_details_section",
   "batch_size",
+  "run_details_row_1_column_break",
   "sample_test",
+  "run_details_row_2_section_break",
   "status",
+  "run_details_row_2_column_break",
   "started_at",
+  "run_details_row_3_section_break",
   "completed_at",
+  "run_details_row_3_column_break",
   "elapsed",
+  "run_details_row_4_section_break",
   "batches_processed",
+  "run_details_row_4_column_break",
   "effective_rows",
+  "run_details_row_5_section_break",
   "failed_rows",
   "failed_rows_file_url",
+  "glific_contact_files",
   "summary_json",
   "last_error",
   "processing_log"
@@ -48,6 +58,11 @@
    "reqd": 1
   },
   {
+   "fieldname": "run_details_section",
+   "fieldtype": "Section Break",
+   "label": "Run Details"
+  },
+  {
    "default": "100",
    "fieldname": "batch_size",
    "fieldtype": "Int",
@@ -55,10 +70,18 @@
    "reqd": 1
   },
   {
+   "fieldname": "run_details_row_1_column_break",
+   "fieldtype": "Column Break"
+  },
+  {
    "default": "0",
    "fieldname": "sample_test",
    "fieldtype": "Int",
    "label": "Sample Test"
+  },
+  {
+   "fieldname": "run_details_row_2_section_break",
+   "fieldtype": "Section Break"
   },
   {
    "default": "Draft",
@@ -70,10 +93,18 @@
    "read_only": 1
   },
   {
+   "fieldname": "run_details_row_2_column_break",
+   "fieldtype": "Column Break"
+  },
+  {
    "fieldname": "started_at",
    "fieldtype": "Datetime",
    "label": "Started At",
    "read_only": 1
+  },
+  {
+   "fieldname": "run_details_row_3_section_break",
+   "fieldtype": "Section Break"
   },
   {
    "fieldname": "completed_at",
@@ -82,10 +113,18 @@
    "read_only": 1
   },
   {
+   "fieldname": "run_details_row_3_column_break",
+   "fieldtype": "Column Break"
+  },
+  {
    "fieldname": "elapsed",
    "fieldtype": "Data",
    "label": "Elapsed",
    "read_only": 1
+  },
+  {
+   "fieldname": "run_details_row_4_section_break",
+   "fieldtype": "Section Break"
   },
   {
    "default": "0",
@@ -95,11 +134,19 @@
    "read_only": 1
   },
   {
+   "fieldname": "run_details_row_4_column_break",
+   "fieldtype": "Column Break"
+  },
+  {
    "default": "0",
    "fieldname": "effective_rows",
    "fieldtype": "Int",
    "label": "Effective Rows",
    "read_only": 1
+  },
+  {
+   "fieldname": "run_details_row_5_section_break",
+   "fieldtype": "Section Break"
   },
   {
    "default": "0",
@@ -110,8 +157,15 @@
   },
   {
    "fieldname": "failed_rows_file_url",
-   "fieldtype": "Data",
+   "fieldtype": "Long Text",
    "label": "Failed Rows File URL",
+   "read_only": 1
+  },
+  {
+   "fieldname": "glific_contact_files",
+   "fieldtype": "Table",
+   "label": "Glific Contact Files",
+   "options": "Student Bulk Import Job Glific File",
    "read_only": 1
   },
   {

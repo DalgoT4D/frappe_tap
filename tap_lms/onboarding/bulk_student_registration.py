@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import csv
 import json
 import re
 import uuid
 from dataclasses import dataclass
 from datetime import date
-from io import BytesIO
+from io import BytesIO, StringIO
 from typing import Callable, Iterable
 from urllib.parse import urlparse
 
@@ -37,6 +38,20 @@ BATCH_SIZE = 100
 IMPORT_USER = "Administrator"
 GCP_CREDENTIALS_PROJECT_ID = "rubrics-data-migration"
 FAILED_ROWS_GCP_PROJECT_ID = "axiomatic-treat-417617"
+GLIFIC_CONTACTS_FOLDER = "Glific_contacts"
+GLIFIC_CSV_HEADERS = [
+    "name",
+    "phone",
+    "language",
+    "delete",
+    "school",
+    "state",
+    "model",
+    "buddy_name",
+    "batch_id",
+    "grade",
+    "course",
+]
 
 EXPECTED_COLUMNS = {
     "Student Name": "student_name_raw",
@@ -151,6 +166,7 @@ def run_import(
             "failed_rows": precheck["invalid_rows"],
             "skipped_rows": precheck["invalid_rows"],
             "failed_rows_file_url": failed_rows_file_url,
+            "glific_contact_files": [],
         }
         for batch_no, offset in enumerate(range(0, total_effective_rows, batch_size), start=1):
             _prepare_batch_subset(offset=offset, batch_size=batch_size)
@@ -186,6 +202,21 @@ def run_import(
                 "summary": dict(summary),
                 "message": batch_message,
             })
+
+        try:
+            summary["glific_contact_files"] = _create_and_upload_glific_contact_csvs(tab_names)
+            for export_file in summary["glific_contact_files"]:
+                _emit(
+                    log_fn,
+                    "[student-import] glific_contacts_file "
+                    f"tab={export_file['tab_name']} "
+                    f"rows={export_file['row_count']} "
+                    f"url={export_file['file_path']}"
+                )
+        except Exception as exc:
+            summary["glific_contact_files"] = []
+            summary["glific_contact_files_error"] = str(exc)
+            _emit(log_fn, f"[student-import] glific_contacts_csv_upload_failed error={exc}")
 
         summary["import_date"] = str(import_date)
         summary["sample_test"] = sample_test
@@ -304,7 +335,12 @@ def _get_gcs_settings(project_id: str):
     return frappe.get_doc("GCS Settings", settings_name)
 
 
-def _upload_bytes_to_gcs(content: bytes, object_name: str, project_id: str) -> str:
+def _upload_bytes_to_gcs(
+    content: bytes,
+    object_name: str,
+    project_id: str,
+    content_type: str = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+) -> str:
     settings = _get_gcs_settings(project_id)
     credentials_dict = json.loads(settings.credentials_json)
     client = storage.Client.from_service_account_info(credentials_dict)
@@ -312,7 +348,7 @@ def _upload_bytes_to_gcs(content: bytes, object_name: str, project_id: str) -> s
     blob = bucket.blob(object_name)
     blob.upload_from_string(
         content,
-        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        content_type=content_type,
     )
     return f"https://storage.cloud.google.com/{settings.bucket_name}/{object_name}"
 
@@ -397,6 +433,75 @@ def _create_and_upload_failed_rows_workbook(tab_names: list[str]) -> str:
     wb.save(buffer)
     object_name = f"student-bulk-import-failures/{frappe.utils.now_datetime().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex}.xlsx"
     return _upload_bytes_to_gcs(buffer.getvalue(), object_name, FAILED_ROWS_GCP_PROJECT_ID)
+
+
+def _create_and_upload_glific_contact_csvs(tab_names: list[str]) -> list[dict]:
+    rows = _rows("""
+        SELECT
+            x.source_tab,
+            x.source_priority,
+            x.row_in_tab,
+            COALESCE(s.name1, '') AS name,
+            COALESCE(s.phone, '') AS phone,
+            COALESCE(lang.language_name, '') AS language,
+            '0' AS delete,
+            COALESCE(sch.name, '') AS school,
+            COALESCE(st.state_name, '') AS state,
+            COALESCE(tm.mname, '') AS model,
+            COALESCE(s.name1, '') AS buddy_name,
+            COALESCE(b.batch_id, '') AS batch_id,
+            COALESCE(NULLIF(x.grade_in, ''), NULLIF(s.grade, ''), '') AS grade,
+            COALESCE(cv.name2, '') AS course
+        FROM tmp_student_import_success x
+        JOIN "tabStudent" s
+          ON s.name = x.student_id
+        LEFT JOIN "tabBatch" b
+          ON b.name = x.batch_name
+        LEFT JOIN "tabTAP Language" lang
+          ON lang.name = s.language
+        LEFT JOIN "tabSchool" sch
+          ON sch.name = COALESCE(NULLIF(x.school_id, ''), NULLIF(s.school_id, ''))
+        LEFT JOIN "tabState" st
+          ON st.name = sch.state
+        LEFT JOIN "tabTap Models" tm
+          ON tm.name = sch.model
+        LEFT JOIN "tabCourse Verticals" cv
+          ON cv.name = x.vertical_id
+        ORDER BY x.source_priority, x.row_in_tab
+    """)
+
+    rows_by_tab: dict[str, list[dict]] = {tab_name: [] for tab_name in tab_names}
+    for row in rows:
+        rows_by_tab.setdefault(row["source_tab"], []).append({
+            header: str(row.get(header) or "")
+            for header in GLIFIC_CSV_HEADERS
+        })
+
+    timestamp = frappe.utils.now_datetime().strftime("%Y%m%d_%H%M%S")
+    exported_files: list[dict] = []
+    for tab_name in tab_names:
+        file_name = f"{tab_name}_{timestamp}.csv"
+        file_path = _upload_bytes_to_gcs(
+            _render_glific_contact_csv(rows_by_tab.get(tab_name, [])),
+            f"{GLIFIC_CONTACTS_FOLDER}/{file_name}",
+            FAILED_ROWS_GCP_PROJECT_ID,
+            content_type="text/csv",
+        )
+        exported_files.append({
+            "tab_name": tab_name,
+            "file_name": file_name,
+            "file_path": file_path,
+            "row_count": len(rows_by_tab.get(tab_name, [])),
+        })
+    return exported_files
+
+
+def _render_glific_contact_csv(rows: list[dict]) -> bytes:
+    buffer = StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=GLIFIC_CSV_HEADERS)
+    writer.writeheader()
+    writer.writerows(rows)
+    return buffer.getvalue().encode("utf-8")
 
 
 def _stage_selected_tabs(
@@ -486,6 +591,7 @@ def _prepare_temp_tables() -> None:
     DROP TABLE IF EXISTS tmp_student_import_to_insert;
     DROP TABLE IF EXISTS tmp_student_import_inserted;
     DROP TABLE IF EXISTS tmp_student_import_resolved;
+    DROP TABLE IF EXISTS tmp_student_import_success;
 
     CREATE TEMP TABLE tmp_student_import_raw (
         source_tab text NOT NULL,
@@ -499,6 +605,17 @@ def _prepare_temp_tables() -> None:
         batch_raw text,
         grade_raw text,
         course_raw text
+    );
+
+    CREATE TEMP TABLE tmp_student_import_success (
+        source_tab text NOT NULL,
+        source_priority integer NOT NULL,
+        row_in_tab integer NOT NULL,
+        student_id text NOT NULL,
+        school_id text,
+        grade_in text,
+        batch_name text,
+        vertical_id text
     );
     """
     frappe.db.sql(sql)
@@ -1202,6 +1319,28 @@ def _insert_enrollments(import_date: date, import_user: str) -> int:
         "import_user": import_user,
         "import_date": import_date,
     })
+    frappe.db.sql("""
+        INSERT INTO tmp_student_import_success (
+            source_tab,
+            source_priority,
+            row_in_tab,
+            student_id,
+            school_id,
+            grade_in,
+            batch_name,
+            vertical_id
+        )
+        SELECT
+            source_tab,
+            source_priority,
+            row_in_tab,
+            student_id,
+            school_id,
+            grade_in,
+            batch_name,
+            vertical_id
+        FROM tmp_student_import_resolved
+    """)
     return total_rows
 
 
