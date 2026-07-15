@@ -1,0 +1,81 @@
+{
+    "actions": [],
+    "creation": "2026-07-08 00:00:00.000000",
+    "doctype": "DocType",
+    "editable_grid": 1,
+    "engine": "InnoDB",
+    "field_order": [
+        "situation",
+        "calls_placed",
+        "answered",
+        "no_answer",
+        "failed",
+        "reengaged",
+        "reengagement_rate"
+    ],
+    "fields": [
+        {
+            "fieldname": "situation",
+            "fieldtype": "Data",
+            "in_list_view": 1,
+            "label": "Situation",
+            "read_only": 1
+        },
+        {
+            "fieldname": "calls_placed",
+            "fieldtype": "Int",
+            "in_list_view": 1,
+            "label": "Placed",
+            "read_only": 1
+        },
+        {
+            "fieldname": "answered",
+            "fieldtype": "Int",
+            "in_list_view": 1,
+            "label": "Answered",
+            "read_only": 1
+        },
+        {
+            "fieldname": "no_answer",
+            "fieldtype": "Int",
+            "in_list_view": 1,
+            "label": "No Answer",
+            "read_only": 1
+        },
+        {
+            "fieldname": "failed",
+            "fieldtype": "Int",
+            "in_list_view": 1,
+            "label": "Failed",
+            "read_only": 1
+        },
+        {
+            "fieldname": "reengaged",
+            "fieldtype": "Int",
+            "in_list_view": 1,
+            "label": "Re-engaged (48h)",
+            "read_only": 1
+        },
+        {
+            "description": "Percentage of answered calls that led to a submission within 48 hours.",
+            "fieldname": "reengagement_rate",
+            "fieldtype": "Float",
+            "in_list_view": 1,
+            "label": "Re-engagement Rate %",
+            "precision": "1",
+            "read_only": 1
+        }
+    ],
+    "index_web_pages_for_search": 0,
+    "istable": 1,
+    "links": [],
+    "modified": "2026-07-08 00:00:00.000000",
+    "modified_by": "Administrator",
+    "module": "TAP LMS",
+    "name": "VoiceCallCampaignAnalytics",
+    "owner": "Administrator",
+    "permissions": [],
+    "sort_field": "calls_placed",
+    "sort_order": "DESC",
+    "states": []
+}

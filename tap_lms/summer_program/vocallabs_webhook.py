@@ -344,6 +344,63 @@ def _process_event(payload, raw_text):
         "phone_to": phone_to,
         "prospect_id": prospect_id,
     }
+    # ── Write outcome back to ProgramEnrollment (L-VW-WB-001) ─────────
+    _outcome_map = {
+        "answered":  "answered", "completed": "answered",
+        "no-answer": "no_answer", "busy":      "no_answer",
+        "failed":    "failed",    "canceled":  "no_answer",
+    }
+    pe_outcome = _outcome_map.get((status or "").lower().replace("_", "-"), "no_answer")
+
+    try:
+        frappe.db.set_value(
+            "ProgramEnrollment", pe.name,
+            {"last_call_outcome": pe_outcome},
+            update_modified=False,
+        )
+    except Exception as _wb_exc:
+        frappe.log_error(
+            message=f"Vocallabs webhook: PE outcome writeback failed: {_wb_exc}",
+            title="SP Vocallabs Webhook",
+        )
+
+    # ── Update VoiceCallHistory + VoiceCallQueue for campaign tracking ─
+    try:
+        # Update most recent VoiceCallHistory row for this enrollment
+        hist_name = frappe.db.get_value(
+            "VoiceCallHistory",
+            {"parent": pe.name, "parenttype": "ProgramEnrollment",
+             "outcome": ["in", ["placed", ""]]},
+            "name",
+            order_by="call_placed_at desc",
+        )
+        if hist_name:
+            frappe.db.set_value(
+                "VoiceCallHistory", hist_name,
+                {"outcome": pe_outcome},
+                update_modified=False,
+            )
+
+        # Update VoiceCallQueue row (Calling → Answered/No Answer/Failed)
+        queue_status_map = {"answered": "Answered", "no_answer": "No Answer", "failed": "Failed"}
+        queue_row = frappe.db.get_value(
+            "VoiceCallQueue",
+            {"enrollment": pe.name, "status": "Calling"},
+            "name",
+        )
+        if queue_row:
+            frappe.db.set_value(
+                "VoiceCallQueue", queue_row,
+                {"status": queue_status_map.get(pe_outcome, "No Answer"),
+                 "call_outcome": pe_outcome},
+                update_modified=False,
+            )
+    except Exception as _q_exc:
+        frappe.log_error(
+            message=f"Vocallabs webhook: history/queue update failed: {_q_exc}",
+            title="SP Vocallabs Webhook",
+        )
+
     frappe.get_doc({
         "doctype": "ProgramEventLog",
         "enrollment": pe.name,

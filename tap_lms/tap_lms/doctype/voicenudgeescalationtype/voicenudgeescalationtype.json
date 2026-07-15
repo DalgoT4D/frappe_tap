@@ -1,0 +1,33 @@
+{
+    "actions": [],
+    "creation": "2026-07-06 00:00:00.000000",
+    "doctype": "DocType",
+    "editable_grid": 1,
+    "engine": "InnoDB",
+    "field_order": [
+        "escalation_type"
+    ],
+    "fields": [
+        {
+            "description": "Which escalation step type triggers this nudge. Matches current_escalation_type on ProgramEnrollment.",
+            "fieldname": "escalation_type",
+            "fieldtype": "Select",
+            "in_list_view": 1,
+            "label": "Escalation Type",
+            "options": "help_note_a\nhelp_note_b\nvoice_note\nparent_call",
+            "reqd": 1
+        }
+    ],
+    "index_web_pages_for_search": 0,
+    "istable": 1,
+    "links": [],
+    "modified": "2026-07-06 00:00:00.000000",
+    "modified_by": "Administrator",
+    "module": "TAP LMS",
+    "name": "VoiceNudgeEscalationType",
+    "owner": "Administrator",
+    "permissions": [],
+    "sort_field": "modified",
+    "sort_order": "ASC",
+    "states": []
+}

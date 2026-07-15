@@ -1922,6 +1922,8 @@ def _get_escalation_steps(student, batch, path=PATH_CORE):
                 "escalation_type": step.escalation_type or "help_note_a",
                 "points_awarded": step.points_awarded or 0,
                 "hours_after_previous": step.hours_after_previous or 24,
+                "enable_voice_call": int(getattr(step, "enable_voice_call", 0) or 0),
+                "nudge_config_override": getattr(step, "nudge_config_override", None) or None,
             })
 
     return sorted(steps, key=lambda s: s["escalation_order"])

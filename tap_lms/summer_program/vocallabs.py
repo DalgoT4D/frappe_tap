@@ -30,6 +30,11 @@ Phone resolution:
 import json
 
 import frappe
+from tap_lms.summer_program.voice_context import (
+    build_student_context as _build_student_context,
+    check_call_window as _check_call_window,
+    check_rate_limit as _check_rate_limit,
+)
 from frappe.utils import now_datetime
 
 from tap_lms.summer_program.constants import (
@@ -69,7 +74,7 @@ class PermanentVocallabsError(Exception):
 # ════════════════════════════════════════════════════════════
 
 
-def initiate_parent_call(pe_name, escalation_step, retry_count=0):
+def initiate_parent_call(pe_name, escalation_step, retry_count=0, campaign_name=None, queue_row_name=None):
     """Initiate a Vocallabs parent call for a PE's current escalation step.
 
     Frappe-enqueueable from `handle_escalation` when
@@ -117,8 +122,41 @@ def initiate_parent_call(pe_name, escalation_step, retry_count=0):
         )
         return False
 
-    # ── Resolve config ──────────────────────────────────────
-    config = _resolve_parent_call_config(pe, pe.current_week or 1, settings)
+    # ── Call window check (L-VC-CW-001) ────────────────────────────────
+    if not _check_call_window(settings):
+        frappe.logger().info(
+            f"Vocallabs: PE {pe_name} skipped — outside call window "
+            f"({getattr(settings,'call_window_start','?')} - "
+            f"{getattr(settings,'call_window_end','?')} IST)."
+        )
+        return False
+
+    # ── Rate limit check (L-VC-RL-001) ─────────────────────────────────
+    if not _check_rate_limit(pe, settings):
+        frappe.logger().info(
+            f"Vocallabs: PE {pe_name} skipped — rate limit reached "
+            f"(weekly_call_count={pe.weekly_call_count}, "
+            f"last_call_at={pe.last_call_at})."
+        )
+        return False
+
+    # ── Compute student context early (needed for language-aware config) ─
+    # Context is computed here so situation is available for template resolution.
+    # It is passed to _call_vocallabs to avoid recomputation.
+    student_for_ctx = frappe.get_doc("Student", pe.student)
+    try:
+        _precomputed_ctx = _build_student_context(pe, student_for_ctx)
+    except Exception as _ctx_err:
+        frappe.log_error(
+            message=f"Vocallabs: context pre-computation failed for PE {pe_name}: {_ctx_err}",
+            title="SP Vocallabs Context",
+        )
+        _precomputed_ctx = {}
+
+    _situation = _precomputed_ctx.get("situation", "unknown")
+
+    # ── Resolve config (now situation-aware + language-aware) ────────────
+    config = _resolve_parent_call_config(pe, pe.current_week or 1, settings, situation=_situation)
     if not config:
         # Per CR-003 §E3: skip + warn. Config issue, not a runtime failure.
         frappe.log_error(
@@ -173,6 +211,43 @@ def initiate_parent_call(pe_name, escalation_step, retry_count=0):
         )
         if not call_response:
             raise RuntimeError("Vocallabs call sequence returned no response")
+
+        # ── Update call tracking fields (L-VC-CT-001) ──────────────────
+        try:
+            from frappe.utils import now_datetime
+            frappe.db.set_value(
+                "ProgramEnrollment", pe.name,
+                {
+                    "last_call_at":      now_datetime(),
+                    "total_call_count":  int(pe.total_call_count or 0) + 1,
+                    "weekly_call_count": int(pe.weekly_call_count or 0) + 1,
+                },
+                update_modified=False,
+            )
+        except Exception as _track_exc:
+            frappe.log_error(
+                message=f"Vocallabs: call tracking update failed for PE {pe.name}: {_track_exc}",
+                title="SP Vocallabs Tracking",
+            )
+
+        # ── Write VoiceCallLog (audit trail) ───────────────────────────
+        try:
+            _write_voice_call_log(
+                pe=pe,
+                student=student,
+                campaign_name=campaign_name,
+                queue_row_name=queue_row_name,
+                situation=_situation,
+                agent_id=_resolve_agent_id(settings, pe.language or ""),
+                rendered_prompt=status_text,
+                outcome="placed",
+            )
+        except Exception as _log_exc:
+            frappe.log_error(
+                message=f"Vocallabs: VoiceCallLog write failed for PE {pe.name}: {_log_exc}",
+                title="SP Vocallabs Tracking",
+            )
+
     except Exception as e:
         return _handle_failure(
             pe=pe, escalation_step=escalation_step,
@@ -321,20 +396,37 @@ def _extract_auth_token(response):
 # ════════════════════════════════════════════════════════════
 
 
-def _resolve_parent_call_config(pe, current_week, settings):
-    """Resolve the ParentCallConfig for the current week.
+def _resolve_parent_call_config(pe, current_week, settings, situation=None):
+    """Resolve the ParentCallConfig for this call.
 
-    Resolution chain per CR-003 §E3:
-      1. Look up the week's LearningUnit; scan its UnitContentItem rows for
-         one with `content_type == "ParentCallConfig"`. If found, return
-         that ParentCallConfig doc.
-      2. Fall back to `VoiceAgentSettings.default_parent_call_config`.
-      3. Return None — caller logs a warning and skips the step.
+    Resolution chain (extended from CR-003 §E3):
+      1. LearningUnit -> UnitContentItem: per-week content-attached config.
+         Preserved unchanged from original behaviour.
+      2. VoiceNudgeConfig.language_templates: per-language template for the
+         computed situation label. Resolves the correct template for the
+         student's actual language. This is the multilingual fix.
+      3. VoiceNudgeConfig.default_template_config: language-agnostic fallback
+         for this situation.
+      4. VoiceAgentSettings.default_parent_call_config: global fallback.
+      5. None — caller logs a warning and skips.
 
-    `_get_learning_unit` is the canonical helper in student_progression_sp.
+    Args:
+        pe: ProgramEnrollment document.
+        current_week: int, current program week.
+        settings: VoiceAgentSettings singleton.
+        situation: str, computed situation label from _compute_situation().
+                   Pass this to enable language-aware template resolution.
     """
     from tap_lms.summer_program.student_progression_sp import _get_learning_unit
 
+    def _is_active_config(name):
+        try:
+            cfg = frappe.get_doc("ParentCallConfig", name)
+            return cfg if getattr(cfg, "is_active", 1) else None
+        except frappe.DoesNotExistError:
+            return None
+
+    # ── Step 1: LearningUnit → UnitContentItem (CR-003 §E3, unchanged) ─
     tier = getattr(pe, "current_tier", None) or "Basic"
     if pe.course_level:
         try:
@@ -344,35 +436,53 @@ def _resolve_parent_call_config(pe, current_week, settings):
         if learning_unit:
             item = frappe.db.get_value(
                 "UnitContentItem",
-                {
-                    "parent": learning_unit,
-                    "parenttype": "LearningUnit",
-                    "content_type": "ParentCallConfig",
-                },
+                {"parent": learning_unit, "parenttype": "LearningUnit",
+                 "content_type": "ParentCallConfig"},
                 "content",
             )
             if item:
-                try:
-                    config = frappe.get_doc("ParentCallConfig", item)
-                    # CR-003 §M4: `is_active` is the soft-disable flag. A
-                    # disabled config means "don't fire this step"; fall
-                    # through to the default. If the default is also
-                    # inactive, the caller skips the step.
-                    if getattr(config, "is_active", 1):
-                        return config
-                except frappe.DoesNotExistError:
-                    # LU referenced a now-deleted config — fall through.
-                    pass
+                cfg = _is_active_config(item)
+                if cfg:
+                    return cfg
 
-    # Fallback to the singleton's default.
+    # ── Step 2+3: VoiceNudgeConfig language template resolution ─────────
+    if situation:
+        nudge_name = frappe.db.get_value(
+            "VoiceNudgeConfig",
+            {"situation_label": situation, "is_active": 1},
+            "name",
+        )
+        if nudge_name:
+            pe_language = (pe.language or "").strip()
+
+            # Step 2: per-language template
+            if pe_language:
+                lang_config_name = frappe.db.get_value(
+                    "VoiceNudgeLanguageTemplate",
+                    {"parent": nudge_name, "parenttype": "VoiceNudgeConfig",
+                     "language": pe_language, "is_active": 1},
+                    "parent_call_config",
+                )
+                if lang_config_name:
+                    cfg = _is_active_config(lang_config_name)
+                    if cfg:
+                        return cfg
+
+            # Step 3: language-agnostic default on the nudge config
+            default_on_nudge = frappe.db.get_value(
+                "VoiceNudgeConfig", nudge_name, "default_template_config"
+            )
+            if default_on_nudge:
+                cfg = _is_active_config(default_on_nudge)
+                if cfg:
+                    return cfg
+
+    # ── Step 4: VoiceAgentSettings global fallback ───────────────────────
     default_name = getattr(settings, "default_parent_call_config", None)
     if default_name:
-        try:
-            default_config = frappe.get_doc("ParentCallConfig", default_name)
-            if getattr(default_config, "is_active", 1):
-                return default_config
-        except frappe.DoesNotExistError:
-            return None
+        cfg = _is_active_config(default_name)
+        if cfg:
+            return cfg
 
     return None
 
@@ -383,6 +493,7 @@ def _resolve_parent_call_config(pe, current_week, settings):
 
 
 _TEMPLATE_VARS = (
+    # Existing variables
     "student_name",
     "week",
     "archetype",
@@ -391,6 +502,18 @@ _TEMPLATE_VARS = (
     "escalation_order",
     "escalation_type",
     "language",
+    "welcome_greeting",
+    # New variables added by Didi voice nudge system
+    "situation",           # nudge type label; agent prompt branches on this
+    "course",              # Science Lab, Coding, Arts, Financial Literacy
+    "submission_count",    # how many times submitted ever
+    "streak",              # current week streak
+    "submission_ask",      # plain language submission ask
+    "grace_deadline",      # formatted deadline date e.g. "July 4"
+    "grade_group",         # parent_facilitated or student_direct
+    "call_attempt",        # which call is this for this enrollment
+    "last_problem_reported",  # from StudentGlificContext (often empty)
+    "last_message",        # last WhatsApp message from student (often empty)
 )
 
 
@@ -419,7 +542,21 @@ def _render_status_template(template, pe, student, step):
         return ""
 
     pe_language = (pe.language or getattr(student, "language", "") or "").strip()
+    # Build extended context (reads StudentGlificContext for Glific fields).
+    # Wrapped in try/except so template rendering never fails even if
+    # context building encounters unexpected data.
+    try:
+        _ctx_extra = _build_student_context(pe, student)
+    except Exception as _exc:
+        frappe.log_error(
+            message=f"Vocallabs: _build_student_context failed during template render; "
+                    f"PE={pe.name}. Extra vars will be empty. Error: {_exc}",
+            title="SP Vocallabs Context",
+        )
+        _ctx_extra = {}
+
     ctx = {
+        # Existing variables
         "student_name": _student_display(student),
         "week": str(pe.current_week or 0),
         "archetype": pe.archetype or "",
@@ -429,6 +566,17 @@ def _render_status_template(template, pe, student, step):
         "escalation_type": step.get("escalation_type", "") or "",
         "language": pe_language,
         "welcome_greeting": _resolve_welcome_greeting(pe),
+        # New personalisation variables
+        "situation":              _ctx_extra.get("situation", "unknown"),
+        "course":                 _ctx_extra.get("course", ""),
+        "submission_count":       _ctx_extra.get("submission_count", "0"),
+        "streak":                 _ctx_extra.get("streak", "0"),
+        "submission_ask":         _ctx_extra.get("submission_ask", ""),
+        "grace_deadline":         _ctx_extra.get("grace_deadline", ""),
+        "grade_group":            _ctx_extra.get("grade_group", "parent_facilitated"),
+        "call_attempt":           _ctx_extra.get("call_attempt", "1"),
+        "last_problem_reported":  _ctx_extra.get("last_problem_reported", ""),
+        "last_message":           _ctx_extra.get("last_message", ""),
     }
 
     try:
@@ -466,12 +614,65 @@ def _resolve_welcome_greeting(pe):
     return "TAP Buddy"
 
 
+def _write_voice_call_log(pe, student, campaign_name, queue_row_name,
+                           situation, agent_id, rendered_prompt, outcome):
+    """Append a VoiceCallHistory row to the ProgramEnrollment child table.
+
+    Replaces the standalone VoiceCallLog approach. History lives on the
+    enrollment record — visible inline in the Frappe desk, no unbounded
+    separate collection. Prompt is truncated to 500 chars to keep row size
+    reasonable at scale (~200K rows for 79K students x 2-3 calls each).
+    """
+    from frappe.utils import now_datetime
+    now = now_datetime()
+
+    try:
+        frappe.db.sql("""
+            INSERT INTO "tabVoiceCallHistory"
+                (name, parent, parenttype, parentfield, idx,
+                 call_placed_at, situation, outcome, campaign,
+                 agent_id, rendered_prompt, reengaged_within_48h,
+                 creation, modified, modified_by, owner, docstatus)
+            VALUES
+                (%(name)s, %(parent)s, 'ProgramEnrollment', 'voice_call_history', 1,
+                 %(call_placed_at)s, %(situation)s, %(outcome)s, %(campaign)s,
+                 %(agent_id)s, %(rendered_prompt)s, 0,
+                 %(now)s, %(now)s, 'Administrator', 'Administrator', 0)
+        """, {
+            "name":            frappe.generate_hash(length=10),
+            "parent":          pe.name,
+            "call_placed_at":  now,
+            "situation":       (situation or "")[:140],
+            "outcome":         outcome or "placed",
+            "campaign":        (campaign_name or "")[:140],
+            "agent_id":        (agent_id or "")[:140],
+            "rendered_prompt": (rendered_prompt or "")[:500],
+            "now":             now,
+        })
+    except Exception as _hist_exc:
+        frappe.log_error(
+            message=f"Vocallabs: VoiceCallHistory insert failed for PE {pe.name}: {_hist_exc}",
+            title="SP Vocallabs History",
+        )
+
+    # Update queue row status if this call came from a campaign
+    if queue_row_name:
+        try:
+            frappe.db.set_value(
+                "VoiceCallQueue", queue_row_name,
+                {"status": "Calling", "call_placed_at": now},
+                update_modified=False,
+            )
+        except Exception:
+            pass
+
+
 # ════════════════════════════════════════════════════════════
 # HTTP — Vocallabs API
 # ════════════════════════════════════════════════════════════
 
 
-def _call_vocallabs(settings, token, pe, student, parent_phone, student_name, status_text):
+def _call_vocallabs(settings, token, pe, student, parent_phone, student_name, status_text, precomputed_ctx=None):
     """Run the Vocallabs sequence, reusing a cached prospect_id when possible.
 
     Cache-on-Student design (task #81):
@@ -556,7 +757,13 @@ def _call_vocallabs(settings, token, pe, student, parent_phone, student_name, st
     # The data block consumed by the Vocallabs agent at call time. Same
     # keys whether we're inserting (addMultipleContactsToGroup) or
     # refreshing (updateContactData) — only one source of truth.
+    # Use precomputed context if available (passed from initiate_parent_call
+    # to avoid re-querying Frappe and BigQuery for the same data).
+    # Falls back to fresh computation when called directly in tests.
+    ctx = precomputed_ctx if precomputed_ctx else _build_student_context(pe, student)
+
     data_block = {
+        # Existing fields
         "contact": parent_display,
         "student_name": student_name,
         "status": status_text,
@@ -564,6 +771,17 @@ def _call_vocallabs(settings, token, pe, student, parent_phone, student_name, st
         "archetype": pe.archetype or "",
         "experiment_arm": pe.experiment_arm or "",
         "welcome_greeting": _resolve_welcome_greeting(pe),
+        # New personalisation fields from context
+        "situation":              ctx.get("situation", "unknown"),
+        "course":                 ctx.get("course", ""),
+        "submission_count":       ctx.get("submission_count", "0"),
+        "streak":                 ctx.get("streak", "0"),
+        "submission_ask":         ctx.get("submission_ask", ""),
+        "grace_deadline":         ctx.get("grace_deadline", ""),
+        "grade_group":            ctx.get("grade_group", "parent_facilitated"),
+        "call_attempt":           ctx.get("call_attempt", "1"),
+        "last_problem_reported":  ctx.get("last_problem_reported", ""),
+        "last_message":           ctx.get("last_message", ""),
     }
     agent_id = _resolve_agent_id(settings, pe_language)
     if not agent_id:
