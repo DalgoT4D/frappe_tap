@@ -153,6 +153,7 @@ def run_student_bulk_import_job(docname: str) -> dict:
             sample_test=int(doc.sample_test or 0),
             batch_size=int(doc.batch_size or 100),
             import_user=doc.owner or "Administrator",
+            job_name=doc.job_name or doc.name,
             log_fn=log_fn,
             progress_fn=progress_fn,
         )

@@ -3,7 +3,6 @@ from __future__ import annotations
 import csv
 import json
 import re
-import uuid
 from dataclasses import dataclass
 from datetime import date
 from io import BytesIO, StringIO
@@ -50,6 +49,7 @@ GLIFIC_CSV_HEADERS = [
     "buddy_name",
     "batch_id",
     "grade",
+    "level",
     "course",
 ]
 
@@ -111,6 +111,7 @@ def run_import(
     sample_test: int | None = None,
     batch_size: int | None = None,
     import_user: str | None = None,
+    job_name: str | None = None,
     log_fn: Callable[[str], None] | None = None,
     progress_fn: Callable[[dict], None] | None = None,
 ) -> dict:
@@ -151,7 +152,7 @@ def run_import(
         failed_rows_file_url = ""
         if precheck["invalid_rows"] > 0:
             try:
-                failed_rows_file_url = _create_and_upload_failed_rows_workbook(tab_names)
+                failed_rows_file_url = _create_and_upload_failed_rows_workbook(tab_names, job_name=job_name)
                 _emit(log_fn, f"[student-import] failed_rows_file_url={failed_rows_file_url}")
             except Exception as exc:
                 _emit(log_fn, f"[student-import] failed_rows_workbook_upload_failed error={exc}")
@@ -312,6 +313,22 @@ def _download_private_workbook(file_id: str) -> requests.Response:
         },
         timeout=120,
     )
+    if _is_file_not_exportable_response(response):
+        media_response = session.get(
+            "https://www.googleapis.com/drive/v3/files/{file_id}".format(file_id=file_id),
+            params={"alt": "media"},
+            timeout=120,
+        )
+        if media_response.status_code == 403:
+            service_account_email = _get_google_service_account_email()
+            raise frappe.ValidationError(
+                "Private Google Drive file access denied (403). "
+                f"Share the file with the service account '{service_account_email}' "
+                f"from GCS Settings project_id '{GCP_CREDENTIALS_PROJECT_ID}', "
+                "or verify that the Google Drive API is enabled for that project."
+            )
+        media_response.raise_for_status()
+        return media_response
     if response.status_code == 403:
         service_account_email = _get_google_service_account_email()
         raise frappe.ValidationError(
@@ -322,6 +339,17 @@ def _download_private_workbook(file_id: str) -> requests.Response:
         )
     response.raise_for_status()
     return response
+
+
+def _is_file_not_exportable_response(response: requests.Response) -> bool:
+    if response.status_code != 403:
+        return False
+    try:
+        payload = response.json()
+    except Exception:
+        return False
+    errors = payload.get("error", {}).get("errors", [])
+    return any(error.get("reason") == "fileNotExportable" for error in errors if isinstance(error, dict))
 
 
 def _get_gcs_settings(project_id: str):
@@ -353,7 +381,7 @@ def _upload_bytes_to_gcs(
     return f"https://storage.cloud.google.com/{settings.bucket_name}/{object_name}"
 
 
-def _create_and_upload_failed_rows_workbook(tab_names: list[str]) -> str:
+def _create_and_upload_failed_rows_workbook(tab_names: list[str], job_name: str | None = None) -> str:
     wb = Workbook()
     default_sheet = wb.active
     wb.remove(default_sheet)
@@ -431,8 +459,15 @@ def _create_and_upload_failed_rows_workbook(tab_names: list[str]) -> str:
 
     buffer = BytesIO()
     wb.save(buffer)
-    object_name = f"student-bulk-import-failures/{frappe.utils.now_datetime().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex}.xlsx"
+    timestamp = frappe.utils.now_datetime().strftime("%Y%m%d_%H%M%S")
+    file_stem = _build_failed_rows_filename_stem(job_name, timestamp)
+    object_name = f"student-bulk-import-failures/{file_stem}.xlsx"
     return _upload_bytes_to_gcs(buffer.getvalue(), object_name, FAILED_ROWS_GCP_PROJECT_ID)
+
+
+def _build_failed_rows_filename_stem(job_name: str | None, timestamp: str) -> str:
+    sanitized_job_name = re.sub(r"[^A-Za-z0-9_-]+", "_", (job_name or "").strip()).strip("_")
+    return f"{sanitized_job_name or 'student_bulk_import'}_{timestamp}"
 
 
 def _create_and_upload_glific_contact_csvs(tab_names: list[str]) -> list[dict]:
@@ -451,6 +486,7 @@ def _create_and_upload_glific_contact_csvs(tab_names: list[str]) -> list[dict]:
             COALESCE(s.name1, '') AS buddy_name,
             COALESCE(b.batch_id, '') AS batch_id,
             COALESCE(NULLIF(x.grade_in, ''), NULLIF(s.grade, ''), '') AS grade,
+            COALESCE(NULLIF(x.derived_level, ''), '') AS level,
             COALESCE(cv.name2, '') AS course
         FROM tmp_student_import_success x
         JOIN "tabStudent" s
@@ -614,6 +650,7 @@ def _prepare_temp_tables() -> None:
         student_id text NOT NULL,
         school_id text,
         grade_in text,
+        derived_level text,
         batch_name text,
         vertical_id text
     );
@@ -1393,6 +1430,7 @@ def _insert_enrollments(import_date: date, import_user: str) -> int:
             student_id,
             school_id,
             grade_in,
+            derived_level,
             batch_name,
             vertical_id
         )
@@ -1403,6 +1441,7 @@ def _insert_enrollments(import_date: date, import_user: str) -> int:
             student_id,
             school_id,
             grade_in,
+            derived_level,
             batch_name,
             vertical_id
         FROM tmp_student_import_resolved
