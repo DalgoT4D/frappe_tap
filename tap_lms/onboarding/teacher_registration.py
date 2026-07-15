@@ -262,20 +262,26 @@ def teacher_whatsapp_response(phone_number):
             _respond(404, {"status": "failure", "message": "Teacher enrollment not found"})
             return
 
+        school_id = latest_enrollment.school or teacher.school_id
+        school_row = _get_school_row_by_id(school_id) if school_id else None
+
         latest_enrollment.whatsapp_response = 1
         teacher.save(ignore_permissions=True)
         frappe.db.commit()
 
-        _respond(200, {
+        response_payload = {
             "student_registration_url": (
                 f"http://registration.theapprenticeproject.org/student/"
-                f"{latest_enrollment.school or teacher.school_id}"
+                f"{school_id}"
             ),
-            "student_consent_url": (
+        }
+        if (school_row or {}).get("city") not in {"DoE Zone 27", "DoE Zone 28"}:
+            response_payload["student_consent_url"] = (
                 f"https://api.whatsapp.com/send?phone=918454812392&text=tapschool:"
-                f"{latest_enrollment.school or teacher.school_id}"
-            ),
-        })
+                f"{school_id}"
+            )
+
+        _respond(200, response_payload)
         return
     except Exception as exc:
         frappe.db.rollback()

@@ -54,6 +54,7 @@ class TestTeacherRegistrationAPI(unittest.TestCase):
         cls.create_response = None
         cls.create_response_text = ""
         cls.school_option = SCHOOL_NAME.strip() or SCHOOL_ID.strip()
+        cls.school_city = None
 
     @classmethod
     def _build_root_url(cls):
@@ -171,6 +172,7 @@ class TestTeacherRegistrationAPI(unittest.TestCase):
         for school in schools:
             if school.get("school_id") == SCHOOL_ID:
                 cls.school_option = school.get("school_name") or SCHOOL_ID
+                cls.school_city = school.get("city")
                 return cls.school_option
         raise AssertionError(f"School {SCHOOL_ID} not found in list_school_details")
 
@@ -206,10 +208,12 @@ class TestTeacherRegistrationAPI(unittest.TestCase):
         self.assertIn("schools", data)
         self.assertIsInstance(data["schools"], list)
         if SCHOOL_ID:
-            self.assertTrue(
-                any(school.get("school_id") == SCHOOL_ID for school in data["schools"]),
-                f"School {SCHOOL_ID} not found",
+            matching_school = next(
+                (school for school in data["schools"] if school.get("school_id") == SCHOOL_ID),
+                None,
             )
+            self.assertIsNotNone(matching_school, f"School {SCHOOL_ID} not found")
+            self.__class__.school_city = matching_school.get("city")
 
     def test_02_check_teacher_exists(self):
         response, data = self._request_with_retry(
@@ -298,7 +302,10 @@ class TestTeacherRegistrationAPI(unittest.TestCase):
         self.assertEqual(response.status_code, 200, data)
         self.assertIsInstance(data, dict)
         self.assertIn("/student/", data["student_registration_url"])
-        self.assertIn("tapschool:", data["student_consent_url"])
+        if self.school_city in {"DoE Zone 27", "DoE Zone 28"}:
+            self.assertNotIn("student_consent_url", data)
+        else:
+            self.assertIn("tapschool:", data["student_consent_url"])
 
 
 if __name__ == "__main__":
