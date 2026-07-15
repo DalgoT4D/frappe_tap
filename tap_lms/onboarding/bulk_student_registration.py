@@ -851,7 +851,23 @@ def _build_validation_tables(sample_test: int) -> None:
                 WHEN s.phone_12 IS NOT NULL THEN
                     row_number() OVER (PARTITION BY s.phone_12 ORDER BY s.source_priority, s.row_in_tab)
                 ELSE 1
-            END AS phone_rank
+            END AS phone_rank,
+            first_value(s.cleaned_name) OVER (
+                PARTITION BY s.phone_12
+                ORDER BY s.source_priority, s.row_in_tab
+            ) AS kept_cleaned_name,
+            first_value(s.phone_12) OVER (
+                PARTITION BY s.phone_12
+                ORDER BY s.source_priority, s.row_in_tab
+            ) AS kept_phone_12,
+            first_value(s.source_tab) OVER (
+                PARTITION BY s.phone_12
+                ORDER BY s.source_priority, s.row_in_tab
+            ) AS kept_source_tab,
+            first_value(s.row_in_tab) OVER (
+                PARTITION BY s.phone_12
+                ORDER BY s.source_priority, s.row_in_tab
+            ) AS kept_row_in_tab
         FROM sampled s
     ),
     enriched AS (
@@ -897,17 +913,27 @@ def _build_validation_tables(sample_test: int) -> None:
         (NOT batch_exists) AS fail_batch,
         (NOT language_exists) AS fail_language,
         (NOT vertical_exists) AS fail_course,
-        (existing_phone_match_count > 1) AS fail_ambiguous_phone,
+        false AS fail_ambiguous_phone,
         concat_ws(
             '; ',
             CASE WHEN phone_12 IS NULL THEN 'Invalid Contact No.' END,
-            CASE WHEN phone_12 IS NOT NULL AND phone_rank > 1 THEN 'Duplicate Contact No. in selected import set' END,
+            CASE
+                WHEN phone_12 IS NOT NULL AND phone_rank > 1 THEN
+                    'Duplicate Contact No. in selected import set. '
+                    || 'Kept student: '
+                    || coalesce(kept_cleaned_name, 'Champ')
+                    || ' ('
+                    || coalesce(kept_phone_12, '')
+                    || ') from '
+                    || coalesce(kept_source_tab, '')
+                    || ' row '
+                    || coalesce(kept_row_in_tab::text, '')
+            END,
             CASE WHEN derived_level IS NULL THEN 'Invalid Grade' END,
             CASE WHEN NOT school_exists THEN 'School ID not found in this site' END,
             CASE WHEN NOT batch_exists THEN 'Batch not found in this site' END,
             CASE WHEN NOT language_exists THEN 'Language not found in this site' END,
-            CASE WHEN NOT vertical_exists THEN 'Course not found in this site' END,
-            CASE WHEN existing_phone_match_count > 1 THEN 'Multiple existing students found for Contact No.' END
+            CASE WHEN NOT vertical_exists THEN 'Course not found in this site' END
         ) AS validation_errors,
         NOT (
             (phone_12 IS NULL)
@@ -917,7 +943,6 @@ def _build_validation_tables(sample_test: int) -> None:
             OR (NOT batch_exists)
             OR (NOT language_exists)
             OR (NOT vertical_exists)
-            OR (existing_phone_match_count > 1)
         ) AS is_valid
     FROM enriched
     """
@@ -962,7 +987,11 @@ def _run_prechecks() -> dict:
         "missing_batch_rows": _scalar("SELECT count(*) FROM tmp_student_import_invalid WHERE fail_batch"),
         "missing_language_rows": _scalar("SELECT count(*) FROM tmp_student_import_invalid WHERE fail_language"),
         "missing_vertical_rows": _scalar("SELECT count(*) FROM tmp_student_import_invalid WHERE fail_course"),
-        "ambiguous_existing_phone_matches": _scalar("SELECT count(*) FROM tmp_student_import_invalid WHERE fail_ambiguous_phone"),
+        "ambiguous_existing_phone_matches": _scalar("""
+            SELECT count(*)
+            FROM tmp_student_import_validation
+            WHERE existing_phone_match_count > 1
+        """),
         "missing_school_examples": _rows("""
             SELECT school_id_in AS school_id, count(*) AS row_count
             FROM tmp_student_import_invalid
@@ -1056,8 +1085,44 @@ def _execute_import(import_date: date, import_user: str, source_table: str = "tm
             ORDER BY b.name
             LIMIT 1
         ) batch ON true
-        LEFT JOIN "tabStudent" s
-          ON s.phone IN (e.phone_12, e.phone_10)
+        LEFT JOIN LATERAL (
+            SELECT s.name
+            FROM "tabStudent" s
+            LEFT JOIN LATERAL (
+                SELECT max(se.date_joining) AS latest_date_joining
+                FROM "tabStudent Enrollment" se
+                WHERE se.parent = s.name
+            ) latest_enrollment ON true
+            WHERE s.phone IN (e.phone_12, e.phone_10)
+            ORDER BY
+                CASE
+                    WHEN lower(
+                        CASE
+                            WHEN btrim(
+                                regexp_replace(
+                                    regexp_replace(coalesce(s.name1, ''), '[^A-Za-z ]+', '', 'g'),
+                                    '\\s+',
+                                    ' ',
+                                    'g'
+                                )
+                            ) = '' THEN 'Champ'
+                            ELSE btrim(
+                                regexp_replace(
+                                    regexp_replace(coalesce(s.name1, ''), '[^A-Za-z ]+', '', 'g'),
+                                    '\\s+',
+                                    ' ',
+                                    'g'
+                                )
+                            )
+                        END
+                    ) = lower(e.cleaned_name)
+                    THEN 1 ELSE 0
+                END DESC,
+                latest_enrollment.latest_date_joining DESC NULLS LAST,
+                lower(coalesce(s.name1, '')) ASC,
+                s.name ASC
+            LIMIT 1
+        ) s ON true
     """
     frappe.db.sql("DROP TABLE IF EXISTS tmp_student_import_match")
     frappe.db.sql(source_sql)
@@ -1078,6 +1143,7 @@ def _update_existing_students(import_user: str) -> int:
     rows = frappe.db.sql("""
         UPDATE "tabStudent" st
            SET name1 = m.cleaned_name,
+               phone = m.phone_12,
                school_id = m.school_id,
                language = m.language_id,
                grade = m.grade_in,
