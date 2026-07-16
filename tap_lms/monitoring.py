@@ -17,7 +17,7 @@
 #   - Routine http_request INFO logs emitted for metrics extraction
 #     but filtered out of Cloud Logging storage via Ops Agent config
 #
-# IMPORTANT: Every function swallows its own exceptions.
+# IMPORTANT: Every monitoring function swallows its own exceptions.
 # Monitoring must never crash the application.
 #
 # to enable log recycling where old logs are over written on 14th day:
@@ -244,6 +244,59 @@ def record_request(
 
 # ── Background job metrics ────────────────────────────────────────────────────
 
+# v15 automatic job hooks (before_job / after_job in hooks.py, currently
+# commented out — uncomment once bench is confirmed on v15).
+#
+# Frappe passes these keyword arguments:
+#   before_job: method (dotted job name), kwargs, transaction_type
+#   after_job:  method (dotted job name), kwargs, result
+#
+# They fire for every RQ/scheduler job automatically, giving the same
+# coverage as the manual record_job() decorator pattern but without
+# touching each scheduler function individually.
+
+import time as _time  # local alias — avoid shadowing any frappe.utils.now imports
+
+_job_start_times: dict = {}  # keyed by method name; good enough for single-threaded RQ workers
+
+
+def before_job_hook(method: str = None, kwargs: dict = None, **_) -> None:
+    """
+    Called by Frappe v15 before_job hook for every background/scheduled job.
+    Stores the start time so after_job_hook can compute duration.
+    """
+    try:
+        _job_start_times[method or "unknown"] = _time.monotonic()
+    except Exception:
+        pass
+
+
+def after_job_hook(method: str = None, kwargs: dict = None, result=None, **_) -> None:
+    """
+    Called by Frappe v15 after_job hook for every background/scheduled job.
+    Emits a background_job log line with duration and outcome.
+
+    Jobs that raise an unhandled exception are also caught by the
+    Error Log doc_events hook (on_error_log_insert), so failures get
+    two log lines: one here (job boundary) and one with the full traceback.
+    """
+    try:
+        key = method or "unknown"
+        t0 = _job_start_times.pop(key, None)
+        duration_ms = (_time.monotonic() - t0) * 1000 if t0 is not None else None
+
+        # A non-None result means the job completed without raising.
+        # Frappe sets result=None on exception before calling after_job.
+        status = "success" if result is not None else "error"
+
+        record_job(
+            job_name=key,
+            status=status,
+            duration_ms=duration_ms,
+        )
+    except Exception:
+        pass
+
 
 def record_job(
     job_name: str,
@@ -370,6 +423,42 @@ def record_feedback_processing_failed(
         failure_reason=failure_reason,
         retry_count=retry_count,
     )
+
+
+# ── Unhandled exception tracing via Error Log ─────────────────────────────────
+
+
+def on_error_log_insert(doc, method) -> None:
+    """
+    Called by the doc_events hook whenever Frappe writes an Error Log record.
+
+    Frappe creates an Error Log automatically for every unhandled exception in
+    both web requests (HTTP 500) and RQ/scheduler workers, so this gives us
+    reliable structured coverage of all unhandled exceptions across both
+    surfaces without any sys.excepthook or on_exception workaround.
+
+    The Error Log doctype fields used here:
+        doc.error           — full traceback string
+        doc.method          — the whitelisted method / job function that raised
+        doc.reference_doctype / doc.reference_name — linked document if any
+    """
+    try:
+        # Truncate the traceback to keep the log line inside the 256 KB Cloud
+        # Logging entry limit — the tail of a traceback is the most useful part.
+        traceback_tail = (doc.error or "")[-2000:]
+
+        emit(
+            severity="ERROR",
+            message="unhandled_exception",
+            error_log=doc.name,
+            method=doc.method or "unknown",
+            traceback=traceback_tail,
+            reference_doctype=doc.reference_doctype or None,
+            reference_name=doc.reference_name or None,
+        )
+    except Exception:
+        # Never let monitoring crash Frappe's own error handling path.
+        pass
 
 
 def record_glific_notification(

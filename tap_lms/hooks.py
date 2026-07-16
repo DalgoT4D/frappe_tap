@@ -13,9 +13,23 @@ app_license = "MIT"
 before_request = ["tap_lms.middleware.before_request"]
 after_request = ["tap_lms.middleware.after_request"]
 
+# v15 exposes before_job / after_job hooks (PR #19971). Wire them here when
+# the bench is confirmed on v15 — they give automatic record_job coverage for
+# every scheduler function without per-function decoration.
+# before_job = ["tap_lms.monitoring.before_job_hook"]
+# after_job  = ["tap_lms.monitoring.after_job_hook"]
+
 
 # Document Events
 doc_events = {
+    # SRE: Frappe writes an Error Log record for every unhandled exception in
+    # both web requests and RQ/scheduler workers. Hooking after_insert here
+    # converts those writes into structured GCP log lines automatically —
+    # no sys.excepthook or on_exception hack required. Covers both surfaces
+    # (HTTP 500s and background job crashes) with a real traceback in the payload.
+    "Error Log": {
+        "after_insert": "tap_lms.monitoring.on_error_log_insert"
+    },
     "School": {"before_save": "tap_lms.tap_lms.doctype.school.school.before_save"},
     "Teacher": {"on_update": "tap_lms.glific_webhook.update_glific_contact"},
     "StudentStageProgress": {
