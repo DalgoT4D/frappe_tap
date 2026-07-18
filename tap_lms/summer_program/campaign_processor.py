@@ -325,37 +325,31 @@ def check_reengagement():
 
     cutoff = add_to_date(now_datetime(), hours=-48)
 
-    rows = frappe.db.get_all(
-        "VoiceCallHistory",
-        filters={
-            "reengaged_within_48h": 0,
-            "outcome": "answered",
-            "call_placed_at": [">=", cutoff],
-        },
-        fields=["name", "parent", "call_placed_at"],
-    )
+    # Single JOIN query instead of N exists() calls per row.
+    # Finds VoiceCallHistory rows that have a matching submission_received
+    # event in ProgramEventLog after the call was placed.
+    reengaged_names = frappe.db.sql("""
+        SELECT DISTINCT vh.name
+        FROM "tabVoiceCallHistory" vh
+        INNER JOIN "tabProgramEventLog" pel
+            ON pel.enrollment = vh.parent
+            AND pel.event_type = 'submission_received'
+            AND pel.created_at >= vh.call_placed_at
+        WHERE vh.reengaged_within_48h = 0
+          AND vh.outcome = 'answered'
+          AND vh.call_placed_at >= %(cutoff)s
+    """, {"cutoff": cutoff}, as_dict=False)
 
     updated = 0
-    for row in rows:
-        submitted_after = frappe.db.exists(
-            "ProgramEventLog",
-            {
-                "enrollment": row.parent,
-                "event_type": "submission_received",
-                "created_at": [">=", row.call_placed_at],
-            },
+    for (row_name,) in reengaged_names:
+        frappe.db.set_value(
+            "VoiceCallHistory", row_name, "reengaged_within_48h", 1,
+            update_modified=False,
         )
-        if submitted_after:
-            frappe.db.set_value(
-                "VoiceCallHistory", row.name, "reengaged_within_48h", 1,
-                update_modified=False,
-            )
-            updated += 1
+        updated += 1
 
-    if rows:
+    if updated:
         frappe.db.commit()
-        if updated:
-            frappe.log_error(
-                title="Didi re-engagement check",
-                message=f"Marked {updated} of {len(rows)} recent answered calls as re-engaged.",
-            )
+        frappe.logger().info(
+            f"Didi re-engagement check: marked {updated} calls as re-engaged."
+        )

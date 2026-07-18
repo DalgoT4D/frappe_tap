@@ -1,6 +1,6 @@
 frappe.ui.form.on("VoiceCallCampaign", {
     refresh(frm) {
-        
+        frm.disable_save();
 
         // Generate Queue
         if (["Draft", "Ready"].includes(frm.doc.status)) {
@@ -50,6 +50,14 @@ frappe.ui.form.on("VoiceCallCampaign", {
         // BigQuery sync
         frm.add_custom_button(__("Sync BigQuery Now"), () => {
             _call(frm, "sync_bigquery_now", "Syncing Glific context from BigQuery...");
+        }, __("Actions"));
+
+        // Archive old queue rows (cleanup)
+        frm.add_custom_button(__("Archive Old Queues"), () => {
+            frappe.confirm(
+                "Delete queue rows from campaigns completed more than 30 days ago?",
+                () => _call(frm, "archive_queue", "Archiving old queue rows...")
+            );
         }, __("Actions"));
 
         // Analytics refresh

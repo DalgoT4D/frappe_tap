@@ -209,15 +209,16 @@ def _run_sync(client, project, dataset):
 
     frappe.db.commit()
 
-    frappe.log_error(
-        title=f"{_MODULE} — run complete",
-        message=(
-            f"Contacts from BigQuery: {len(contacts_rows)}. "
-            f"Matched to Frappe students: {synced}. "
-            f"No Frappe match: {skipped}. "
-            f"Errors: {errors}."
-        ),
+    msg = (
+        f"Contacts from BigQuery: {len(contacts_rows)}. "
+        f"Matched to Frappe students: {synced}. "
+        f"No Frappe match: {skipped}. "
+        f"Errors: {errors}."
     )
+    if errors:
+        frappe.log_error(title=f"{_MODULE} — completed with errors", message=msg)
+    else:
+        frappe.logger().info(f"{_MODULE}: {msg}")
 
 
 def _clean_text(val):

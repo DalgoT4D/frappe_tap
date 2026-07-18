@@ -353,7 +353,7 @@ def execute():
         )
 
     frappe.log_error(
-        title="Didi Voice Nudge migration complete",
+        title="[INFO] Didi Voice Nudge migration complete",
         message=(
             f"VoiceNudgeConfig inserted: {len(inserted)} ({inserted}). "
             f"Skipped (already existed): {len(skipped)} ({skipped}). "

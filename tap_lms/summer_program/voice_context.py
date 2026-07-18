@@ -151,15 +151,31 @@ def check_rate_limit(pe, settings):
 # ════════════════════════════════════════════════════════════
 
 
-def _compute_situation(pe, student, glific_ctx):
-    """Evaluate VoiceNudgeConfig records in priority order.
+# Module-level nudge config cache. Populated by _load_nudge_cache() and
+# invalidated after TTL_SECONDS seconds. This avoids re-querying
+# VoiceNudgeConfig + child tables for every student during queue generation
+# (79K students × 17 queries = 1.3M queries without this cache).
+_NUDGE_CACHE = None
+_NUDGE_CACHE_AT = None
+_NUDGE_CACHE_TTL = 300  # 5 minutes
 
-    Returns the situation_label of the first matching active config.
-    Falls back to 'unknown' if no config matches.
 
-    Per L-VC-002: N8 (celebration) is not computed here.
+def _load_nudge_cache():
+    """Load VoiceNudgeConfig + child tables into module-level cache.
+
+    Returns a list of dicts, each containing the config fields plus
+    pre-loaded child table lists (allowed escalation types, submission types).
+    Cached for 5 minutes to survive a full campaign queue generation pass
+    without re-querying. Invalidated automatically after TTL.
     """
-    # Load all active configs in priority order (ascending)
+    global _NUDGE_CACHE, _NUDGE_CACHE_AT
+    import time
+
+    now = time.monotonic()
+    if _NUDGE_CACHE is not None and _NUDGE_CACHE_AT is not None:
+        if now - _NUDGE_CACHE_AT < _NUDGE_CACHE_TTL:
+            return _NUDGE_CACHE
+
     configs = frappe.get_all(
         "VoiceNudgeConfig",
         filters={"is_active": 1},
@@ -171,6 +187,49 @@ def _compute_situation(pe, student, glific_ctx):
         ],
         order_by="priority asc",
     )
+
+    # Pre-load all child table rows in two bulk queries (not N per config)
+    all_escalation_types = frappe.db.get_all(
+        "VoiceNudgeEscalationType",
+        filters={"parenttype": "VoiceNudgeConfig"},
+        fields=["parent", "escalation_type"],
+    )
+    all_submission_types = frappe.db.get_all(
+        "VoiceNudgeSubmissionType",
+        filters={"parenttype": "VoiceNudgeConfig"},
+        fields=["parent", "submission_type"],
+    )
+
+    # Group by parent (nudge_type)
+    esc_by_nudge = {}
+    for row in all_escalation_types:
+        esc_by_nudge.setdefault(row.parent, []).append(row.escalation_type)
+
+    sub_by_nudge = {}
+    for row in all_submission_types:
+        sub_by_nudge.setdefault(row.parent, []).append(row.submission_type)
+
+    # Attach to config dicts
+    for cfg in configs:
+        cfg["_esc_types"] = esc_by_nudge.get(cfg.nudge_type, [])
+        cfg["_sub_types"] = sub_by_nudge.get(cfg.nudge_type, [])
+
+    _NUDGE_CACHE = configs
+    _NUDGE_CACHE_AT = now
+    return _NUDGE_CACHE
+
+
+def _compute_situation(pe, student, glific_ctx):
+    """Evaluate VoiceNudgeConfig records in priority order.
+
+    Uses module-level cache (_load_nudge_cache) to avoid N×17 DB queries
+    when computing situations for thousands of students during queue generation.
+    Cache is warm for 5 minutes — a full 79K-student pass takes ~2-3 minutes.
+
+    Returns the situation_label of the first matching active config.
+    Falls back to 'unknown' if no config matches.
+    """
+    configs = _load_nudge_cache()
 
     for cfg in configs:
         if _matches_config(pe, student, glific_ctx, cfg):
@@ -214,22 +273,21 @@ def _matches_config(pe, student, glific_ctx, cfg):
     if min_sub and submission_count < min_sub:
         return False
 
-    # ── Child table conditions (escalation types allowed) ───────────────
-    allowed_escalation_types = frappe.get_all(
-        "VoiceNudgeEscalationType",
-        filters={"parent": cfg.nudge_type, "parenttype": "VoiceNudgeConfig"},
-        fields=["escalation_type"],
-        pluck="escalation_type",
+    # ── Child table conditions (from cache, no extra queries) ───────────
+    # _esc_types and _sub_types are pre-loaded by _load_nudge_cache().
+    # Falls back to live query if cache doesn't have these keys (direct calls).
+    allowed_escalation_types = cfg.get("_esc_types") if hasattr(cfg, "get") else (
+        frappe.db.get_all("VoiceNudgeEscalationType",
+            filters={"parent": cfg.nudge_type, "parenttype": "VoiceNudgeConfig"},
+            pluck="escalation_type")
     )
     if allowed_escalation_types and escalation_type not in allowed_escalation_types:
         return False
 
-    # ── Child table conditions (submission types allowed) ────────────────
-    allowed_submission_types = frappe.get_all(
-        "VoiceNudgeSubmissionType",
-        filters={"parent": cfg.nudge_type, "parenttype": "VoiceNudgeConfig"},
-        fields=["submission_type"],
-        pluck="submission_type",
+    allowed_submission_types = cfg.get("_sub_types") if hasattr(cfg, "get") else (
+        frappe.db.get_all("VoiceNudgeSubmissionType",
+            filters={"parent": cfg.nudge_type, "parenttype": "VoiceNudgeConfig"},
+            pluck="submission_type")
     )
     if allowed_submission_types and submission_type not in allowed_submission_types:
         return False

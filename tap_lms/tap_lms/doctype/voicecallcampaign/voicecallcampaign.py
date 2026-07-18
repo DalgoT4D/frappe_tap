@@ -210,7 +210,12 @@ class VoiceCallCampaign(Document):
         )
 
     def _build_queue_rows(self, enrollments):
-        """For each enrollment, compute situation, resolve template, check filters."""
+        """For each enrollment, compute situation, resolve template, check filters.
+
+        Uses lightweight field reads instead of full document loads to avoid
+        158K frappe.get_doc() calls for 79K students. Student data is fetched
+        in a single bulk query keyed by student name.
+        """
         from tap_lms.summer_program.voice_context import build_student_context, check_rate_limit
         from tap_lms.summer_program.vocallabs import (
             _get_voice_agent_settings, _resolve_parent_call_config, _resolve_agent_id,
@@ -223,9 +228,25 @@ class VoiceCallCampaign(Document):
         step_dummy = {"escalation_order": 1, "escalation_type": "parent_call",
                       "hours_after_previous": 0, "points_awarded": 0}
 
+        # Bulk-load student data in one query instead of N frappe.get_doc() calls
+        student_names = list({e.student for e in enrollments if e.student})
+        student_map = {}
+        if student_names:
+            for batch_start in range(0, len(student_names), 500):
+                batch = student_names[batch_start:batch_start + 500]
+                rows_batch = frappe.db.get_all(
+                    "Student",
+                    filters={"name": ["in", batch]},
+                    fields=["name", "name1", "phone", "grade", "language", "school_id"],
+                )
+                for s in rows_batch:
+                    student_map[s.name] = s
+
         for pe_data in enrollments:
-            pe = frappe.get_doc("ProgramEnrollment", pe_data.name)
-            student = frappe.get_doc("Student", pe.student)
+            pe = frappe._dict(pe_data)
+            student = student_map.get(pe_data.student)
+            if not student:
+                continue
 
             # Build context (computes situation)
             ctx = build_student_context(pe, student)
@@ -369,6 +390,39 @@ class VoiceCallCampaign(Document):
             if label:
                 situations.add(label)
         return situations if situations else None
+
+    @frappe.whitelist()
+    def archive_queue(self):
+        """Delete all queue rows for completed campaigns older than 30 days.
+
+        Prevents tabVoiceCallQueue from growing unbounded over many campaign runs.
+        Safe to call anytime — only touches Complete/Error campaigns older than 30 days.
+        """
+        from frappe.utils import add_to_date
+        cutoff = add_to_date(frappe.utils.now_datetime(), days=-30)
+
+        old_campaigns = frappe.db.get_all(
+            "VoiceCallCampaign",
+            filters={"status": ["in", ["Complete", "Error"]], "completed_at": ["<", cutoff]},
+            pluck="name",
+        )
+        deleted = 0
+        for campaign_name in old_campaigns:
+            count = frappe.db.count(
+                "VoiceCallQueue",
+                {"parent": campaign_name, "parenttype": "VoiceCallCampaign"},
+            )
+            frappe.db.delete(
+                "VoiceCallQueue",
+                {"parent": campaign_name, "parenttype": "VoiceCallCampaign"},
+            )
+            deleted += count
+
+        frappe.db.commit()
+        return {
+            "ok": True,
+            "message": f"Archived {deleted} queue rows from {len(old_campaigns)} old campaigns.",
+        }
 
     def _refresh_stats(self):
         counts = {"Pending": 0, "Calling": 0, "Answered": 0,
