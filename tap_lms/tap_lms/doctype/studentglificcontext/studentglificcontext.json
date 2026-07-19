@@ -15,9 +15,7 @@
         "last_flow_incomplete",
         "last_assignment_name",
         "last_inbound_message",
-        "last_inbound_at",
-        "raw_section",
-        "raw_glific_fields"
+        "last_inbound_at"
     ],
     "fields": [
         {
@@ -72,17 +70,6 @@
             "fieldname": "last_inbound_at",
             "fieldtype": "Datetime",
             "label": "Last Inbound At"
-        },
-        {
-            "fieldname": "raw_section",
-            "fieldtype": "Section Break",
-            "label": "Raw Data"
-        },
-        {
-            "description": "Full raw_fields JSON snapshot from BigQuery contacts table. Kept for debugging and adding new fields without schema changes. Do not rely on this field in code; extract specific fields above.",
-            "fieldname": "raw_glific_fields",
-            "fieldtype": "JSON",
-            "label": "Raw Glific Fields"
         }
     ],
     "index_web_pages_for_search": 0,
@@ -92,7 +79,7 @@
             "link_fieldname": "student"
         }
     ],
-    "modified": "2026-07-06 00:00:00.000000",
+    "modified": "2026-07-19 00:00:00.000000",
     "modified_by": "Administrator",
     "module": "TAP LMS",
     "name": "StudentGlificContext",

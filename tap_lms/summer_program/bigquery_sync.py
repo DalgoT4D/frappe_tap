@@ -118,8 +118,7 @@ def _run_sync(client, project, dataset):
             phone,
             JSON_VALUE(raw_fields, '$.sp_submission_link.value') AS sp_submission_link,
             JSON_VALUE(raw_fields, '$.last_flow_incomplete.value') AS last_flow_incomplete,
-            JSON_VALUE(raw_fields, '$.SP_assigment_id.value')    AS last_assignment_name,
-            raw_fields
+            JSON_VALUE(raw_fields, '$.SP_assigment_id.value')    AS last_assignment_name
         FROM `{project}.{dataset}.contacts`
         WHERE JSON_VALUE(raw_fields, '$.program_type.value') = 'Summer'
           AND JSON_VALUE(raw_fields, '$.program_status.value') IN ('active', 'paused')
@@ -187,7 +186,6 @@ def _run_sync(client, project, dataset):
             "last_assignment_name": _clean_text(row.get("last_assignment_name")),
             "last_inbound_message": _clean_text(inbound.get("last_inbound_message")),
             "last_inbound_at": inbound.get("last_inbound_at"),
-            "raw_glific_fields": row.get("raw_fields"),
         }
 
         try:

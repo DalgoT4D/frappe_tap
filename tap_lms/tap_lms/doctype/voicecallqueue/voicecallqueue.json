@@ -73,9 +73,9 @@
             "label": "Vocallabs Agent ID"
         },
         {
-            "description": "The rendered status_template text that was sent in data_block at call time.",
+            "description": "First 500 characters of the rendered prompt sent at call time.",
             "fieldname": "rendered_prompt",
-            "fieldtype": "Long Text",
+            "fieldtype": "Small Text",
             "label": "Rendered Prompt"
         },
         {
@@ -103,7 +103,7 @@
     "index_web_pages_for_search": 0,
     "istable": 1,
     "links": [],
-    "modified": "2026-07-08 00:00:00.000000",
+    "modified": "2026-07-19 00:00:00.000000",
     "modified_by": "Administrator",
     "module": "TAP LMS",
     "name": "VoiceCallQueue",

@@ -230,7 +230,7 @@ def initiate_parent_call(pe_name, escalation_step, retry_count=0, campaign_name=
                 title="SP Vocallabs Tracking",
             )
 
-        # ── Write VoiceCallLog (audit trail) ───────────────────────────
+        # ── Write VoiceCallHistory row on ProgramEnrollment ────────────
         try:
             _write_voice_call_log(
                 pe=pe,
@@ -244,7 +244,7 @@ def initiate_parent_call(pe_name, escalation_step, retry_count=0, campaign_name=
             )
         except Exception as _log_exc:
             frappe.log_error(
-                message=f"Vocallabs: VoiceCallLog write failed for PE {pe.name}: {_log_exc}",
+                message=f"Vocallabs: VoiceCallHistory write failed for PE {pe.name}: {_log_exc}",
                 title="SP Vocallabs Tracking",
             )
 

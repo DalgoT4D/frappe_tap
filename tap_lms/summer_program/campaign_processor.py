@@ -126,7 +126,7 @@ def _run(campaign_name):
                 message=f"Campaign {campaign_name}, row {row.name}: {call_exc}",
             )
 
-        # ── Write VoiceCallLog (L-CP-003) ─────────────────────────────────
+        # ── Write VoiceCallHistory row on ProgramEnrollment ─────────────────
         try:
             _write_call_log(row, campaign_name, result)
         except Exception as log_exc:
@@ -262,6 +262,37 @@ def _schedule_next_recurrence(campaign_name):
     frappe.log_error(
         title="VoiceCallCampaign recurring",
         message=f"Scheduled next recurrence: {new_campaign.name} at {next_at}",
+    )
+
+
+def archive_old_call_history(max_rows_per_enrollment=50):
+    """Trim VoiceCallHistory child rows per enrollment to prevent unbounded growth.
+
+    Called manually or on a weekly cron. Keeps the most recent max_rows_per_enrollment
+    rows per enrollment. For a student called weekly for 2 years (100 calls), this
+    keeps the last 50 — enough history for analytics while bounding PE load size.
+
+    Safe to run any time — uses DELETE with ROW_NUMBER() to keep newest rows.
+    """
+    frappe.db.sql("""
+        DELETE FROM "tabVoiceCallHistory"
+        WHERE name IN (
+            SELECT name FROM (
+                SELECT name,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY parent
+                           ORDER BY call_placed_at DESC
+                       ) AS rn
+                FROM "tabVoiceCallHistory"
+                WHERE parenttype = 'ProgramEnrollment'
+            ) ranked
+            WHERE rn > %(max_rows)s
+        )
+    """, {"max_rows": max_rows_per_enrollment})
+
+    frappe.db.commit()
+    frappe.logger().info(
+        f"archive_old_call_history: trimmed enrollments to {max_rows_per_enrollment} most recent call rows."
     )
 
 
