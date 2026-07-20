@@ -1545,44 +1545,92 @@ def probe_token_health():
     Scheduled in hooks.py under the existing "0 * * * *" hourly block.
     Requires `bench --site <site> migrate` to register the scheduler entry.
     """
-    settings = get_glific_settings()
-    url = f"{settings.api_url}/api"
-
-    # The lightest possible query — just reads the current user's name.
-    probe_payload = {"query": "{ currentUser { user { name } } }"}
+    import time as _time
+    from tap_lms.monitoring import record_job
+    _t0 = _time.monotonic()
+    _status = "success"
+    _error = None
+    _token_status = "ok"
 
     try:
-        headers = get_glific_auth_headers()
-        resp = _GLIFIC_SESSION.post(
-            url, json=probe_payload, headers=headers, timeout=GLIFIC_TIMEOUT
-        )
+        settings = get_glific_settings()
+        url = f"{settings.api_url}/api"
 
-        if resp.status_code == 401:
-            frappe.logger().warning(
-                "probe_token_health: 401 from Glific — invalidating cached token "
-                "so next API call triggers fresh login."
-            )
-            _invalidate_stored_token()
-            frappe.log_error(
-                "probe_token_health detected stale Glific token (HTTP 401). "
-                "Token has been invalidated; next API call will re-authenticate. "
-                "If this fires repeatedly, check Glific credentials in Glific Settings.",
-                "Glific Token Health Alert",
-            )
-        elif resp.ok:
-            frappe.logger().debug(
-                f"probe_token_health: token OK (HTTP {resp.status_code})"
-            )
-        else:
-            frappe.logger().warning(
-                f"probe_token_health: unexpected HTTP {resp.status_code} — "
-                f"not a 401, so token not invalidated. Body: {resp.text[:200]}"
+        # The lightest possible query — just reads the current user's name.
+        probe_payload = {"query": "{ currentUser { user { name } } }"}
+
+        try:
+            headers = get_glific_auth_headers()
+            resp = _GLIFIC_SESSION.post(
+                url, json=probe_payload, headers=headers, timeout=GLIFIC_TIMEOUT
             )
 
-    except Exception as exc:
-        # Connection errors (timeout, DNS) don't indicate a bad token.
-        # Log the connectivity problem but don't invalidate — a valid token
-        # is better than no token when Glific comes back.
-        frappe.logger().error(
-            f"probe_token_health: connectivity error (not invalidating token): {exc}"
-        )
+            if resp.status_code == 401:
+                _token_status = "stale"
+                frappe.logger().warning(
+                    "probe_token_health: 401 from Glific — invalidating cached token "
+                    "so next API call triggers fresh login."
+                )
+                _invalidate_stored_token()
+                frappe.log_error(
+                    "probe_token_health detected stale Glific token (HTTP 401). "
+                    "Token has been invalidated; next API call will re-authenticate. "
+                    "If this fires repeatedly, check Glific credentials in Glific Settings.",
+                    "Glific Token Health Alert",
+                )
+                emit(
+                    severity="ERROR",
+                    message="glific_token_health",
+                    token_status="stale",
+                    http_status=resp.status_code,
+                )
+            elif resp.ok:
+                frappe.logger().debug(
+                    f"probe_token_health: token OK (HTTP {resp.status_code})"
+                )
+                # No structured log — absence of ERROR is the signal.
+            else:
+                _token_status = "unexpected"
+                frappe.logger().warning(
+                    f"probe_token_health: unexpected HTTP {resp.status_code} — "
+                    f"not a 401, so token not invalidated. Body: {resp.text[:200]}"
+                )
+                emit(
+                    severity="WARNING",
+                    message="glific_token_health",
+                    token_status="unexpected",
+                    http_status=resp.status_code,
+                    response_body=resp.text[:200],
+                )
+
+        except Exception as exc:
+            # Connection errors (timeout, DNS) don't indicate a bad token.
+            # Log the connectivity problem but don't invalidate — a valid token
+            # is better than no token when Glific comes back.
+            _token_status = "connectivity_error"
+            frappe.logger().error(
+                f"probe_token_health: connectivity error (not invalidating token): {exc}"
+            )
+            emit(
+                severity="WARNING",
+                message="glific_token_health",
+                token_status="connectivity_error",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+
+    except Exception as e:
+        _status = "error"
+        _error = str(e)
+        raise
+    finally:
+        try:
+            record_job(
+                job_name="probe_token_health",
+                status=_status,
+                duration_ms=(_time.monotonic() - _t0) * 1000,
+                error=_error,
+                token_status=_token_status,
+            )
+        except Exception:
+            pass

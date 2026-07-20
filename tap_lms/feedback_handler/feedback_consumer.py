@@ -257,6 +257,9 @@ class FeedbackConsumer:
                 f"Error processing submission {submission_id}: {error_msg}"
             )
 
+            # Classify retryability once so every path uses the same answer.
+            retryable = self.processor.is_retryable_error(e)
+
             # CR-026: make the failure DURABLY visible in tabError Log.
             # Downstream hooks (e.g. on_feedback_ready) call frappe.log_error
             # inside this same transaction — the rollback above erases those
@@ -275,21 +278,27 @@ class FeedbackConsumer:
                         "consumer process (it is not supervisor-managed) so it "
                         "reloads current code."
                     )
-                failure_reason = (
-                    f"Error processing submission {submission_id}: {error_msg}{hint}"
-                )
                 frappe.log_error(
-                    message=failure_reason,
+                    message=(
+                        f"Error processing submission {submission_id}: {error_msg}{hint}"
+                    ),
                     title="Feedback Consumer Failure",
                 )
+                # SRE: single structured log line per failure.
+                # All outcomes (retryable / non-retryable) use the same
+                # message name so metrics can be built on one filter.
+                # `retryable` and `failure_reason` are the two fields that
+                # distinguish action-on-call: retryable=true → wait and watch;
+                # retryable=false → check DLQ immediately.
                 emit(
-                    severity="ERROR",
+                    severity="WARN" if retryable else "ERROR",
                     message="feedback_processing_failed",
                     submission_id=submission_id or "unknown",
                     student_id=message_data.get("student_id") if message_data else None,
                     error=error_msg,
                     error_type=type(e).__name__,
-                    failure_reason=failure_reason,
+                    retryable=retryable,
+                    failure_reason="retryable_error" if retryable else "non_retryable_error",
                     retry_count=getattr(properties, "delivery_count", None),
                 )
                 frappe.db.commit()
@@ -297,36 +306,15 @@ class FeedbackConsumer:
                 # Never let logging failure mask the original error handling.
                 frappe.db.rollback()
 
-            # Determine if error is retryable
-            if self.processor.is_retryable_error(e):
-                failure_reason = (
+            if retryable:
+                frappe.logger().warning(
                     f"Retryable error for submission {submission_id}, will retry"
-                )
-                frappe.logger().warning(failure_reason)
-                emit(
-                    severity="WARN",
-                    message="feedback_processing_failed",
-                    submission_id=submission_id or "unknown",
-                    student_id=message_data.get("student_id") if message_data else None,
-                    error=error_msg,
-                    error_type=type(e).__name__,
-                    failure_reason=failure_reason,
-                    retry_count=getattr(properties, "delivery_count", None),
                 )
                 ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
             else:
                 frappe.logger().error(
                     f"Non-retryable error ({error_msg}) for submission "
                     f"{submission_id}, rejecting to DLQ"
-                )
-                emit(
-                    severity="ERROR",
-                    message="feedback_processing_failed",
-                    submission_id=submission_id or "unknown",
-                    student_id=message_data.get("student_id") if message_data else None,
-                    error=error_msg,
-                    error_type=type(e).__name__,
-                    retry_count=getattr(properties, "delivery_count", None),
                 )
                 try:
                     if submission_id:

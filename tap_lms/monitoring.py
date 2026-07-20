@@ -17,7 +17,7 @@
 #   - Routine http_request INFO logs emitted for metrics extraction
 #     but filtered out of Cloud Logging storage via Ops Agent config
 #
-# IMPORTANT: Every monitoring function swallows its own exceptions.
+# IMPORTANT: Every function swallows its own exceptions.
 # Monitoring must never crash the application.
 #
 # to enable log recycling where old logs are over written on 14th day:
@@ -41,6 +41,7 @@ import os
 import sys
 import traceback
 from logging.handlers import RotatingFileHandler
+from typing import Optional
 
 import frappe
 from frappe.utils import now_datetime
@@ -214,9 +215,9 @@ def record_request(
     method: str,
     status_code: int,
     duration_ms: float,
-    student_id: str = None,
-    glific_id: str = None,
-    user: str = None,
+    student_id: Optional[str] = None,
+    glific_id: Optional[str] = None,
+    user: Optional[str] = None,
 ) -> None:
     """
     Emit one log line per HTTP request. Called by middleware.after_request.
@@ -260,7 +261,7 @@ import time as _time  # local alias — avoid shadowing any frappe.utils.now imp
 _job_start_times: dict = {}  # keyed by method name; good enough for single-threaded RQ workers
 
 
-def before_job_hook(method: str = None, kwargs: dict = None, **_) -> None:
+def before_job_hook(method: Optional[str] = None, kwargs: Optional[dict] = None, **_) -> None:
     """
     Called by Frappe v15 before_job hook for every background/scheduled job.
     Stores the start time so after_job_hook can compute duration.
@@ -271,7 +272,7 @@ def before_job_hook(method: str = None, kwargs: dict = None, **_) -> None:
         pass
 
 
-def after_job_hook(method: str = None, kwargs: dict = None, result=None, **_) -> None:
+def after_job_hook(method: Optional[str] = None, kwargs: Optional[dict] = None, result=None, **_) -> None:
     """
     Called by Frappe v15 after_job hook for every background/scheduled job.
     Emits a background_job log line with duration and outcome.
@@ -301,8 +302,8 @@ def after_job_hook(method: str = None, kwargs: dict = None, result=None, **_) ->
 def record_job(
     job_name: str,
     status: str,
-    duration_ms: float = None,
-    error: str = None,
+    duration_ms: Optional[float] = None,
+    error: Optional[str] = None,
     **extra,
 ) -> None:
     """
@@ -331,7 +332,7 @@ def record_dispatcher_cycle(
     skipped: int,
     errors: int,
     duration_ms: float,
-    queue_depth: int = None,
+    queue_depth: Optional[int] = None,
 ) -> None:
     """
     Specific metric for pe_dispatcher — the 1-minute hot cron path.
@@ -362,9 +363,9 @@ def record_submission_published(
     submission_id: str,
     student_id: str,
     assign_id: str,
-    submission_type: str = None,
-    queue: str = None,
-    queue_name: str = None,  # accepted alias — submission.py passes queue_name
+    submission_type: Optional[str] = None,
+    queue: Optional[str] = None,
+    queue_name: Optional[str] = None,  # accepted alias — submission.py passes queue_name
 ) -> None:
     """
     Emitted immediately after the message is published to RabbitMQ.
@@ -385,7 +386,7 @@ def record_submission_published(
 
 def record_feedback_result_received(
     submission_id: str,
-    student_id: str = None,
+    student_id: Optional[str] = None,
 ) -> None:
     emit(
         severity="INFO",
@@ -407,10 +408,10 @@ def record_feedback_processing_failed(
     submission_id: str,
     error: str,
     retryable: bool,
-    failure_reason: str = None,  # classify_error() reason string e.g. "not_found"
-    error_type: str = None,  # exception class name e.g. "ValueError"
-    retry_count: int = None,  # RabbitMQ delivery_count if available
-    student_id: str = None,
+    failure_reason: Optional[str] = None,  # classify_error() reason string e.g. "not_found"
+    error_type: Optional[str] = None,  # exception class name e.g. "ValueError"
+    retry_count: Optional[int] = None,  # RabbitMQ delivery_count if available
+    student_id: Optional[str] = None,
 ) -> None:
     emit(
         severity="ERROR",
@@ -464,7 +465,7 @@ def on_error_log_insert(doc, method) -> None:
 def record_glific_notification(
     submission_id: str,
     success: bool,
-    error: str = None,
+    error: Optional[str] = None,
 ) -> None:
     emit(
         severity="INFO" if success else "WARNING",
