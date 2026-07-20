@@ -457,11 +457,13 @@ def student_whatsapp_response(phone_number):
         student.save(ignore_permissions=True)
         frappe.db.commit()
 
+        batch_id = latest_enrollment.batch or ""
         latest_course_name = latest_enrollment.vertical or ""
         if latest_course_name:
             _respond(200, {
                 "course1": latest_course_name,
                 "courses_num": 1,
+                "batch_id": batch_id,
             })
             return
 
@@ -475,6 +477,7 @@ def student_whatsapp_response(phone_number):
             for index, course_name in enumerate(course_names, start=1)
         }
         response["courses_num"] = len(course_names)
+        response["batch_id"] = batch_id
         _respond(200, response)
         return
     except Exception as exc:

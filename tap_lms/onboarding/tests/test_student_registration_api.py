@@ -214,6 +214,7 @@ class TestStudentRegistrationAPI(unittest.TestCase):
         self.assertIsInstance(data, dict)
         self.assertIn("courses_num", data)
         self.assertIsInstance(data["courses_num"], int)
+        self.assertIn("batch_id", data)
         for index in range(1, data["courses_num"] + 1):
             self.assertIn(f"course{index}", data)
 
