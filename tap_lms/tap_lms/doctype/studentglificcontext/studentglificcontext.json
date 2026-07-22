@@ -1,0 +1,106 @@
+{
+    "actions": [],
+    "allow_rename": 0,
+    "autoname": "format:GLC-{student}",
+    "creation": "2026-07-06 00:00:00.000000",
+    "default_view": "List",
+    "doctype": "DocType",
+    "editable_grid": 1,
+    "engine": "InnoDB",
+    "field_order": [
+        "student",
+        "last_synced_at",
+        "sync_section",
+        "sp_submission_link",
+        "last_flow_incomplete",
+        "last_assignment_name",
+        "last_inbound_message",
+        "last_inbound_at"
+    ],
+    "fields": [
+        {
+            "fieldname": "student",
+            "fieldtype": "Link",
+            "in_list_view": 1,
+            "label": "Student",
+            "options": "Student",
+            "reqd": 1,
+            "unique": 1,
+            "search_index": 1
+        },
+        {
+            "description": "Timestamp of the last successful BigQuery sync for this student. Used to detect stale records.",
+            "fieldname": "last_synced_at",
+            "fieldtype": "Datetime",
+            "in_list_view": 1,
+            "label": "Last Synced At"
+        },
+        {
+            "fieldname": "sync_section",
+            "fieldtype": "Section Break",
+            "label": "Synced Glific Fields"
+        },
+        {
+            "description": "What the student said when they clicked the problem button in the WhatsApp flow. Stored in Glific as sp_submission_link. Often empty or an emoji for escalated students. When non-empty and meaningful, Didi opens by acknowledging this specific blocker.",
+            "fieldname": "sp_submission_link",
+            "fieldtype": "Small Text",
+            "label": "Problem Reported"
+        },
+        {
+            "default": "0",
+            "description": "Whether the WhatsApp flow broke mid-way without the student completing it. Set by the Glific flow as last_flow_incomplete.",
+            "fieldname": "last_flow_incomplete",
+            "fieldtype": "Check",
+            "label": "Last Flow Incomplete"
+        },
+        {
+            "description": "The exact assignment name the student was working on when they last interacted with the flow. Set by Glific as SP_assigment_id. Often null for escalated students who dropped before reaching the assignment node. Fall back to course name when null.",
+            "fieldname": "last_assignment_name",
+            "fieldtype": "Data",
+            "label": "Last Assignment Name"
+        },
+        {
+            "description": "Body of the student's most recent inbound WhatsApp message. Synced from BigQuery messages table. Useful for Didi to reference what the student last said.",
+            "fieldname": "last_inbound_message",
+            "fieldtype": "Small Text",
+            "label": "Last Inbound Message"
+        },
+        {
+            "description": "Timestamp of the most recent inbound message from the student.",
+            "fieldname": "last_inbound_at",
+            "fieldtype": "Datetime",
+            "label": "Last Inbound At"
+        }
+    ],
+    "index_web_pages_for_search": 0,
+    "links": [
+        {
+            "link_doctype": "Student",
+            "link_fieldname": "student"
+        }
+    ],
+    "modified": "2026-07-19 00:00:00.000000",
+    "modified_by": "Administrator",
+    "module": "TAP LMS",
+    "name": "StudentGlificContext",
+    "naming_rule": "Expression",
+    "owner": "Administrator",
+    "permissions": [
+        {
+            "create": 1,
+            "delete": 1,
+            "email": 0,
+            "export": 1,
+            "print": 0,
+            "read": 1,
+            "report": 1,
+            "role": "System Manager",
+            "share": 0,
+            "write": 1
+        }
+    ],
+    "sort_field": "last_synced_at",
+    "sort_order": "DESC",
+    "states": [],
+    "track_changes": 0
+}

@@ -409,7 +409,6 @@ def handle_escalation(pe_row):
         # The Vocallabs module handles its own retry/DLQ; the dispatcher
         # tick continues without waiting on the actual call.
 
-
         frappe.enqueue(
             "tap_lms.summer_program.vocallabs.initiate_parent_call",
             queue="long",
@@ -419,10 +418,42 @@ def handle_escalation(pe_row):
             escalation_step=step_config,
         )
 
-
         log_event(pe, "escalation_sent", trigger_source="dispatcher",
                   details={"step": next_step, "escalation_type": "parent_call"})
         return
+
+    # Didi continuation call: any non-parent_call step with enable_voice_call = 1,
+    # when VoiceAgentSettings.enable_continuation_calls is on (master switch).
+    # This covers Track B — students who have submitted before and are slipping.
+    # The nudge_config_override on the step (if set) forces a specific nudge type;
+    # otherwise situation is auto-computed by _compute_situation() at call time.
+    if step_config.get("enable_voice_call"):
+        try:
+            _settings = frappe.get_single("VoiceAgentSettings")
+            if getattr(_settings, "enable_continuation_calls", 0):
+                _step_for_call = dict(step_config)
+                # Pass nudge_config_override so vocallabs.py can skip situation
+                # auto-computation when the admin has pinned a specific nudge.
+                frappe.enqueue(
+                    "tap_lms.summer_program.vocallabs.initiate_parent_call",
+                    queue="long",
+                    timeout=300,
+                    enqueue_after_commit=True,
+                    pe_name=pe.name,
+                    escalation_step=_step_for_call,
+                )
+                log_event(pe, "voice_call_queued", trigger_source="dispatcher",
+                          details={
+                              "step": next_step,
+                              "escalation_type": escalation_type,
+                              "nudge_override": step_config.get("nudge_config_override"),
+                          })
+        except Exception as _exc:
+            frappe.log_error(
+                message=f"Continuation call enqueue failed for PE {pe.name}: {_exc}",
+                title="SP Vocallabs Continuation",
+            )
+        # Fall through to also fire the WhatsApp flow (belt-and-suspenders).
 
     # Text or voice-note channels → fire SP_Escalation flow.
 

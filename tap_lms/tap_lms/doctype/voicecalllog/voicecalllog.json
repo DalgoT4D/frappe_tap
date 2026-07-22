@@ -1,0 +1,158 @@
+{
+    "actions": [],
+    "allow_rename": 0,
+    "autoname": "hash",
+    "creation": "2026-07-08 00:00:00.000000",
+    "default_view": "List",
+    "doctype": "DocType",
+    "engine": "InnoDB",
+    "field_order": [
+        "enrollment",
+        "student",
+        "campaign",
+        "col1",
+        "situation",
+        "language",
+        "archetype",
+        "agent_id",
+        "call_section",
+        "call_placed_at",
+        "outcome",
+        "duration_seconds",
+        "reengaged_within_48h",
+        "prompt_section",
+        "rendered_prompt",
+        "error_message",
+        "vocallabs_section",
+        "vocallabs_prospect_id",
+        "vocallabs_call_id"
+    ],
+    "fields": [
+        {
+            "fieldname": "enrollment",
+            "fieldtype": "Link",
+            "in_list_view": 1,
+            "label": "Enrollment",
+            "options": "ProgramEnrollment",
+            "reqd": 1,
+            "search_index": 1
+        },
+        {
+            "fieldname": "student",
+            "fieldtype": "Link",
+            "in_list_view": 1,
+            "label": "Student",
+            "options": "Student"
+        },
+        {
+            "fieldname": "campaign",
+            "fieldtype": "Link",
+            "in_list_view": 1,
+            "label": "Campaign",
+            "options": "VoiceCallCampaign"
+        },
+        {"fieldname": "col1", "fieldtype": "Column Break"},
+        {
+            "fieldname": "situation",
+            "fieldtype": "Data",
+            "in_list_view": 1,
+            "label": "Situation"
+        },
+        {
+            "fieldname": "language",
+            "fieldtype": "Data",
+            "label": "Language"
+        },
+        {
+            "fieldname": "archetype",
+            "fieldtype": "Data",
+            "label": "Archetype"
+        },
+        {
+            "fieldname": "agent_id",
+            "fieldtype": "Data",
+            "label": "Vocallabs Agent ID"
+        },
+        {
+            "fieldname": "call_section",
+            "fieldtype": "Section Break",
+            "label": "Call Outcome"
+        },
+        {
+            "fieldname": "call_placed_at",
+            "fieldtype": "Datetime",
+            "in_list_view": 1,
+            "label": "Call Placed At"
+        },
+        {
+            "fieldname": "outcome",
+            "fieldtype": "Select",
+            "in_list_view": 1,
+            "label": "Outcome",
+            "options": "\nanswered\nno_answer\nfailed\nskipped"
+        },
+        {
+            "fieldname": "duration_seconds",
+            "fieldtype": "Int",
+            "label": "Duration (seconds)"
+        },
+        {
+            "default": "0",
+            "description": "Set by a scheduled job 48 hours after the call — checks if a submission_received event appeared in ProgramEventLog after call_placed_at.",
+            "fieldname": "reengaged_within_48h",
+            "fieldtype": "Check",
+            "label": "Re-engaged Within 48h"
+        },
+        {
+            "fieldname": "prompt_section",
+            "fieldtype": "Section Break",
+            "label": "Prompt Sent"
+        },
+        {
+            "description": "The exact rendered prompt text sent in data_block at call time. Stored for audit and analysis.",
+            "fieldname": "rendered_prompt",
+            "fieldtype": "Long Text",
+            "label": "Rendered Prompt"
+        },
+        {
+            "fieldname": "error_message",
+            "fieldtype": "Small Text",
+            "label": "Error / Skip Reason"
+        },
+        {
+            "fieldname": "vocallabs_section",
+            "fieldtype": "Section Break",
+            "label": "Vocallabs References"
+        },
+        {
+            "fieldname": "vocallabs_prospect_id",
+            "fieldtype": "Data",
+            "label": "Prospect ID"
+        },
+        {
+            "fieldname": "vocallabs_call_id",
+            "fieldtype": "Data",
+            "label": "Call ID"
+        }
+    ],
+    "links": [
+        {"link_doctype": "ProgramEnrollment", "link_fieldname": "enrollment"},
+        {"link_doctype": "VoiceCallCampaign", "link_fieldname": "campaign"}
+    ],
+    "modified": "2026-07-08 00:00:00.000000",
+    "modified_by": "Administrator",
+    "module": "TAP LMS",
+    "name": "VoiceCallLog",
+    "naming_rule": "Random",
+    "owner": "Administrator",
+    "permissions": [
+        {
+            "create": 1, "delete": 0, "export": 1,
+            "read": 1, "report": 1, "role": "System Manager", "write": 1
+        }
+    ],
+    "sort_field": "call_placed_at",
+    "sort_order": "DESC",
+    "states": [],
+    "track_changes": 0
+}

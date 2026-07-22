@@ -1,0 +1,211 @@
+{
+    "actions": [],
+    "allow_rename": 0,
+    "autoname": "format:{nudge_type}",
+    "creation": "2026-07-06 00:00:00.000000",
+    "default_view": "List",
+    "doctype": "DocType",
+    "editable_grid": 1,
+    "engine": "InnoDB",
+    "field_order": [
+        "nudge_type",
+        "display_name",
+        "priority",
+        "is_active",
+        "situation_label",
+        "description",
+        "info_section",
+        "default_template_config",
+        "language_templates",
+        "reinitiation_keyword",
+        "call_script_note",
+        "conditions_section",
+        "require_prior_submission",
+        "require_no_weekly_submission",
+        "require_active_streak",
+        "require_program_paused",
+        "require_grace_window",
+        "min_week",
+        "min_submission_count",
+        "applicable_escalation_types",
+        "applicable_submission_types",
+        "agent_prompt_snippet"
+    ],
+    "fields": [
+        {
+            "description": "Machine key used in code and as the autoname. Must match exactly what _compute_situation() references. Options: continuation, streak_protection, so_close, real_blocker, first_submission, grace_deadline, reinitiation, celebration.",
+            "fieldname": "nudge_type",
+            "fieldtype": "Data",
+            "in_list_view": 1,
+            "label": "Nudge Type",
+            "reqd": 1,
+            "unique": 1
+        },
+        {
+            "fieldname": "display_name",
+            "fieldtype": "Data",
+            "in_list_view": 1,
+            "label": "Display Name"
+        },
+        {
+            "description": "Evaluation order. Lower number = checked first. The first matching active nudge type wins. Change this to reorder without touching code.",
+            "fieldname": "priority",
+            "fieldtype": "Int",
+            "in_list_view": 1,
+            "label": "Priority",
+            "reqd": 1
+        },
+        {
+            "default": "1",
+            "description": "When unchecked, this nudge type is skipped entirely during situation computation.",
+            "fieldname": "is_active",
+            "fieldtype": "Check",
+            "in_list_view": 1,
+            "label": "Is Active"
+        },
+        {
+            "description": "The value passed in data_block['situation'] to Vocallabs at call time. The Vocallabs agent prompt branches on this. Examples: returning_not_submitted, streak_at_risk, deadline_live.",
+            "fieldname": "situation_label",
+            "fieldtype": "Data",
+            "label": "Situation Label",
+            "reqd": 1
+        },
+        {
+            "fieldname": "description",
+            "fieldtype": "Long Text",
+            "label": "Description",
+            "description": "Admin reference: who gets this call, what it is trying to accomplish, and what the expected outcome is."
+        },
+        {
+            "fieldname": "info_section",
+            "fieldtype": "Section Break",
+            "label": "Template and Script"
+        },
+        {
+            "description": "Fallback ParentCallConfig used when no LearningUnit-attached config is found for this nudge type. If set, the resolver tries (nudge_type + student language) here before falling back to VoiceAgentSettings.default_parent_call_config.",
+            "fieldname": "default_template_config",
+            "fieldtype": "Link",
+            "label": "Default Template Config",
+            "options": "ParentCallConfig"
+        },
+        {
+            "description": "N7 (Reinitiation) only. The keyword the student types on WhatsApp to restart a paused program. Confirm from Manu or from the Fencesitter flow JSON keyword trigger node.",
+            "fieldname": "reinitiation_keyword",
+            "fieldtype": "Data",
+            "label": "Reinitiation Keyword"
+        },
+        {
+            "description": "Guidance for whoever writes the Vocallabs agent prompt for this nudge type. What tone, what the specific ask is, common parent responses to handle.",
+            "fieldname": "call_script_note",
+            "fieldtype": "Long Text",
+            "label": "Call Script Notes"
+        },
+        {
+            "fieldname": "conditions_section",
+            "fieldtype": "Section Break",
+            "label": "Trigger Conditions"
+        },
+        {
+            "default": "0",
+            "description": "When checked: student must have submission_count > 0. Ensures this nudge only fires for students who have submitted at least once before.",
+            "fieldname": "require_prior_submission",
+            "fieldtype": "Check",
+            "label": "Require Prior Submission"
+        },
+        {
+            "default": "0",
+            "description": "When checked: weekly_submission_done must be 0. Student has not submitted this week yet.",
+            "fieldname": "require_no_weekly_submission",
+            "fieldtype": "Check",
+            "label": "Require No Weekly Submission"
+        },
+        {
+            "default": "0",
+            "description": "When checked: current_streak must be > 0. Student is on an active streak that is at risk.",
+            "fieldname": "require_active_streak",
+            "fieldtype": "Check",
+            "label": "Require Active Streak"
+        },
+        {
+            "default": "0",
+            "description": "When checked: program_status must be paused. Use for N7 (Reinitiation) only.",
+            "fieldname": "require_program_paused",
+            "fieldtype": "Check",
+            "label": "Require Program Paused"
+        },
+        {
+            "default": "0",
+            "description": "When checked: resolved_flow_state must be grace_waiting. Use for N6 (Grace Deadline) only.",
+            "fieldname": "require_grace_window",
+            "fieldtype": "Check",
+            "label": "Require Grace Window"
+        },
+        {
+            "default": "0",
+            "description": "Minimum program week. current_week must be >= this value. Set to 3 for N4 (Real Blocker) which targets week 3+ students with complex submissions.",
+            "fieldname": "min_week",
+            "fieldtype": "Int",
+            "label": "Minimum Week"
+        },
+        {
+            "default": "0",
+            "description": "Minimum submission count. submission_count must be >= this value. Set to 1 for nudges targeting students who have submitted before.",
+            "fieldname": "min_submission_count",
+            "fieldtype": "Int",
+            "label": "Minimum Submission Count"
+        },
+        {
+            "description": "Which escalation step types can trigger this nudge. Leave empty to match any escalation type. Add rows to restrict to specific types.",
+            "fieldname": "applicable_escalation_types",
+            "fieldtype": "Table",
+            "label": "Applicable Escalation Types",
+            "options": "VoiceNudgeEscalationType"
+        },
+        {
+            "description": "Which current_expected_submission_types this nudge applies to. Leave empty to match any submission type. Used for N4 to restrict to complex submissions (image, summary_text_voice).",
+            "fieldname": "applicable_submission_types",
+            "fieldtype": "Table",
+            "label": "Applicable Submission Types",
+            "options": "VoiceNudgeSubmissionType"
+        },
+        {
+            "description": "Per-language ParentCallConfig templates for this nudge type. At call time, the system looks up the student's language here first, then falls back to Default Template Config, then VoiceAgentSettings.default_parent_call_config.",
+            "fieldname": "language_templates",
+            "fieldtype": "Table",
+            "label": "Language Templates",
+            "options": "VoiceNudgeLanguageTemplate"
+        },
+        {
+            "description": "Paste the relevant section of the Vocallabs agent_prompt for this nudge type here. This is documentation only \u2014 not functional. Keeps the Frappe config and Vocallabs dashboard in sync for auditing when prompts change.",
+            "fieldname": "agent_prompt_snippet",
+            "fieldtype": "Long Text",
+            "label": "Vocallabs Agent Prompt Snippet (reference)"
+        }
+    ],
+    "index_web_pages_for_search": 1,
+    "links": [],
+    "modified": "2026-07-08 12:00:00.000000",
+    "modified_by": "Administrator",
+    "module": "TAP LMS",
+    "name": "VoiceNudgeConfig",
+    "naming_rule": "Expression",
+    "owner": "Administrator",
+    "permissions": [
+        {
+            "create": 1,
+            "delete": 1,
+            "email": 1,
+            "export": 1,
+            "print": 1,
+            "read": 1,
+            "report": 1,
+            "role": "System Manager",
+            "share": 1,
+            "write": 1
+        }
+    ],
+    "sort_field": "priority",
+    "sort_order": "ASC",
+    "states": [],
+    "track_changes": 1
+}

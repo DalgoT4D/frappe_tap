@@ -72,7 +72,7 @@ scheduler_events = {
     #     "tap_lms.summer_program.scheduler.run_daily_actions",
     #     "tap_lms.summer_program.batch_activation.check_auto_activate",
     # ],
-    # "cron": {
+    "cron": {
     #     "*/1 * * * *": [
     #         "tap_lms.summer_program.pe_dispatcher.process_program_actions",
     #     ],
@@ -147,7 +147,16 @@ scheduler_events = {
     #     # "*/10 * * * *": [
     #     #     "tap_lms.summer_program.scheduler.periodic_glific_reconcile",
     #     # ],
-    # },
+        # Didi voice agent: hourly campaign processor + reengagement check
+        "0 * * * *": [
+            "tap_lms.summer_program.campaign_processor.trigger_scheduled_campaigns",
+            "tap_lms.summer_program.campaign_processor.check_reengagement",
+        ],
+        # Didi voice agent: BigQuery sync Mon-Sat 12:00 UTC (5:30 PM IST)
+        "0 12 * * 1-6": [
+            "tap_lms.summer_program.bigquery_sync.sync_bigquery_glific_context",
+        ],
+    },
 }
 
 # Page configurations

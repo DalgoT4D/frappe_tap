@@ -1,0 +1,312 @@
+{
+    "actions": [],
+    "allow_rename": 1,
+    "autoname": "format:VCMP-{YYYY}-{MM}-{DD}-{#####}",
+    "creation": "2026-07-08 00:00:00.000000",
+    "default_view": "List",
+    "doctype": "DocType",
+    "engine": "InnoDB",
+    "field_order": [
+        "campaign_name",
+        "status",
+        "col1",
+        "scheduled_at",
+        "recurrence",
+        "filters_section",
+        "source_type",
+        "source_batch",
+        "source_program",
+        "col2",
+        "language_filter",
+        "nudge_type_filters",
+        "call_settings_section",
+        "call_window_start_override",
+        "call_window_end_override",
+        "max_concurrent_calls",
+        "pre_call_recheck",
+        "stats_section",
+        "total_students",
+        "calls_pending",
+        "calls_placed",
+        "calls_answered",
+        "calls_no_answer",
+        "calls_failed",
+        "calls_skipped",
+        "started_at",
+        "completed_at",
+        "notes",
+        "analytics_section",
+        "re_engagement_rate",
+        "analytics_last_updated",
+        "analytics",
+        "queue_section",
+        "call_queue"
+    ],
+    "fields": [
+        {
+            "fieldname": "campaign_name",
+            "fieldtype": "Data",
+            "in_list_view": 1,
+            "label": "Campaign Name",
+            "reqd": 1
+        },
+        {
+            "default": "Draft",
+            "fieldname": "status",
+            "fieldtype": "Select",
+            "in_list_view": 1,
+            "label": "Status",
+            "options": "Draft\nGenerating\nReady\nRunning\nPaused\nComplete\nError",
+            "reqd": 1
+        },
+        {
+            "fieldname": "col1",
+            "fieldtype": "Column Break"
+        },
+        {
+            "description": "If set, campaign starts automatically at this time. Leave blank to start manually.",
+            "fieldname": "scheduled_at",
+            "fieldtype": "Datetime",
+            "in_list_view": 1,
+            "label": "Scheduled At"
+        },
+        {
+            "description": "One-time: run once. Daily/Weekly: regenerate queue and rerun on schedule.",
+            "fieldname": "recurrence",
+            "fieldtype": "Select",
+            "label": "Recurrence",
+            "options": "One-time\nDaily\nWeekly"
+        },
+        {
+            "fieldname": "filters_section",
+            "fieldtype": "Section Break",
+            "label": "Filters \u2014 Who To Call"
+        },
+        {
+            "description": "Filter by Batch, Program, or leave blank to include all active Summer enrollments.",
+            "fieldname": "source_type",
+            "fieldtype": "Select",
+            "label": "Source Type",
+            "options": "\nBatch\nProgram\nAll Active"
+        },
+        {
+            "depends_on": "eval:doc.source_type == 'Batch'",
+            "fieldname": "source_batch",
+            "fieldtype": "Link",
+            "label": "Batch",
+            "options": "Batch"
+        },
+        {
+            "depends_on": "eval:doc.source_type == 'Program'",
+            "fieldname": "source_program",
+            "fieldtype": "Link",
+            "label": "Program",
+            "options": "Program"
+        },
+        {
+            "fieldname": "col2",
+            "fieldtype": "Column Break"
+        },
+        {
+            "description": "Limit to one language. Leave blank to include all languages.",
+            "fieldname": "language_filter",
+            "fieldtype": "Link",
+            "label": "Language Filter",
+            "options": "TAP Language"
+        },
+        {
+            "description": "Which nudge types to include. Leave empty to include all active nudge types.",
+            "fieldname": "nudge_type_filters",
+            "fieldtype": "Table",
+            "label": "Nudge Type Filters",
+            "options": "VoiceCallCampaignNudgeFilter"
+        },
+        {
+            "fieldname": "call_settings_section",
+            "fieldtype": "Section Break",
+            "label": "Call Settings Override"
+        },
+        {
+            "description": "Override VoiceAgentSettings.call_window_start for this campaign only. Leave blank to use global setting.",
+            "fieldname": "call_window_start_override",
+            "fieldtype": "Time",
+            "label": "Call Window Start (override)"
+        },
+        {
+            "fieldname": "call_window_end_override",
+            "fieldtype": "Time",
+            "label": "Call Window End (override)"
+        },
+        {
+            "default": "1",
+            "description": "Maximum calls to place in parallel. Keep at 1 for safety. Increase only after testing Vocallabs rate limits.",
+            "fieldname": "max_concurrent_calls",
+            "fieldtype": "Int",
+            "label": "Max Concurrent Calls"
+        },
+        {
+            "default": "1",
+            "description": "Before placing each call, recompute the student's situation. If it changed to 'unknown' or 'celebration' (positive), skip the call. Strongly recommended.",
+            "fieldname": "pre_call_recheck",
+            "fieldtype": "Check",
+            "label": "Pre-call Situation Recheck"
+        },
+        {
+            "fieldname": "stats_section",
+            "fieldtype": "Section Break",
+            "label": "Campaign Stats"
+        },
+        {
+            "fieldname": "total_students",
+            "fieldtype": "Int",
+            "label": "Total Students",
+            "read_only": 1
+        },
+        {
+            "fieldname": "calls_pending",
+            "fieldtype": "Int",
+            "label": "Pending",
+            "read_only": 1
+        },
+        {
+            "fieldname": "calls_placed",
+            "fieldtype": "Int",
+            "label": "Placed",
+            "read_only": 1
+        },
+        {
+            "fieldname": "calls_answered",
+            "fieldtype": "Int",
+            "label": "Answered",
+            "read_only": 1
+        },
+        {
+            "fieldname": "calls_no_answer",
+            "fieldtype": "Int",
+            "label": "No Answer",
+            "read_only": 1
+        },
+        {
+            "fieldname": "calls_failed",
+            "fieldtype": "Int",
+            "label": "Failed",
+            "read_only": 1
+        },
+        {
+            "fieldname": "calls_skipped",
+            "fieldtype": "Int",
+            "label": "Skipped",
+            "read_only": 1
+        },
+        {
+            "fieldname": "started_at",
+            "fieldtype": "Datetime",
+            "label": "Started At",
+            "read_only": 1
+        },
+        {
+            "fieldname": "completed_at",
+            "fieldtype": "Datetime",
+            "label": "Completed At",
+            "read_only": 1
+        },
+        {
+            "fieldname": "notes",
+            "fieldtype": "Long Text",
+            "label": "Notes"
+        },
+        {
+            "fieldname": "queue_section",
+            "fieldtype": "Section Break",
+            "label": "Call Queue"
+        },
+        {
+            "description": "Generated by clicking Generate Queue. Review before starting calls. You can delete individual rows.",
+            "fieldname": "call_queue",
+            "fieldtype": "Table",
+            "label": "Call Queue",
+            "options": "VoiceCallQueue"
+        },
+        {
+            "fieldname": "analytics_section",
+            "fieldtype": "Section Break",
+            "label": "Analytics"
+        },
+        {
+            "description": "Overall: % of answered calls where student submitted within 48 hours. Click Refresh Analytics to update.",
+            "fieldname": "re_engagement_rate",
+            "fieldtype": "Float",
+            "label": "Overall Re-engagement Rate %",
+            "precision": "1",
+            "read_only": 1
+        },
+        {
+            "fieldname": "analytics_last_updated",
+            "fieldtype": "Datetime",
+            "label": "Analytics Last Updated",
+            "read_only": 1
+        },
+        {
+            "description": "Per-situation breakdown. Updated by Refresh Analytics.",
+            "fieldname": "analytics",
+            "fieldtype": "Table",
+            "label": "Per-Situation Breakdown",
+            "options": "VoiceCallCampaignAnalytics",
+            "read_only": 1
+        }
+    ],
+    "links": [],
+    "modified": "2026-07-08 12:00:00.000000",
+    "modified_by": "Administrator",
+    "module": "TAP LMS",
+    "name": "VoiceCallCampaign",
+    "naming_rule": "Expression",
+    "owner": "Administrator",
+    "permissions": [
+        {
+            "create": 1,
+            "delete": 1,
+            "email": 1,
+            "export": 1,
+            "print": 1,
+            "read": 1,
+            "report": 1,
+            "role": "System Manager",
+            "share": 1,
+            "write": 1
+        }
+    ],
+    "sort_field": "modified",
+    "sort_order": "DESC",
+    "states": [
+        {
+            "color": "Gray",
+            "title": "Draft"
+        },
+        {
+            "color": "Yellow",
+            "title": "Generating"
+        },
+        {
+            "color": "Blue",
+            "title": "Ready"
+        },
+        {
+            "color": "Green",
+            "title": "Running"
+        },
+        {
+            "color": "Orange",
+            "title": "Paused"
+        },
+        {
+            "color": "Green",
+            "title": "Complete"
+        },
+        {
+            "color": "Red",
+            "title": "Error"
+        }
+    ],
+    "track_changes": 1
+}

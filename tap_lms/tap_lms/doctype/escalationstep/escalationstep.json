@@ -1,64 +1,81 @@
 {
- "actions": [],
- "allow_rename": 1,
- "creation": "2026-05-01 13:19:27.368049",
- "doctype": "DocType",
- "editable_grid": 1,
- "engine": "InnoDB",
- "field_order": [
-  "escalation_order",
-  "escalation_type",
-  "points_awarded",
-  "hours_after_previous",
-  "is_active"
- ],
- "fields": [
-  {
-   "fieldname": "escalation_order",
-   "fieldtype": "Int",
-   "in_list_view": 1,
-   "label": "Escalation Order",
-   "reqd": 1
-  },
-  {
-   "default": "0",
-   "description": "Points if student submits at THIS step. Higher for earlier steps.",
-   "fieldname": "points_awarded",
-   "fieldtype": "Int",
-   "label": "Points Awarded"
-  },
-  {
-   "default": "24",
-   "fieldname": "hours_after_previous",
-   "fieldtype": "Float",
-   "label": "Hours After Previous"
-  },
-  {
-   "default": "1",
-   "fieldname": "is_active",
-   "fieldtype": "Check",
-   "label": "Is Active"
-  },
-  {
-   "description": "Drives Glific template selection within SP_Escalation flow.",
-   "fieldname": "escalation_type",
-   "fieldtype": "Select",
-   "in_list_view": 1,
-   "label": "Escalation Type",
-   "options": "help_note_a\nhelp_note_b\nvoice_note\nparent_call\nprogram_pause",
-   "reqd": 1
-  }
- ],
- "index_web_pages_for_search": 1,
- "istable": 1,
- "links": [],
- "modified": "2026-05-12 17:25:53.840586",
- "modified_by": "Administrator",
- "module": "TAP LMS",
- "name": "EscalationStep",
- "owner": "Administrator",
- "permissions": [],
- "sort_field": "modified",
- "sort_order": "DESC",
- "states": []
+    "actions": [],
+    "allow_rename": 1,
+    "creation": "2026-05-01 13:19:27.368049",
+    "doctype": "DocType",
+    "editable_grid": 1,
+    "engine": "InnoDB",
+    "field_order": [
+        "escalation_order",
+        "escalation_type",
+        "points_awarded",
+        "hours_after_previous",
+        "is_active",
+        "enable_voice_call",
+        "nudge_config_override"
+    ],
+    "fields": [
+        {
+            "fieldname": "escalation_order",
+            "fieldtype": "Int",
+            "in_list_view": 1,
+            "label": "Escalation Order",
+            "reqd": 1
+        },
+        {
+            "default": "0",
+            "description": "Points if student submits at THIS step. Higher for earlier steps.",
+            "fieldname": "points_awarded",
+            "fieldtype": "Int",
+            "label": "Points Awarded"
+        },
+        {
+            "default": "24",
+            "fieldname": "hours_after_previous",
+            "fieldtype": "Float",
+            "label": "Hours After Previous"
+        },
+        {
+            "default": "1",
+            "fieldname": "is_active",
+            "fieldtype": "Check",
+            "label": "Is Active"
+        },
+        {
+            "description": "Drives Glific template selection within SP_Escalation flow.",
+            "fieldname": "escalation_type",
+            "fieldtype": "Select",
+            "in_list_view": 1,
+            "label": "Escalation Type",
+            "options": "help_note_a\nhelp_note_b\nvoice_note\nparent_call\nprogram_pause",
+            "reqd": 1
+        },
+        {
+            "default": "0",
+            "description": "When ticked, this escalation step also fires a Vocallabs call (in addition to the WhatsApp flow). Requires VoiceAgentSettings.enable_continuation_calls to be on for non-parent_call steps.",
+            "fieldname": "enable_voice_call",
+            "fieldtype": "Check",
+            "in_list_view": 1,
+            "label": "Enable Voice Call"
+        },
+        {
+            "description": "Force a specific nudge type for this escalation step. If blank, the situation is auto-computed from the student's current field values by _compute_situation().",
+            "fieldname": "nudge_config_override",
+            "fieldtype": "Link",
+            "label": "Nudge Config Override",
+            "options": "VoiceNudgeConfig"
+        }
+    ],
+    "index_web_pages_for_search": 1,
+    "istable": 1,
+    "links": [],
+    "modified": "2026-07-06 00:00:00.000000",
+    "modified_by": "Administrator",
+    "module": "TAP LMS",
+    "name": "EscalationStep",
+    "owner": "Administrator",
+    "permissions": [],
+    "sort_field": "modified",
+    "sort_order": "DESC",
+    "states": []
 }

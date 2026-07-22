@@ -53,4 +53,6 @@ def calculate_week_advance_rollup(pe):
         "total_submission_points": _int_field(pe, "total_submission_points"),
         "total_quiz_points": _int_field(pe, "total_quiz_points"),
         "total_points": _int_field(pe, "total_points"),
+        # Didi voice nudge: reset weekly call count each week advance (T14).
+        "weekly_call_count": 0,
     }

@@ -1,63 +1,93 @@
 {
- "actions": [],
- "allow_rename": 1,
- "autoname": "format:{title}",
- "creation": "2026-05-04 18:27:44.519252",
- "default_view": "List",
- "doctype": "DocType",
- "editable_grid": 1,
- "engine": "InnoDB",
- "field_order": [
-  "title",
-  "status_template",
-  "is_active"
- ],
- "fields": [
-  {
-   "description": "Primary key (autoname: format:{title}). Renaming creates a new row + orphans existing UnitContentItem references — choose a stable name. Template-variable hint: {student_name}, {week}, {archetype}, {course_level}, {path}, {escalation_order}, {escalation_type}, {language} — see status_template field.",
-   "fieldname": "title",
-   "fieldtype": "Data",
-   "in_list_view": 1,
-   "label": "Title",
-   "reqd": 1
-  },
-  {
-   "description": "Script body delivered to Vocallabs as status_text. Supports {variable} substitution via _render_status_template. The script's spoken language follows from the script content itself; there is no separate language field on this doctype. The {language} variable expands to Student.language (the student's preferred language) — useful for templates that branch wording at runtime.",
-   "fieldname": "status_template",
-   "fieldtype": "Long Text",
-   "label": "Status Template"
-  },
-  {
-   "default": "1",
-   "description": "Soft-disable flag. When 0, the resolver SKIPS this config and falls through (LU override → settings default → None). Lets ops retire a script without orphaning UnitContentItem or VoiceAgentSettings.default_parent_call_config references.",
-   "fieldname": "is_active",
-   "fieldtype": "Check",
-   "label": "Is Active"
-  }
- ],
- "index_web_pages_for_search": 1,
- "links": [],
- "modified": "2026-05-28 19:30:00.000000",
- "modified_by": "Administrator",
- "module": "TAP LMS",
- "name": "ParentCallConfig",
- "naming_rule": "Expression",
- "owner": "Administrator",
- "permissions": [
-  {
-   "create": 1,
-   "delete": 1,
-   "email": 1,
-   "export": 1,
-   "print": 1,
-   "read": 1,
-   "report": 1,
-   "role": "System Manager",
-   "share": 1,
-   "write": 1
-  }
- ],
- "sort_field": "modified",
- "sort_order": "DESC",
- "states": []
+    "actions": [],
+    "allow_rename": 1,
+    "autoname": "format:{title}",
+    "creation": "2026-05-04 18:27:44.519252",
+    "default_view": "List",
+    "doctype": "DocType",
+    "editable_grid": 1,
+    "engine": "InnoDB",
+    "field_order": [
+        "title",
+        "status_template",
+        "is_active",
+        "nudge_section",
+        "nudge_type",
+        "language",
+        "variables_reference"
+    ],
+    "fields": [
+        {
+            "description": "Primary key (autoname: format:{title}). Renaming creates a new row + orphans existing UnitContentItem references \u2014 choose a stable name. Template-variable hint: {student_name}, {week}, {archetype}, {course_level}, {path}, {escalation_order}, {escalation_type}, {language} \u2014 see status_template field.",
+            "fieldname": "title",
+            "fieldtype": "Data",
+            "in_list_view": 1,
+            "label": "Title",
+            "reqd": 1
+        },
+        {
+            "description": "Script body delivered to Vocallabs as status_text. Supports {variable} substitution via _render_status_template. The script's spoken language follows from the script content itself; there is no separate language field on this doctype. The {language} variable expands to Student.language (the student's preferred language) \u2014 useful for templates that branch wording at runtime.",
+            "fieldname": "status_template",
+            "fieldtype": "Long Text",
+            "label": "Status Template"
+        },
+        {
+            "default": "1",
+            "description": "Soft-disable flag. When 0, the resolver SKIPS this config and falls through (LU override \u2192 settings default \u2192 None). Lets ops retire a script without orphaning UnitContentItem or VoiceAgentSettings.default_parent_call_config references.",
+            "fieldname": "is_active",
+            "fieldtype": "Check",
+            "label": "Is Active"
+        },
+        {
+            "fieldname": "nudge_section",
+            "fieldtype": "Section Break",
+            "label": "Nudge Context"
+        },
+        {
+            "description": "Which VoiceNudgeConfig this template serves. When set, _resolve_parent_call_config falls back to this record when resolving by nudge type + language. Leave blank for templates used via LearningUnit attachment only.",
+            "fieldname": "nudge_type",
+            "fieldtype": "Link",
+            "label": "Nudge Type",
+            "options": "VoiceNudgeConfig"
+        },
+        {
+            "description": "Language for this template variant. One ParentCallConfig per nudge_type + language combination. Leave blank for a language-agnostic fallback.",
+            "fieldname": "language",
+            "fieldtype": "Link",
+            "label": "Language",
+            "options": "TAP Language"
+        },
+        {
+            "description": "Available template variables (read-only reference for writing status_template). Updated when new variables are added in vocallabs.py.\n\nExisting: {student_name} {week} {archetype} {course_level} {path} {escalation_order} {escalation_type} {language} {welcome_greeting}\n\nNew: {situation} {course} {submission_count} {streak} {submission_ask} {grace_deadline} {grade_group} {call_attempt} {last_problem_reported} {last_message}",
+            "fieldname": "variables_reference",
+            "fieldtype": "Long Text",
+            "label": "Available Variables (Reference)",
+            "read_only": 1
+        }
+    ],
+    "index_web_pages_for_search": 1,
+    "links": [],
+    "modified": "2026-07-06 00:00:00.000000",
+    "modified_by": "Administrator",
+    "module": "TAP LMS",
+    "name": "ParentCallConfig",
+    "naming_rule": "Expression",
+    "owner": "Administrator",
+    "permissions": [
+        {
+            "create": 1,
+            "delete": 1,
+            "email": 1,
+            "export": 1,
+            "print": 1,
+            "read": 1,
+            "report": 1,
+            "role": "System Manager",
+            "share": 1,
+            "write": 1
+        }
+    ],
+    "sort_field": "modified",
+    "sort_order": "DESC",
+    "states": []
 }
