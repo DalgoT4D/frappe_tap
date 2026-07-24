@@ -133,9 +133,15 @@ def get_teacher_details():
             return
 
         school_row = _get_school_row_by_id(teacher.school_id) if teacher.school_id else None
+        name_parts = [
+            part for part in (
+                str(teacher.first_name or "").strip(),
+                str(teacher.last_name or "").strip(),
+            )
+            if part
+        ]
         payload = {
-            "firstName": teacher.first_name or "",
-            "lastName": teacher.last_name or "",
+            "name": " ".join(name_parts),
             "phone": _phone_for_response(teacher.phone_number),
             "state": school_row["state"] if school_row else "",
             "district": school_row["district"] if school_row else "",
@@ -178,8 +184,10 @@ def update_teacher_details():
             return
 
         teacher = frappe.get_doc("Teacher", teacher_name)
-        teacher.first_name = data.get("firstName") or teacher.first_name
-        teacher.last_name = data.get("lastName") or teacher.last_name
+        received_name = (data.get("name") or "").strip()
+        if received_name:
+            teacher.first_name = received_name
+            teacher.last_name = ""
         teacher.phone_number = phone
         teacher.teacher_role = data.get("role") or teacher.teacher_role
         language_id, language_error = _get_language_name_to_id(data.get("language"))
@@ -218,12 +226,12 @@ def create_teacher_web():
             _respond(phone_error["code"], phone_error["payload"])
             return
 
-        first_name = (data.get("firstName") or "").strip()
+        teacher_name = (data.get("name") or "").strip()
         school_value = (data.get("school") or "").strip()
-        if not first_name or not school_value:
+        if not teacher_name or not school_value:
             _respond(400, {
                 "status": "failure",
-                "message": "Missing required field: firstName or school",
+                "message": "Missing required field: name or school",
             })
             return
 
@@ -247,8 +255,8 @@ def create_teacher_web():
         teacher = frappe.get_doc(
             {
                 "doctype": "Teacher",
-                "first_name": first_name,
-                "last_name": (data.get("lastName") or "").strip(),
+                "first_name": teacher_name,
+                "last_name": "",
                 "gender": (data.get("gender") or "").strip(),
                 "phone_number": phone,
                 "teacher_role": (data.get("role") or "").strip(),
