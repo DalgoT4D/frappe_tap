@@ -8,6 +8,7 @@ from tap_lms.onboarding.utils import (
     _get_latest_enrollment,
     _get_latest_school_batch_id,
     _get_request_data,
+    _get_school_course_vertical_names,
     _get_school_row_by_id,
     _get_school_row_from_input,
     _normalize_phone,
@@ -40,6 +41,39 @@ def list_school_details():
         frappe.db.rollback()
         log_api_failure("list_school_details", data, frappe.get_traceback())
         frappe.log_error(frappe.get_traceback(), "list_school_details failed")
+        _respond(500, {"status": "failure", "message": str(exc)})
+
+
+@frappe.whitelist(allow_guest=True)
+def get_teacher_courses(school_id=None, grade=None):
+    data = _get_request_data()
+    try:
+        school_id = str(school_id or data.get("school_id") or "").strip()
+        grade = str(grade or data.get("grade") or "").strip()
+
+        if not school_id or not grade:
+            _respond(400, {
+                "status": "failure",
+                "message": "school_id and grade are required.",
+            })
+            return
+
+        if not _get_school_row_by_id(school_id):
+            _respond(404, {"status": "failure", "message": "School not found"})
+            return
+
+        school_batch_data = _get_school_course_vertical_names(school_id, grade)
+        course_names = school_batch_data.get("course_names") or []
+        response = {"num_course": len(course_names)}
+        for index, course_name in enumerate(course_names, start=1):
+            response[f"course_{index}"] = course_name
+
+        _respond(200, response)
+        return
+    except Exception as exc:
+        frappe.db.rollback()
+        log_api_failure("get_teacher_courses", data, frappe.get_traceback())
+        frappe.log_error(frappe.get_traceback(), "get_teacher_courses failed")
         _respond(500, {"status": "failure", "message": str(exc)})
 
 

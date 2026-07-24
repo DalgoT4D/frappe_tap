@@ -8,8 +8,8 @@ from tap_lms.onboarding.utils import (
     _get_language_id_to_name,
     _get_language_name_to_id,
     _get_latest_enrollment,
-    _get_latest_school_enrollment,
     _get_request_data,
+    _get_school_course_vertical_names,
     _get_school_row_by_id,
     _phone_for_response,
     _phone_filter,
@@ -143,47 +143,6 @@ def _get_course_vertical_and_level(course_name, grade):
         "course_vertical": course_vertical,
         "level_label": level_label,
     }, None
-
-
-def _get_school_course_vertical_names(school_id, grade):
-    if not school_id:
-        return {"batch": "", "course_names": [], "vertical": ""}
-    grade_key = str(grade or "").strip()
-    if not grade_key:
-        return {"batch": "", "course_names": [], "vertical": ""}
-
-    latest_enrollment = _get_latest_school_enrollment(school_id)
-    if not latest_enrollment:
-        return {"batch": "", "course_names": [], "vertical": ""}
-    result = {
-        "batch": latest_enrollment.batch_number or "",
-        "course_names": [],
-        "vertical": "",
-    }
-    grades_courses = latest_enrollment.grades_courses
-    if not grades_courses:
-        return result
-
-    try:
-        grades_courses = frappe.parse_json(grades_courses)
-    except Exception:
-        return result
-
-    if not isinstance(grades_courses, dict):
-        return result
-
-    value = grades_courses.get(grade_key)
-    if isinstance(value, str) and value.strip():
-        result["course_names"] = [value.strip()]
-    elif isinstance(value, list):
-        result["course_names"] = [str(item).strip() for item in value if str(item or "").strip()]
-
-    if len(result["course_names"]) == 1:
-        result["vertical"] = (
-            frappe.db.get_value("Course Verticals", {"name2": result["course_names"][0]}, "name") or ""
-        )
-
-    return result
 
 
 def _upsert_student_consent(phone_number, school_id=None, whatsapp_consent=0):

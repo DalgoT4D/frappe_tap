@@ -4,10 +4,16 @@ import re
 import frappe
 from frappe.utils import getdate, now_datetime
 
-from tap_lms.api import authenticate_api_key
-
 
 PHONE_PATTERN = re.compile(r"^\d{10}$")
+
+
+def authenticate_api_key(api_key):
+    try:
+        api_key_doc = frappe.get_doc("API Key", {"key": api_key, "enabled": 1})
+        return api_key_doc.name
+    except frappe.DoesNotExistError:
+        return None
 
 
 _SCHOOL_ROW_SELECT = """
@@ -284,6 +290,47 @@ def _get_latest_school_batch_id(school_id):
         return ""
 
     return latest_enrollment.batch_number or ""
+
+
+def _get_school_course_vertical_names(school_id, grade):
+    if not school_id:
+        return {"batch": "", "course_names": [], "vertical": ""}
+    grade_key = str(grade or "").strip()
+    if not grade_key:
+        return {"batch": "", "course_names": [], "vertical": ""}
+
+    latest_enrollment = _get_latest_school_enrollment(school_id)
+    if not latest_enrollment:
+        return {"batch": "", "course_names": [], "vertical": ""}
+    result = {
+        "batch": latest_enrollment.batch_number or "",
+        "course_names": [],
+        "vertical": "",
+    }
+    grades_courses = latest_enrollment.grades_courses
+    if not grades_courses:
+        return result
+
+    try:
+        grades_courses = frappe.parse_json(grades_courses)
+    except Exception:
+        return result
+
+    if not isinstance(grades_courses, dict):
+        return result
+
+    value = grades_courses.get(grade_key)
+    if isinstance(value, str) and value.strip():
+        result["course_names"] = [value.strip()]
+    elif isinstance(value, list):
+        result["course_names"] = [str(item).strip() for item in value if str(item or "").strip()]
+
+    if len(result["course_names"]) == 1:
+        result["vertical"] = (
+            frappe.db.get_value("Course Verticals", {"name2": result["course_names"][0]}, "name") or ""
+        )
+
+    return result
 
 
 def _ensure_teacher_enrollment(teacher_doc, school_row, batch_id):
