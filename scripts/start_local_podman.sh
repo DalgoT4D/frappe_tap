@@ -110,15 +110,9 @@ To re-run the bootstrap by hand (e.g. after editing rag_service/requirements.txt
 
 Next, send a test submission:
 
-  curl -v -X POST "http://${SITE_NAME}:${WEB_PORT:-8000}/api/method/tap_lms.imgana.submission.assignment_submission" \\
+  curl -v -X POST "http://${SITE_NAME}:${WEB_PORT:-8000}/api/method/tap_lms.summer_program.save_submission.save_submission" \\
     -H "Content-Type: application/json" \\
     -H "Authorization: token ${AUTH_KEY}:${AUTH_SECRET}" \\
-    -d '{
-        "api_key":   "${LOCAL_API_KEY:-local-dev-api-key-001}",
-        "assign_id": "MockAssign-Basic",
-        "name1":     "LocalDevStudent",
-        "glific_id": "LOCAL_GLIFIC_001",
-        "submission": "https://picsum.photos/200/300"
-    }'
+    -d '{ "assign_id": "MockAssign-Basic", "student_id": "ST00476584","submission": "how do" }'
 
 EOF
