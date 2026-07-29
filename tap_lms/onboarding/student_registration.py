@@ -30,6 +30,13 @@ STUDENT_COURSE_NAME_ALIASES = {
     "Science": "Science Lab",
 }
 
+SCHOOL_STATE_LANGUAGE_MAP = {
+    "MAHARASHTRA": "Marathi",
+    "PUNJAB": "Punjabi",
+    "UTTAR PRADESH": "Hindi",
+    "DELHI": "Hinglish",
+}
+
 
 def _sync_student_series_counter():
     # Legacy meta `format:ST{########}` uses the empty-string series key,
@@ -145,6 +152,11 @@ def _get_course_vertical_and_level(course_name, grade):
     }, None
 
 
+def _get_school_language(state):
+    # state = str(state or "").strip().upper()
+    return SCHOOL_STATE_LANGUAGE_MAP.get(state, "")
+
+
 def _upsert_student_consent(phone_number, school_id=None, whatsapp_consent=0):
     operation = "upsert_student_consent"
     phone_number, phone_error = _require_valid_phone(phone_number)
@@ -244,6 +256,7 @@ def verify_school_by_id(school_id, phone_number=None):
                 "state": school_row["state"],
                 "district": school_row["district"],
                 "city": school_row["city"],
+                "school_langugage": _get_school_language(school_row["state"]),
                 "student_registration_url": (
                     f"http://registration.theapprenticeproject.org/student/{school_row['school_id']}"
                 ),
