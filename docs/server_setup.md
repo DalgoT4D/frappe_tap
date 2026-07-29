@@ -253,6 +253,70 @@ check `~/frappe-bench/logs/node-socketio.error.log`.
 
 ---
 
+## 11a. Start the Feedback Consumer
+
+The feedback consumer listens to the `plagiarism_feedback` RabbitMQ queue and
+processes feedback results. It is **not** started by supervisor automatically —
+it must be added as a separate supervisor program.
+
+Add the following to `~/frappe-bench/config/supervisor.conf` before the
+`[group:frappe-bench-workers]` line:
+
+```ini
+[program:frappe-bench-feedback-consumer]
+command=/home/lms-dev/frappe-bench/env/bin/python /home/lms-dev/frappe-bench/apps/tap_lms/scripts/console_consumer.py
+directory=/home/lms-dev/frappe-bench/sites
+environment=SITE_NAME="tap_lms.dev"
+user=lms-dev
+autostart=true
+autorestart=true
+stdout_logfile=/home/lms-dev/frappe-bench/logs/feedback-consumer.log
+stderr_logfile=/home/lms-dev/frappe-bench/logs/feedback-consumer.error.log
+```
+
+> **Note on log files:** Structured business logic logs (feedback events,
+> errors) go to `gcp_structured.log` via `monitoring.py`. The supervisor
+> `stdout_logfile` and `stderr_logfile` are a safety net for raw stdout/stderr
+> output — startup crashes, import errors, and anything that bypasses
+> structured logging. Both are needed.
+
+> **Working directory:** The `directory=/home/lms-dev/frappe-bench/sites`
+> setting is critical — the consumer script must be invoked from the `sites/`
+> folder for Frappe to resolve the site name correctly. Supervisor `cd`s to
+> this directory before executing the command, equivalent to running:
+> ```bash
+> cd ~/frappe-bench/sites
+> ../env/bin/python ../apps/tap_lms/scripts/console_consumer.py
+> ```
+
+Then reload supervisor:
+
+```bash
+sudo supervisorctl reread
+sudo supervisorctl update
+sudo supervisorctl start frappe-bench-feedback-consumer
+sudo supervisorctl status
+```
+
+Verify it started correctly:
+
+```bash
+cat ~/frappe-bench/logs/feedback-consumer.log
+```
+
+If you see `tap_lms.dev does not exist`, the `SITE_NAME` env var is not being
+picked up or the `directory` is wrong. If you see the consumer connecting to
+RabbitMQ, it's running correctly.
+
+> **Warning:** If you are also running a local podman setup connected to the
+> same CloudAMQP instance, stop the local consumer first to avoid race
+> conditions — two consumers competing for the same queue will cause
+> intermittent failures and messages going to the DLQ. Check active consumers
+> in CloudAMQP Manager → Queues → `plagiarism_feedback` → Consumers before
+> starting.
+
+---
+
 ## 12. Set Up nginx
 
 ```bash
@@ -371,6 +435,8 @@ bench --site tap_lms.dev set-admin-password <newpassword>
 | Encrypted fields unreadable / external service auth failures | Encryption key mismatch | Section 7a — copy encryption key from old server |
 | `SerializationFailure: could not serialize access` in console | Concurrent DB write from pe_dispatcher | Run `frappe.db.rollback()` then retry |
 | `InFailedSqlTransaction: current transaction is aborted` | Previous statement failed, transaction broken | Run `frappe.db.rollback()` then retry |
+| Messages going to DLQ intermittently | Two consumers competing for same queue | Stop local podman consumer; check CloudAMQP Manager → Consumers |
+| `tap_lms.localhost does not exist` in consumer | `SITE_NAME` env var not set or wrong | Set `export SITE_NAME=tap_lms.dev` before starting consumer |
 
 ---
 
@@ -378,10 +444,15 @@ bench --site tap_lms.dev set-admin-password <newpassword>
 
 - **Encryption key** must be copied from the old server (Section 7a) — without
   it, RabbitMQ, Glific, and all other stored credentials will silently fail.
+- **Feedback consumer** must be added to supervisor manually (Section 11a) —
+  it is not included in `bench setup supervisor` output. Without it, plagiarism
+  feedback results will pile up in the `plagiarism_feedback` queue unprocessed.
+- **Never run two consumers** against the same CloudAMQP queue simultaneously
+  (e.g. local podman + dev server) — messages will be split between them,
+  causing intermittent failures and DLQ buildup. Always check CloudAMQP
+  Manager → Queues → Consumers before starting the consumer on a new server.
 - GCS credentials (`GOOGLE_APPLICATION_CREDENTIALS`) must be configured
   separately for submission image uploads to work.
-- The RabbitMQ consumer (`feedback_consumer.py`) is not supervisor-managed
-  and must be started manually or via a separate process manager.
 - After any code deploy, restart workers:
   `sudo supervisorctl restart frappe-bench-workers:`
 - After any hooks.py change, restart everything:
