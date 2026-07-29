@@ -99,7 +99,7 @@ logging:
     promote_severity:
       type: modify_fields
       fields:
-        logging.googleapis.com/severity:
+        severity:
           move_from: jsonPayload.severity
 
     # ── Exclude high-volume INFO http_request logs from storage ───────────
