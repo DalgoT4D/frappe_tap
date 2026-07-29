@@ -87,6 +87,7 @@ logging:
     parse_tap_lms_json:
       type: parse_json
       time_key: timestamp
+      time_format: "RFC3339"
 
     # ── Promote severity field to LogEntry.severity ────────────────────────
     # monitoring.py emits `"severity": "ERROR"` as a plain JSON field.
