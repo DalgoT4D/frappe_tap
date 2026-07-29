@@ -438,25 +438,65 @@ def on_error_log_insert(doc, method) -> None:
     reliable structured coverage of all unhandled exceptions across both
     surfaces without any sys.excepthook or on_exception workaround.
 
+    Two categories of Error Log entries are handled differently:
+
+    1. Intentional operator alerts — frappe.log_error() called deliberately
+       by watchdogs, watcher jobs, and consumer failure handlers to surface
+       operational issues. These are emitted as `watchdog_alert` at WARNING
+       severity so they can be alerted on separately from genuine crashes.
+
+    2. Genuine unhandled exceptions — everything else. Emitted as
+       `unhandled_exception` at ERROR severity for immediate alerting.
+
     The Error Log doctype fields used here:
-        doc.error           — full traceback string
-        doc.method          — the whitelisted method / job function that raised
+        doc.method  — the Error Log "title" field (set as second arg to
+                      frappe.log_error, or the whitelisted method that raised)
+        doc.error   — full traceback or message body
         doc.reference_doctype / doc.reference_name — linked document if any
     """
-    try:
-        # Truncate the traceback to keep the log line inside the 256 KB Cloud
-        # Logging entry limit — the tail of a traceback is the most useful part.
-        traceback_tail = (doc.error or "")[-2000:]
+    # Titles used by deliberate operator-alert frappe.log_error() calls.
+    # These are not exceptions — they are intentional notifications from
+    # watchdog jobs and consumer failure handlers. Keep this list in sync
+    # with any new intentional log_error calls added to the codebase.
+    _OPERATOR_ALERT_TITLES = {
+        "SP Feedback Watchdog — F5 callback likely dropped",
+        "CR-027 Weekly Sweep Summary",
+        "SP Periodic Glific Reconcile",
+        "SP DLQ Watcher Alert",
+        "SP Queue Watcher Error",
+        "SP Queue Watcher Alert",
+        "Glific Token Health Alert",
+        "Feedback Consumer Failure",
+    }
 
-        emit(
-            severity="ERROR",
-            message="unhandled_exception",
-            error_log=doc.name,
-            method=doc.method or "unknown",
-            traceback=traceback_tail,
-            reference_doctype=doc.reference_doctype or None,
-            reference_name=doc.reference_name or None,
-        )
+    try:
+        traceback_tail = (doc.error or "")[-2000:]
+        method = doc.method or "unknown"
+
+        if method in _OPERATOR_ALERT_TITLES:
+            # Intentional operator alert — emit as watchdog_alert at WARNING
+            # so Cloud Logging alerts can distinguish "needs investigation"
+            # from "page immediately".
+            emit(
+                severity="WARNING",
+                message="watchdog_alert",
+                error_log=doc.name,
+                method=method,
+                traceback=traceback_tail,
+                reference_doctype=doc.reference_doctype or None,
+                reference_name=doc.reference_name or None,
+            )
+        else:
+            # Genuine unhandled exception — emit at ERROR for immediate alert.
+            emit(
+                severity="ERROR",
+                message="unhandled_exception",
+                error_log=doc.name,
+                method=method,
+                traceback=traceback_tail,
+                reference_doctype=doc.reference_doctype or None,
+                reference_name=doc.reference_name or None,
+            )
     except Exception:
         # Never let monitoring crash Frappe's own error handling path.
         pass
