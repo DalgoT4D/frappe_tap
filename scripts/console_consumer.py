@@ -1,9 +1,11 @@
 # consumer code for testing in bench console
-
+import os
 import frappe
 from tap_lms.feedback_handler.feedback_consumer import FeedbackConsumer
 
-frappe.init("tap_lms.localhost")
+site_name = os.getenv("SITE_NAME", "tap_lms.localhost")
+
+frappe.init(site_name)
 frappe.connect()
 frappe.set_user("Administrator")
 

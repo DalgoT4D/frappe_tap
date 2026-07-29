@@ -43,7 +43,7 @@ RAG_CONSUMER_PID=$! # gets the PID of the plagiarism_feedback listener
 # we avoid race conditions between the two lms listeners (local and dev server)
 (
   cd sites
-  ../env/bin/python ../apps/tap_lms/scripts/console_consumer.py
+  SITE_NAME="$SITE_NAME" ../env/bin/python ../apps/tap_lms/scripts/console_consumer.py
 ) &
 LMS_CONSUMER_PID=$! # gets the PID of the feedbacks_queue listener
 
