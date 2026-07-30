@@ -66,7 +66,14 @@ doc_events = {
 #   - 0 0 * * 1    — auto_advance_batch_week: weekly Monday sweep that bumps
 #                    Batch.current_calendar_week and unblocks max_allowed_week
 #                    on each PE
+#   - 30 20 * * *  — student sheet registration daily run; 20:30 UTC = 02:00 IST
 scheduler_events = {
+    "cron": {
+        "30 20 * * *": [
+            "tap_lms.tap_lms.doctype.student_sheet_registration_job."
+            "student_sheet_registration_job.enqueue_daily_student_sheet_registration",
+        ],
+    },
     # "daily": [
     #     "tap_lms.tap_lms.page.onboarding_flow_trigger.onboarding_flow_trigger.update_incomplete_stages",
     #     "tap_lms.summer_program.scheduler.run_daily_actions",

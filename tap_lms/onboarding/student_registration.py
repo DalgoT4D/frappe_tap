@@ -38,7 +38,7 @@ SCHOOL_STATE_LANGUAGE_MAP = {
 }
 
 SCHOOL_REGISTRATION_TYPE_MAP = {
-    "MAHARASHTRA": "flow",
+    "MAHARASHTRA": "form",
     "PUNJAB": "form",
     "UTTAR PRADESH": "flow",
     "DELHI": "flow",

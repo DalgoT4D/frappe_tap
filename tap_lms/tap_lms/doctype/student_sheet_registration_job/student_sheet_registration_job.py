@@ -18,6 +18,49 @@ class StudentSheetRegistrationJob(Document):
     pass
 
 
+RUNNING_STATUSES = {"Preparing", "Uploading"}
+DAILY_STUDENT_SHEET_REGISTRATION_JOB_METHOD = (
+    "tap_lms.tap_lms.doctype.student_sheet_registration_job."
+    "student_sheet_registration_job.run_daily_student_sheet_registration_job"
+)
+
+
+def _get_running_job() -> str | None:
+    jobs = frappe.get_all(
+        "Student Sheet Registration Job",
+        filters={"status": ["in", sorted(RUNNING_STATUSES)]},
+        pluck="name",
+        order_by="modified desc",
+        limit_page_length=1,
+    )
+    return jobs[0] if jobs else None
+
+
+def _create_daily_job() -> str:
+    now = frappe.utils.now_datetime()
+    doc = frappe.get_doc({
+        "doctype": "Student Sheet Registration Job",
+        "job_name": f"Daily Student Sheet Registration {now.strftime('%Y-%m-%d %H:%M')}",
+        "status": "Preparing",
+        "started_at": now,
+        "completed_at": None,
+        "raw_rows": 0,
+        "prepared_rows": 0,
+        "uploaded_rows": 0,
+        "failed_rows": 0,
+        "duplicate_rows": 0,
+        "skipped_done_rows": 0,
+        "prepared_file_url": "",
+        "failed_rows_file_url": "",
+        "summary_json": "",
+        "last_error": "",
+        "prepared_rows_json": "[]",
+        "processing_log": json.dumps({"entries": []}, ensure_ascii=True),
+    })
+    doc.insert(ignore_permissions=True)
+    return doc.name
+
+
 def _set_glific_contact_files(docname: str, files: list[dict]) -> None:
     doc = frappe.get_doc("Student Sheet Registration Job", docname)
     doc.set("glific_contact_files", [])
@@ -88,10 +131,45 @@ def _set_summary_counts(docname: str, summary: dict) -> None:
     frappe.db.set_value("Student Sheet Registration Job", docname, updates, update_modified=False)
 
 
+def enqueue_daily_student_sheet_registration() -> dict:
+    running_job = _get_running_job()
+    if running_job:
+        message = f"Daily student sheet registration skipped; job {running_job} is already running."
+        frappe.logger("tap_lms.student_sheet_registration").info(message)
+        return {"status": "Skipped", "running_job": running_job}
+
+    docname = _create_daily_job()
+    try:
+        _append_log(docname, "[student-sheet-registration] daily job created")
+        frappe.db.commit()
+
+        job = frappe.enqueue(
+            DAILY_STUDENT_SHEET_REGISTRATION_JOB_METHOD,
+            queue="long",
+            timeout=7200,
+            job_name=f"student_sheet_registration_daily_{docname}",
+            docname=docname,
+        )
+        _append_log(docname, f"[student-sheet-registration] daily job queued rq_job_id={job.id}")
+        frappe.db.commit()
+        return {"job_id": job.id, "docname": docname, "status": "Preparing"}
+    except Exception:
+        frappe.db.rollback()
+        error_message = frappe.get_traceback()
+        _set_job_state(
+            docname,
+            status="Failed",
+            completed_at=frappe.utils.now_datetime(),
+            last_error=error_message,
+        )
+        frappe.db.commit()
+        raise
+
+
 @frappe.whitelist()
 def start_prepare_student_sheet_registration_job(docname: str) -> dict:
     doc = frappe.get_doc("Student Sheet Registration Job", docname)
-    if doc.status in {"Preparing", "Uploading"}:
+    if doc.status in RUNNING_STATUSES:
         frappe.throw("This student sheet registration job is already running.")
 
     _set_job_state(
@@ -129,7 +207,7 @@ def start_prepare_student_sheet_registration_job(docname: str) -> dict:
 @frappe.whitelist()
 def start_upload_student_sheet_registration_job(docname: str) -> dict:
     doc = frappe.get_doc("Student Sheet Registration Job", docname)
-    if doc.status in {"Preparing", "Uploading"}:
+    if doc.status in RUNNING_STATUSES:
         frappe.throw("This student sheet registration job is already running.")
     if not doc.prepared_rows_json:
         frappe.throw("Prepare Data must be run before Complete Upload.")
@@ -235,6 +313,106 @@ def run_upload_student_sheet_registration_job(docname: str) -> dict:
         frappe.db.rollback()
         error_message = frappe.get_traceback()
         _append_log(docname, f"[student-sheet-registration] upload_failed\n{error_message}")
+        _set_job_state(
+            docname,
+            status="Failed",
+            completed_at=frappe.utils.now_datetime(),
+            last_error=error_message,
+        )
+        frappe.db.commit()
+        raise
+
+
+def run_daily_student_sheet_registration_job(docname: str) -> dict:
+    started_at = frappe.utils.now_datetime()
+    try:
+        _set_job_state(
+            docname,
+            status="Preparing",
+            started_at=started_at,
+            completed_at=None,
+            raw_rows=0,
+            prepared_rows=0,
+            uploaded_rows=0,
+            failed_rows=0,
+            duplicate_rows=0,
+            skipped_done_rows=0,
+            prepared_file_url="",
+            failed_rows_file_url="",
+            summary_json="",
+            last_error="",
+            prepared_rows_json="[]",
+        )
+        _set_glific_contact_files(docname, [])
+        frappe.db.commit()
+
+        prepare_result = prepare_student_sheet_registration(
+            log_fn=lambda message: _append_log(docname, message)
+        )
+        prepare_summary = prepare_result.get("summary") or {}
+        prepared_rows = prepare_result.get("prepared_rows") or []
+        _set_summary_counts(docname, prepare_summary)
+        _set_job_state(
+            docname,
+            status="Prepared",
+            summary_json=json.dumps(prepare_summary, indent=2, sort_keys=True),
+            prepared_rows_json=json.dumps(prepared_rows, ensure_ascii=True),
+            last_error="",
+        )
+        frappe.db.commit()
+
+        ready_rows = [row for row in prepared_rows if row.get("prepare_status") == "Ready"]
+        if not ready_rows:
+            final_summary = dict(prepare_summary)
+            final_summary.setdefault("uploaded_rows", 0)
+            final_summary.setdefault("glific_contact_files", [])
+            _set_summary_counts(docname, final_summary)
+            _set_glific_contact_files(docname, [])
+            _set_job_state(
+                docname,
+                status="Completed",
+                completed_at=frappe.utils.now_datetime(),
+                summary_json=json.dumps(final_summary, indent=2, sort_keys=True),
+                last_error="",
+            )
+            frappe.db.commit()
+            return final_summary
+
+        _set_job_state(
+            docname,
+            status="Uploading",
+            completed_at=None,
+            uploaded_rows=0,
+            failed_rows=0,
+            failed_rows_file_url="",
+            last_error="",
+        )
+        _set_glific_contact_files(docname, [])
+        frappe.db.commit()
+
+        doc = frappe.get_doc("Student Sheet Registration Job", docname)
+        upload_result = upload_prepared_student_sheet_registration(
+            prepared_rows,
+            import_user=doc.owner or "Administrator",
+            log_fn=lambda message: _append_log(docname, message),
+        )
+        final_summary = dict(prepare_summary)
+        final_summary.update(upload_result)
+        _set_summary_counts(docname, final_summary)
+        _set_glific_contact_files(docname, upload_result.get("glific_contact_files") or [])
+        _set_job_state(
+            docname,
+            status="Completed",
+            completed_at=frappe.utils.now_datetime(),
+            summary_json=json.dumps(final_summary, indent=2, sort_keys=True),
+            last_error="",
+        )
+        frappe.db.commit()
+        return final_summary
+    except Exception:
+        frappe.db.rollback()
+        error_message = frappe.get_traceback()
+        _append_log(docname, f"[student-sheet-registration] daily_failed\n{error_message}")
         _set_job_state(
             docname,
             status="Failed",
