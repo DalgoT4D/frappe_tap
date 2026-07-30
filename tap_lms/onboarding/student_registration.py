@@ -37,6 +37,13 @@ SCHOOL_STATE_LANGUAGE_MAP = {
     "DELHI": "Hinglish",
 }
 
+SCHOOL_REGISTRATION_TYPE_MAP = {
+    "MAHARASHTRA": "flow",
+    "PUNJAB": "form",
+    "UTTAR PRADESH": "flow",
+    "DELHI": "flow",
+}
+
 
 def _sync_student_series_counter():
     # Legacy meta `format:ST{########}` uses the empty-string series key,
@@ -153,8 +160,11 @@ def _get_course_vertical_and_level(course_name, grade):
 
 
 def _get_school_language(state):
-    # state = str(state or "").strip().upper()
     return SCHOOL_STATE_LANGUAGE_MAP.get(state, "")
+
+
+def _get_school_registration_type(state):
+    return SCHOOL_REGISTRATION_TYPE_MAP.get(state, "flow")
 
 
 def _upsert_student_consent(phone_number, school_id=None, whatsapp_consent=0):
@@ -257,6 +267,7 @@ def verify_school_by_id(school_id, phone_number=None):
                 "district": school_row["district"],
                 "city": school_row["city"],
                 "school_langugage": _get_school_language(school_row["state"]),
+                "registration_type": _get_school_registration_type(school_row["state"]),
                 "student_registration_url": (
                     f"http://registration.theapprenticeproject.org/student/{school_row['school_id']}"
                 ),
