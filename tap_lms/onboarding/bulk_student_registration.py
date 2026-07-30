@@ -1,22 +1,28 @@
 from __future__ import annotations
 
-import csv
-import json
 import re
 from dataclasses import dataclass
 from datetime import date
-from io import BytesIO, StringIO
+from io import BytesIO
 from typing import Callable, Iterable
 from urllib.parse import urlparse
 
 import frappe
 import requests
 from google.auth.transport.requests import AuthorizedSession
-from google.cloud import storage
-from google.oauth2 import service_account
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import PatternFill
 from psycopg2.extras import execute_values
+
+from tap_lms.onboarding.backend_upload_utils import (
+    FAILED_ROWS_GCP_PROJECT_ID,
+    GCP_CREDENTIALS_PROJECT_ID,
+    GLIFIC_CSV_HEADERS,
+    get_google_service_account_credentials as _get_google_service_account_credentials,
+    get_google_service_account_email as _get_google_service_account_email,
+    upload_bytes_to_gcs as _upload_bytes_to_gcs,
+    upload_glific_contact_csv as _upload_glific_contact_csv,
+)
 
 
 # Bench console usage:
@@ -35,24 +41,6 @@ TAB_NAMES = ["Existing Students", "New Students"]
 SAMPLE_TEST = 0
 BATCH_SIZE = 100
 IMPORT_USER = "Administrator"
-GCP_CREDENTIALS_PROJECT_ID = "rubrics-data-migration"
-FAILED_ROWS_GCP_PROJECT_ID = "axiomatic-treat-417617"
-GLIFIC_CONTACTS_FOLDER = "Glific_contacts"
-GLIFIC_CSV_HEADERS = [
-    "name",
-    "phone",
-    "language",
-    "delete",
-    "school",
-    "state",
-    "model",
-    "buddy_name",
-    "batch_id",
-    "grade",
-    "level",
-    "course",
-]
-
 EXPECTED_COLUMNS = {
     "Student Name": "student_name_raw",
     "Contact No.": "contact_no_raw",
@@ -266,43 +254,6 @@ def _extract_sheet_id(spreadsheet_url: str) -> str | None:
     return match.group(1) if match else None
 
 
-def _get_google_service_account_credentials(project_id: str = GCP_CREDENTIALS_PROJECT_ID):
-    settings_name = frappe.db.get_value(
-        "GCS Settings",
-        {"project_id": project_id},
-        "name",
-    )
-    if not settings_name:
-        frappe.throw(f"GCS Settings not found for project_id '{project_id}'")
-
-    settings = frappe.get_doc("GCS Settings", settings_name)
-    credentials_dict = json.loads(settings.credentials_json)
-    return service_account.Credentials.from_service_account_info(
-        credentials_dict,
-        scopes=[
-            "https://www.googleapis.com/auth/drive.readonly",
-            "https://www.googleapis.com/auth/spreadsheets.readonly",
-        ],
-    )
-
-
-def _get_google_service_account_email(project_id: str = GCP_CREDENTIALS_PROJECT_ID) -> str:
-    settings_name = frappe.db.get_value(
-        "GCS Settings",
-        {"project_id": project_id},
-        "name",
-    )
-    if not settings_name:
-        return ""
-
-    settings = frappe.get_doc("GCS Settings", settings_name)
-    try:
-        credentials_dict = json.loads(settings.credentials_json)
-    except Exception:
-        return ""
-    return str(credentials_dict.get("client_email") or "").strip()
-
-
 def _download_private_workbook(file_id: str) -> requests.Response:
     credentials = _get_google_service_account_credentials()
     session = AuthorizedSession(credentials)
@@ -350,35 +301,6 @@ def _is_file_not_exportable_response(response: requests.Response) -> bool:
         return False
     errors = payload.get("error", {}).get("errors", [])
     return any(error.get("reason") == "fileNotExportable" for error in errors if isinstance(error, dict))
-
-
-def _get_gcs_settings(project_id: str):
-    settings_name = frappe.db.get_value(
-        "GCS Settings",
-        {"project_id": project_id},
-        "name",
-    )
-    if not settings_name:
-        frappe.throw(f"GCS Settings not found for project_id '{project_id}'")
-    return frappe.get_doc("GCS Settings", settings_name)
-
-
-def _upload_bytes_to_gcs(
-    content: bytes,
-    object_name: str,
-    project_id: str,
-    content_type: str = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-) -> str:
-    settings = _get_gcs_settings(project_id)
-    credentials_dict = json.loads(settings.credentials_json)
-    client = storage.Client.from_service_account_info(credentials_dict)
-    bucket = client.bucket(settings.bucket_name)
-    blob = bucket.blob(object_name)
-    blob.upload_from_string(
-        content,
-        content_type=content_type,
-    )
-    return f"https://storage.cloud.google.com/{settings.bucket_name}/{object_name}"
 
 
 def _create_and_upload_failed_rows_workbook(tab_names: list[str], job_name: str | None = None) -> str:
@@ -480,7 +402,7 @@ def _create_and_upload_glific_contact_csvs(tab_names: list[str]) -> list[dict]:
             COALESCE(s.phone, '') AS phone,
             COALESCE(lang.language_name, '') AS language,
             '0' AS delete,
-            COALESCE(sch.name, '') AS school,
+            COALESCE(sch.name, '') AS school_id,
             COALESCE(st.state_name, '') AS state,
             COALESCE(tm.mname, '') AS model,
             COALESCE(s.name1, '') AS buddy_name,
@@ -517,12 +439,7 @@ def _create_and_upload_glific_contact_csvs(tab_names: list[str]) -> list[dict]:
     exported_files: list[dict] = []
     for tab_name in tab_names:
         file_name = f"{tab_name}_{timestamp}.csv"
-        file_path = _upload_bytes_to_gcs(
-            _render_glific_contact_csv(rows_by_tab.get(tab_name, [])),
-            f"{GLIFIC_CONTACTS_FOLDER}/{file_name}",
-            FAILED_ROWS_GCP_PROJECT_ID,
-            content_type="text/csv",
-        )
+        file_path = _upload_glific_contact_csv(file_name, rows_by_tab.get(tab_name, []))
         exported_files.append({
             "tab_name": tab_name,
             "file_name": file_name,
@@ -530,14 +447,6 @@ def _create_and_upload_glific_contact_csvs(tab_names: list[str]) -> list[dict]:
             "row_count": len(rows_by_tab.get(tab_name, [])),
         })
     return exported_files
-
-
-def _render_glific_contact_csv(rows: list[dict]) -> bytes:
-    buffer = StringIO()
-    writer = csv.DictWriter(buffer, fieldnames=GLIFIC_CSV_HEADERS)
-    writer.writeheader()
-    writer.writerows(rows)
-    return buffer.getvalue().encode("utf-8")
 
 
 def _stage_selected_tabs(

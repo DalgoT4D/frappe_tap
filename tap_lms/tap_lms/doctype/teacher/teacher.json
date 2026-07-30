@@ -68,6 +68,7 @@
   {
    "fieldname": "phone_number",
    "fieldtype": "Data",
+   "in_standard_filter": 1,
    "label": "Phone Number"
   },
   {
