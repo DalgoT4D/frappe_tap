@@ -100,7 +100,7 @@ location ~* \.(env|env\..*|aws_credentials|git|bak|sql)\$ {
 
 ## 4. Manual Production Deployment Runbook
 
-Because this environment relies on manual deployments without an automated CI/CD pipeline, follow this exact sequence whenever pulling new code updates to ensure security configurations and logging systems are not broken or overwritten.
+Because this environment relies on manual deployments without an automated CI/CD pipeline, follow this exact sequence whenever pulling new code updates to ensure security configurations and logging systems are not broken or overwritten. Also refer to [Ops Agent Setup doc](./ops_agent_setup.md) for more details.
 
 ### Step-by-Step Manual Release Sequence:
 
