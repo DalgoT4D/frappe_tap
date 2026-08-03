@@ -9,6 +9,7 @@ from tap_lms.glific_integration import (
     update_contact_fields,
 )
 from tap_lms.onboarding.utils import (
+    _get_course_level_label_for_grade,
     _get_language_id_to_name,
     _get_latest_enrollment,
     _get_phone_lookup_variants,
@@ -73,9 +74,25 @@ def _get_student_course_name(student_doc):
     return frappe.db.get_value("Course Verticals", latest_enrollment.vertical, "name2") or ""
 
 
+def _get_student_grade(student_doc):
+    latest_enrollment = _get_latest_enrollment(student_doc)
+    return (
+        getattr(latest_enrollment, "grade", None)
+        if latest_enrollment
+        else None
+    ) or getattr(student_doc, "grade", None) or ""
+
+
+def _get_student_level(student_doc):
+    level_label, _level_error = _get_course_level_label_for_grade(
+        _get_student_grade(student_doc)
+    )
+    return level_label or ""
+
+
 def _build_teacher_glific_fields(teacher_doc, school_meta, school_id):
     return {
-        "school": school_id,
+        "school_id": school_id,
         "state": school_meta["state_name"],
         "model": school_meta["model_name"],
         "buddy_name": (teacher_doc.first_name or "").strip(),
@@ -86,12 +103,14 @@ def _build_teacher_glific_fields(teacher_doc, school_meta, school_id):
 
 def _build_student_glific_fields(student_doc, school_meta, school_id):
     return {
+        "school_id": school_id,
         "school": school_id,
         "state": school_meta["state_name"],
         "model": school_meta["model_name"],
         "buddy_name": (student_doc.name1 or "").strip(),
         "batch_id": _get_latest_enrollment_batch_id(student_doc),
-        "grade": student_doc.grade or "",
+        "grade": _get_student_grade(student_doc),
+        "level": _get_student_level(student_doc),
         "course": _get_student_course_name(student_doc),
     }
 
@@ -115,6 +134,7 @@ def _ensure_glific_registration_fields():
         return
 
     required_fields = (
+        ("school_id", "School ID"),
         ("school", "School"),
         ("state", "State"),
         ("model", "Model"),
@@ -122,6 +142,7 @@ def _ensure_glific_registration_fields():
         ("batch_id", "Batch ID"),
         ("role", "Role"),
         ("grade", "Grade"),
+        ("level", "Level"),
         ("course", "Course"),
     )
 
@@ -166,11 +187,12 @@ def sync_registration_contact_to_glific(doctype, docname, retry_count=0):
             glific_contact = create_contact(
                 contact_name,
                 phone,
-                fields_to_update["school"],
+                school_id,
                 school_meta["model_name"],
                 language_id,
                 fields_to_update["batch_id"],
                 fields_to_update,
+                include_default_school_field=False,
             )
             if not glific_contact or not glific_contact.get("id"):
                 raise RuntimeError(f"Failed to create or link Glific contact for {doctype} {docname}")
@@ -201,6 +223,7 @@ def sync_registration_contact_to_glific(doctype, docname, retry_count=0):
             sync_status_doctype=doctype,
             sync_status_docname=docname,
             existing_fields=(glific_contact or {}).get("fields"),
+            fields_to_remove=("school",) if doctype == "Teacher" else None,
         )
         if not ok:
             raise RuntimeError(

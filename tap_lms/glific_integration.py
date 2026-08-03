@@ -165,18 +165,22 @@ def get_glific_auth_headers():
             "Content-Type": "application/json"
         }
 
-def create_contact(name, phone, school_name, model_name, language_id, batch_id, extra_fields=None):
+def create_contact(
+    name,
+    phone,
+    school_name,
+    model_name,
+    language_id,
+    batch_id,
+    extra_fields=None,
+    include_default_school_field=True,
+):
     settings = get_glific_settings()
     url = f"{settings.api_url}/api"
     headers = get_glific_auth_headers()
 
     # Prepare the fields dictionary
     fields = {
-        "school": {
-            "value": school_name,
-            "type": "string",
-            "inserted_at": datetime.now(timezone.utc).isoformat()
-        },
         "model": {
             "value": model_name,
             "type": "string",
@@ -193,6 +197,12 @@ def create_contact(name, phone, school_name, model_name, language_id, batch_id, 
             "inserted_at": datetime.now(timezone.utc).isoformat()
         }
     }
+    if include_default_school_field:
+        fields["school"] = {
+            "value": school_name,
+            "type": "string",
+            "inserted_at": datetime.now(timezone.utc).isoformat()
+        }
     for fieldname, value in (extra_fields or {}).items():
         fields[fieldname] = {
             "value": str(value),
@@ -388,6 +398,7 @@ def update_contact_fields(
     sync_status_docname=None,
     create_contact_input=None,
     existing_fields=None,
+    fields_to_remove=None,
 ):
     """
     Update Glific contact fields directly, optionally updating the contact's
@@ -420,6 +431,8 @@ def update_contact_fields(
                      `model_name`, and optional `batch_id`. Used only when the
                      target contact id is missing and a replacement contact
                      must be created before retrying the update.
+        fields_to_remove: Optional iterable of custom contact field keys to
+                     remove from the outgoing fields blob before updating.
 
     Returns:
         True on success, False on failure
@@ -428,8 +441,13 @@ def update_contact_fields(
     url = f"{settings.api_url}/api"
 
     try:
+        if isinstance(fields_to_remove, str):
+            fields_to_remove = (fields_to_remove,)
+
         # ── Step 1: Build direct update payload ────────────────
         outgoing_fields = _parse_glific_fields_blob(existing_fields)
+        for key in fields_to_remove or ():
+            outgoing_fields.pop(key, None)
         for key, value in fields_to_update.items():
             outgoing_fields[key] = {
                 "value": str(value),
@@ -553,10 +571,17 @@ def update_contact_fields(
             (verified_contact or {}).get("fields"),
             fields_to_update,
         )
+        verified_fields = _parse_glific_fields_blob(
+            (verified_contact or {}).get("fields")
+        )
+        removed_fields_absent = all(
+            key not in verified_fields
+            for key in fields_to_remove or ()
+        )
         language_match = _glific_language_matches(verified_contact, language_id)
         name_match = _glific_name_matches(verified_contact, contact_name)
 
-        if fields_match and language_match and name_match:
+        if fields_match and removed_fields_absent and language_match and name_match:
             _set_glific_sync_status(sync_status_doctype, sync_status_docname, "synced")
             return True
 
@@ -564,6 +589,7 @@ def update_contact_fields(
             frappe.logger().error(
                 f"Glific updateContact verification failed for {contact_id}: "
                 f"requested_fields={fields_to_update}, requested_language_id={language_id}, "
+                f"requested_removed_fields={fields_to_remove}, "
                 f"requested_name={contact_name}, returned_name={verified_contact.get('name')}, "
                 f"returned_language={verified_contact.get('language')}, "
                 f"returned_fields={verified_contact.get('fields')}"
