@@ -84,10 +84,14 @@ logging:
     # ── Parse tap_lms structured JSON ─────────────────────────────────────
     # Parses each line of gcp_structured.log as JSON and extracts the
     # timestamp field so it becomes LogEntry.timestamp in Cloud Logging.
+    # Format matches monitoring.py output: 2026-07-31T10:24:40.313895
+    # Note: Fluent Bit uses strptime — %L is milliseconds (3 digits),
+    # %f is NOT supported. Use %s.%N for full nanosecond precision,
+    # or omit time_key entirely and let Cloud Logging use ingestion time.
+    # The safest cross-version approach is to let parse_json handle the
+    # JSON structure and use modify_fields to map the timestamp separately.
     parse_tap_lms_json:
       type: parse_json
-      time_key: timestamp
-      time_format: "%Y-%m-%dT%H:%M:%S.%f"
 
     # ── Promote severity field to LogEntry.severity ────────────────────────
     # monitoring.py emits `"severity": "ERROR"` as a plain JSON field.
@@ -96,11 +100,18 @@ logging:
     #   - Correct colour-coding in Log Explorer
     #   - Filtering with `severity=ERROR` in alert policies
     #   - The severity histogram in the Logs Explorer sidebar
+    #
+    # Also maps the timestamp field. Fluent Bit's strptime does not support
+    # %f (microseconds) so we move the raw timestamp string into the special
+    # logging.googleapis.com field and let Cloud Logging parse it — it
+    # handles ISO8601 with microseconds natively.
     promote_severity:
       type: modify_fields
       fields:
-        severity:
+        logging.googleapis.com/severity:
           move_from: jsonPayload.severity
+        time:
+          move_from: jsonPayload.timestamp
 
     # ── Exclude high-volume INFO http_request logs from storage ───────────
     # http_request logs are emitted for every API call (needed for P95
