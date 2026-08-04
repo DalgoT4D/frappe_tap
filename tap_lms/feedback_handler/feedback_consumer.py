@@ -9,6 +9,9 @@ from typing import Dict
 from ..glific_integration import start_contact_flow
 from .feedback_processor import FeedbackProcessor
 
+GLIFIC_FEEDBACK_FLOW_ID = "34108"
+
+
 class FeedbackConsumer:
     def __init__(self):
         self.connection = None
@@ -212,7 +215,17 @@ class FeedbackConsumer:
                 time.sleep(5)
 
             if self._is_feedback_requested(submission_id):
-                self.process_feedback_ready(submission_id, message_data)
+                notification_student_id = (
+                    message_data.get("student_id")
+                    or frappe.db.get_value("Submission", submission_id, "student_id")
+                )
+                if self._uses_direct_glific_contact_id(notification_student_id):
+                    frappe.logger().info(
+                        f"Skipping SP feedback hook for demo submission {submission_id}; "
+                        "student_id is a direct Glific contact ID"
+                    )
+                else:
+                    self.process_feedback_ready(submission_id, message_data)
 
             if self._claim_feedback_flow(submission_id):
                 frappe.db.commit()
@@ -285,6 +298,13 @@ class FeedbackConsumer:
             frappe.db.get_value("Submission", submission_id, "send_feedback")
             == "yes"
         )
+
+    def _uses_direct_glific_contact_id(self, student_id):
+        student_id = str(student_id or "").strip()
+        if not student_id:
+            return False
+
+        return not student_id.upper().startswith("ST")
 
     def _claim_feedback_flow(self, submission_id):
         """
@@ -401,58 +421,57 @@ class FeedbackConsumer:
     def send_glific_notification(self, message_data: Dict):
         """Send feedback notification via Glific with proper error handling.
 
-        IMPORTANT (2026-05-19 fix): The `student_id` field in the RabbitMQ
-        payload is the Frappe Student doc name (e.g. "ST00051238"), NOT a
-        Glific contact ID. Glific's `startContactFlow` mutation expects a
-        numeric Glific contact ID (e.g. "13325"). Passing the Frappe doc
-        name causes Glific to fail with the generic "Something unexpected
-        has happened" error because the contact lookup fails server-side.
-
-        Always resolve `Student.glific_id` from the Student doc before
-        invoking start_contact_flow.
+        If student_id starts with ST, resolve Student.glific_id before invoking
+        start_contact_flow. Otherwise, treat student_id as the Glific contact
+        ID directly. Both branches trigger flow 34108.
         """
         try:
             submission_id = message_data["submission_id"]
-            student_id = message_data.get("student_id")
+            student_id = message_data.get("student_id") or frappe.db.get_value(
+                "Submission", submission_id, "student_id"
+            )
 
             if not student_id:
                 frappe.logger().warning(f"No student_id for submission {submission_id}, skipping Glific notification")
                 return
 
-            # Resolve the Glific contact ID from the Student record.
-            # We accept the message's student_id as the Frappe doc name and
-            # look up the contact ID — the source of truth for Glific addressing.
-            glific_id = frappe.db.get_value("Student", student_id, "glific_id")
-            if not glific_id:
-                frappe.logger().warning(
-                    f"Student {student_id} has no glific_id; skipping Glific "
-                    f"notification for submission {submission_id}"
-                )
-                return
+            if self._uses_direct_glific_contact_id(student_id):
+                glific_id = str(student_id).strip()
+            else:
+                # Resolve the Glific contact ID from the Student record.
+                # We accept the message's student_id as the Frappe doc name and
+                # look up the contact ID — the source of truth for Glific addressing.
+                glific_id = frappe.db.get_value("Student", student_id, "glific_id")
+                if not glific_id:
+                    frappe.logger().warning(
+                        f"Student {student_id} has no glific_id; skipping Glific "
+                        f"notification for submission {submission_id}"
+                    )
+                    return
 
             feedback_data = message_data.get("feedback", {})
             overall_feedback = feedback_data.get("overall_feedback", "")
 
             if not overall_feedback:
-                frappe.logger().warning(f"No overall_feedback for submission {submission_id}, skipping Glific notification")
-                return
-
-            # Get Glific flow ID
-            flow_id = frappe.get_value("Glific Flow", {"label": "feedback"}, "flow_id")
-            if not flow_id:
-                frappe.logger().warning("Feedback flow not configured in Glific Flow, skipping notification")
-                return
+                frappe.logger().warning(
+                    f"No overall_feedback for submission {submission_id}; "
+                    "triggering Glific feedback flow with empty feedback"
+                )
 
             # Prepare flow variables
             default_results = {
                 "submission_id": submission_id,
-                "feedback": overall_feedback
+                "feedback": overall_feedback,
+                "overall_feedback": overall_feedback,
+                "overall_feedback_translated": feedback_data.get(
+                    "overall_feedback_translated", ""
+                ),
             }
 
-            # Start Glific flow — pass the resolved Glific contact ID, NOT
-            # the Frappe Student doc name (see docstring above).
+            # Start Glific flow with the Glific contact ID, either resolved
+            # from Student.glific_id or supplied directly by the demo API.
             success = start_contact_flow(
-                flow_id=str(flow_id),
+                flow_id=GLIFIC_FEEDBACK_FLOW_ID,
                 contact_id=str(glific_id),
                 default_results=default_results,
             )
