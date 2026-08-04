@@ -221,10 +221,14 @@ class FeedbackConsumer:
                 )
                 if self._uses_direct_glific_contact_id(notification_student_id):
                     frappe.logger().info(
-                        f"Skipping SP feedback hook for demo submission {submission_id}; "
-                        "student_id is a direct Glific contact ID"
+                        f"Skipping SP feedback hook: submission_id={submission_id}, "
+                        f"student_id={notification_student_id}, id_type=direct_glific"
                     )
                 else:
+                    frappe.logger().info(
+                        f"Running SP feedback hook: submission_id={submission_id}, "
+                        f"student_id={notification_student_id}, id_type=student"
+                    )
                     self.process_feedback_ready(submission_id, message_data)
 
             if self._claim_feedback_flow(submission_id):
@@ -435,8 +439,18 @@ class FeedbackConsumer:
                 frappe.logger().warning(f"No student_id for submission {submission_id}, skipping Glific notification")
                 return
 
+            id_type = "direct_glific" if self._uses_direct_glific_contact_id(student_id) else "student"
+            frappe.logger().info(
+                f"Preparing Glific feedback notification: submission_id={submission_id}, "
+                f"student_id={student_id}, id_type={id_type}, flow_id={GLIFIC_FEEDBACK_FLOW_ID}"
+            )
+
             if self._uses_direct_glific_contact_id(student_id):
                 glific_id = str(student_id).strip()
+                frappe.logger().info(
+                    f"Using direct Glific contact ID for feedback flow: "
+                    f"submission_id={submission_id}, glific_id={glific_id}"
+                )
             else:
                 # Resolve the Glific contact ID from the Student record.
                 # We accept the message's student_id as the Frappe doc name and
@@ -448,6 +462,11 @@ class FeedbackConsumer:
                         f"notification for submission {submission_id}"
                     )
                     return
+                frappe.logger().info(
+                    f"Resolved Student.glific_id for feedback flow: "
+                    f"submission_id={submission_id}, student_id={student_id}, "
+                    f"glific_id={glific_id}"
+                )
 
             feedback_data = message_data.get("feedback", {})
             overall_feedback = feedback_data.get("overall_feedback", "")
@@ -470,6 +489,10 @@ class FeedbackConsumer:
 
             # Start Glific flow with the Glific contact ID, either resolved
             # from Student.glific_id or supplied directly by the demo API.
+            frappe.logger().info(
+                f"Triggering Glific feedback flow: submission_id={submission_id}, "
+                f"flow_id={GLIFIC_FEEDBACK_FLOW_ID}, glific_id={glific_id}"
+            )
             success = start_contact_flow(
                 flow_id=GLIFIC_FEEDBACK_FLOW_ID,
                 contact_id=str(glific_id),
