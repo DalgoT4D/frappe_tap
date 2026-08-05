@@ -10,6 +10,8 @@ from ..glific_integration import start_contact_flow
 from .feedback_processor import FeedbackProcessor
 
 GLIFIC_FEEDBACK_FLOW_ID = "34108"
+DEMO_GLIFIC_COMMENT_SOURCE = "demo_submission"
+DEMO_GLIFIC_COMMENT_TYPE = "feedback_glific_contact"
 
 
 class FeedbackConsumer:
@@ -310,6 +312,62 @@ class FeedbackConsumer:
 
         return not student_id.upper().startswith("ST")
 
+    def _get_submission_comment_glific_id(self, submission_id):
+        if not submission_id:
+            return None
+
+        try:
+            comments = frappe.get_all(
+                "Comment",
+                filters={
+                    "reference_doctype": "Submission",
+                    "reference_name": submission_id,
+                    "comment_type": "Comment",
+                },
+                fields=["name", "content"],
+                order_by="creation desc",
+                limit_page_length=20,
+            )
+        except Exception as exc:
+            frappe.logger().warning(
+                f"Could not read Submission comments for Glific ID: "
+                f"submission_id={submission_id}, error={str(exc)}"
+            )
+            return None
+
+        for comment in comments:
+            content = (comment.get("content") or "").strip()
+            if not content:
+                continue
+
+            try:
+                data = json.loads(content)
+            except (TypeError, ValueError):
+                continue
+
+            if not isinstance(data, dict):
+                continue
+
+            if (
+                data.get("source") != DEMO_GLIFIC_COMMENT_SOURCE
+                or data.get("type") != DEMO_GLIFIC_COMMENT_TYPE
+            ):
+                continue
+
+            glific_id = str(data.get("glific_id") or "").strip()
+            if glific_id:
+                frappe.logger().info(
+                    f"Resolved Glific ID from Submission comment: "
+                    f"submission_id={submission_id}, comment_id={comment.get('name')}, "
+                    f"glific_id={glific_id}"
+                )
+                return glific_id
+
+        frappe.logger().info(
+            f"No demo Glific ID comment found for submission_id={submission_id}"
+        )
+        return None
+
     def _claim_feedback_flow(self, submission_id):
         """
         Atomically claim a pending feedback-flow request.
@@ -425,27 +483,38 @@ class FeedbackConsumer:
     def send_glific_notification(self, message_data: Dict):
         """Send feedback notification via Glific with proper error handling.
 
-        If student_id starts with ST, resolve Student.glific_id before invoking
-        start_contact_flow. Otherwise, treat student_id as the Glific contact
-        ID directly. Both branches trigger flow 34108.
+        If a Submission JSON comment contains the demo Glific ID, use it for
+        start_contact_flow. Otherwise, if student_id starts with ST, resolve
+        Student.glific_id; non-ST student_id values are treated as Glific
+        contact IDs directly. All branches trigger flow 34108.
         """
         try:
             submission_id = message_data["submission_id"]
             student_id = message_data.get("student_id") or frappe.db.get_value(
                 "Submission", submission_id, "student_id"
             )
+            comment_glific_id = self._get_submission_comment_glific_id(submission_id)
 
-            if not student_id:
+            if not student_id and not comment_glific_id:
                 frappe.logger().warning(f"No student_id for submission {submission_id}, skipping Glific notification")
                 return
 
-            id_type = "direct_glific" if self._uses_direct_glific_contact_id(student_id) else "student"
+            if comment_glific_id:
+                id_type = "submission_comment"
+            else:
+                id_type = "direct_glific" if self._uses_direct_glific_contact_id(student_id) else "student"
             frappe.logger().info(
                 f"Preparing Glific feedback notification: submission_id={submission_id}, "
                 f"student_id={student_id}, id_type={id_type}, flow_id={GLIFIC_FEEDBACK_FLOW_ID}"
             )
 
-            if self._uses_direct_glific_contact_id(student_id):
+            if comment_glific_id:
+                glific_id = comment_glific_id
+                frappe.logger().info(
+                    f"Using Submission comment Glific ID for feedback flow: "
+                    f"submission_id={submission_id}, glific_id={glific_id}"
+                )
+            elif self._uses_direct_glific_contact_id(student_id):
                 glific_id = str(student_id).strip()
                 frappe.logger().info(
                     f"Using direct Glific contact ID for feedback flow: "
