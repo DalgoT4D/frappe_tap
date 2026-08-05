@@ -233,7 +233,16 @@ class FeedbackConsumer:
                     )
                     self.process_feedback_ready(submission_id, message_data)
 
+            frappe.logger().info(
+                f"Attempting feedback flow claim: submission_id={submission_id}, "
+                f"message_student_id={message_data.get('student_id')}, "
+                f"feedback_keys={list((message_data.get('feedback') or {}).keys())}"
+            )
             if self._claim_feedback_flow(submission_id):
+                frappe.logger().info(
+                    f"Feedback flow claim succeeded: submission_id={submission_id}; "
+                    "committing claim before Glific trigger"
+                )
                 frappe.db.commit()
                 self.trigger_feedback_flow(submission_id, message_data)
             else:
@@ -389,7 +398,29 @@ class FeedbackConsumer:
             """,
             (submission_id,),
         )
-        return bool(result)
+        if result:
+            frappe.logger().info(
+                f"Feedback flow claim acquired: submission_id={submission_id}"
+            )
+            return True
+
+        try:
+            submission_state = frappe.db.get_value(
+                "Submission",
+                submission_id,
+                ["status", "send_feedback", "feedback_flow_triggered_at"],
+                as_dict=True,
+            )
+            frappe.logger().info(
+                f"Feedback flow claim not acquired: submission_id={submission_id}, "
+                f"submission_state={submission_state}"
+            )
+        except Exception as exc:
+            frappe.logger().warning(
+                f"Feedback flow claim not acquired and state lookup failed: "
+                f"submission_id={submission_id}, error={str(exc)}"
+            )
+        return False
 
     def _claim_feedback_ready_processing(self, submission_id):
         """
@@ -433,7 +464,14 @@ class FeedbackConsumer:
     def trigger_feedback_flow(self, submission_id, message_data):
         # Send Glific notification (non-critical - don't fail message if this fails)
         try:
+            frappe.logger().info(
+                f"Feedback flow trigger started: submission_id={submission_id}, "
+                f"message_student_id={message_data.get('student_id')}"
+            )
             self.send_glific_notification(message_data)
+            frappe.logger().info(
+                f"Feedback flow trigger finished: submission_id={submission_id}"
+            )
         except Exception as glific_error:
             frappe.logger().warning(f"Glific notification failed for {submission_id}: {str(glific_error)}")
             # Continue processing - notification failure shouldn't fail the entire message
@@ -490,6 +528,12 @@ class FeedbackConsumer:
         """
         try:
             submission_id = message_data["submission_id"]
+            feedback_payload = message_data.get("feedback") or {}
+            frappe.logger().info(
+                f"send_glific_notification entered: submission_id={submission_id}, "
+                f"message_student_id={message_data.get('student_id')}, "
+                f"feedback_keys={list(feedback_payload.keys())}"
+            )
             student_id = message_data.get("student_id") or frappe.db.get_value(
                 "Submission", submission_id, "student_id"
             )
@@ -510,12 +554,14 @@ class FeedbackConsumer:
 
             if comment_glific_id:
                 glific_id = comment_glific_id
+                glific_id_source = "submission_comment"
                 frappe.logger().info(
                     f"Using Submission comment Glific ID for feedback flow: "
                     f"submission_id={submission_id}, glific_id={glific_id}"
                 )
             elif self._uses_direct_glific_contact_id(student_id):
                 glific_id = str(student_id).strip()
+                glific_id_source = "direct_student_id"
                 frappe.logger().info(
                     f"Using direct Glific contact ID for feedback flow: "
                     f"submission_id={submission_id}, glific_id={glific_id}"
@@ -531,13 +577,14 @@ class FeedbackConsumer:
                         f"notification for submission {submission_id}"
                     )
                     return
+                glific_id_source = "student_glific_id"
                 frappe.logger().info(
                     f"Resolved Student.glific_id for feedback flow: "
                     f"submission_id={submission_id}, student_id={student_id}, "
                     f"glific_id={glific_id}"
                 )
 
-            feedback_data = message_data.get("feedback", {})
+            feedback_data = feedback_payload
             overall_feedback = feedback_data.get("overall_feedback", "")
 
             if not overall_feedback:
@@ -560,23 +607,34 @@ class FeedbackConsumer:
             # from Student.glific_id or supplied directly by the demo API.
             frappe.logger().info(
                 f"Triggering Glific feedback flow: submission_id={submission_id}, "
-                f"flow_id={GLIFIC_FEEDBACK_FLOW_ID}, glific_id={glific_id}"
+                f"flow_id={GLIFIC_FEEDBACK_FLOW_ID}, glific_id={glific_id}, "
+                f"glific_id_source={glific_id_source}, "
+                f"overall_feedback_chars={len(overall_feedback or '')}, "
+                f"translated_feedback_chars={len(default_results['overall_feedback_translated'] or '')}, "
+                f"default_result_keys={list(default_results.keys())}"
             )
             success = start_contact_flow(
                 flow_id=GLIFIC_FEEDBACK_FLOW_ID,
                 contact_id=str(glific_id),
                 default_results=default_results,
             )
+            frappe.logger().info(
+                f"Glific start_contact_flow returned: submission_id={submission_id}, "
+                f"flow_id={GLIFIC_FEEDBACK_FLOW_ID}, glific_id={glific_id}, "
+                f"success={success}"
+            )
 
             if success:
                 frappe.logger().info(
                     f"Sent Glific notification for submission {submission_id} "
-                    f"to glific_id={glific_id} (student={student_id})"
+                    f"to glific_id={glific_id} (student={student_id}, "
+                    f"glific_id_source={glific_id_source})"
                 )
             else:
                 frappe.logger().warning(
                     f"Failed to send Glific notification for submission "
-                    f"{submission_id} (student={student_id}, glific_id={glific_id})"
+                    f"{submission_id} (student={student_id}, glific_id={glific_id}, "
+                    f"glific_id_source={glific_id_source})"
                 )
 
         except Exception as e:
