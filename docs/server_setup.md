@@ -23,7 +23,7 @@ instance from a backup. Tested on Ubuntu 22.04 / GCP Compute Engine.
 sudo apt update && sudo apt upgrade -y
 sudo apt install -y git python3-pip python3-venv redis-server \
     postgresql postgresql-contrib nginx supervisor \
-    libpq-dev wkhtmltopdf
+    libpq-dev wkhtmltopdf cron
 ```
 
 ### Node.js (via nvm — must be Node 16)
@@ -36,8 +36,27 @@ nvm use 16
 nvm alias default 16
 ```
 
-> **Important:** Frappe's `socketio.js` requires Node 16. Node 18+ will cause
+> **Important:** Frappe v14's `socketio.js` requires Node 16. Node 18+ will cause
 > a spawn error in supervisor.
+
+### Add bench to PATH
+
+`pip install frappe-bench` installs bench to `~/.local/bin` which is not in
+PATH by default:
+
+```bash
+echo 'export PATH=$HOME/.local/bin:$PATH' >> ~/.bashrc
+source ~/.bashrc
+bench --version  # verify
+```
+
+### Install yarn
+
+Frappe requires yarn for building frontend assets:
+
+```bash
+npm install -g yarn
+```
 
 ### Make node visible to supervisor (runs as root)
 
@@ -259,8 +278,7 @@ The feedback consumer listens to the `plagiarism_feedback` RabbitMQ queue and
 processes feedback results. It is **not** started by supervisor automatically —
 it must be added as a separate supervisor program.
 
-Add the following to `~/frappe-bench/config/supervisor.conf` before the
-`[group:frappe-bench-workers]` line:
+Add the following to `~/frappe-bench/config/supervisor.conf` (placement within the file doesn't matter — supervisor processes all `[program:...]` blocks regardless of order):
 
 ```ini
 [program:frappe-bench-feedback-consumer]
@@ -422,6 +440,9 @@ bench --site tap_lms.dev set-admin-password <newpassword>
 
 | Symptom | Cause | Fix |
 |---|---|---|
+| `bench: command not found` after pip install | `~/.local/bin` not in PATH | `echo 'export PATH=$HOME/.local/bin:$PATH' >> ~/.bashrc && source ~/.bashrc` |
+| `FileNotFoundError: /usr/bin/crontab` during bench init | cron not installed | `sudo apt install -y cron` then remove partial bench and retry |
+| `engine "node" is incompatible, Expected version ">=18"` | Wrong Node version for Frappe v15 | Install Node 18 via nvm; Node 16 is for v14 only |
 | `must be member of role "frappe_db"` | Role doesn't exist on new server | Section 5 — create `frappe_db` role |
 | `relation "tabSingles" does not exist` | bench restore pre-flight on empty DB | Section 7 — restore via psql directly |
 | `ModuleNotFoundError: No module named 'business_theme_v14'` | App not installed | `bench get-app` + `install-app` |
