@@ -76,7 +76,7 @@ def _get_bq_client(project, service_account_json):
     creds_dict = json.loads(service_account_json)
     credentials = service_account.Credentials.from_service_account_info(
         creds_dict,
-        scopes=["https://www.googleapis.com/auth/bigquery.readonly"],
+        scopes=["https://www.googleapis.com/auth/bigquery"],
     )
     return bigquery.Client(project=project, credentials=credentials)
 
