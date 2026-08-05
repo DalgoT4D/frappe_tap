@@ -90,7 +90,7 @@ def _run_sync(client, project, dataset):
             phone,
             JSON_VALUE(raw_fields, '$.sp_submission_link.value') AS sp_submission_link,
             JSON_VALUE(raw_fields, '$.last_flow_incomplete.value') AS last_flow_incomplete,
-            JSON_VALUE(raw_fields, '$.SP_assigment_id.value')    AS last_assignment_name
+            JSON_VALUE(raw_fields, '$.sp_assigment_id.value')    AS last_assignment_name
         FROM `{project}.{dataset}.contacts`
         WHERE JSON_VALUE(raw_fields, '$.program_type.value') = 'Summer'
           AND JSON_VALUE(raw_fields, '$.program_status.value') IN ('active', 'paused')
@@ -180,9 +180,12 @@ def _run_sync(client, project, dataset):
     else:
         frappe.logger().info(f"{_MODULE}: {msg}")
 
-
 def _clean(val):
     if val is None:
         return None
     s = str(val).strip()
-    return s if s else None
+    if not s:
+        return None
+    if s.startswith('@results') or s == 'reset':
+        return None
+    return s
