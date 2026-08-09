@@ -13,7 +13,7 @@ from google.oauth2 import service_account
 GCP_CREDENTIALS_PROJECT_ID = "rubrics-data-migration"
 FAILED_ROWS_GCP_PROJECT_ID = "axiomatic-treat-417617"
 GLIFIC_CONTACTS_FOLDER = "Glific_contacts"
-GLIFIC_CSV_HEADERS = [
+GLIFIC_NEW_STUDENT_CSV_HEADERS = [
     "name",
     "phone",
     "language",
@@ -27,6 +27,19 @@ GLIFIC_CSV_HEADERS = [
     "level",
     "course",
 ]
+GLIFIC_EXISTING_STUDENT_CSV_HEADERS = [
+    "name",
+    "phone",
+    "school_id",
+    "state",
+    "model",
+    "buddy_name",
+    "batch_id",
+    "grade",
+    "level",
+    "course",
+]
+GLIFIC_CSV_HEADERS = GLIFIC_NEW_STUDENT_CSV_HEADERS
 
 GOOGLE_DRIVE_READONLY_SCOPES = (
     "https://www.googleapis.com/auth/drive.readonly",
@@ -96,18 +109,30 @@ def upload_glific_contact_csv(
     file_name: str,
     rows: list[dict],
     project_id: str = FAILED_ROWS_GCP_PROJECT_ID,
+    headers: Sequence[str] | None = None,
 ) -> str:
     return upload_bytes_to_gcs(
-        render_glific_contact_csv(rows),
+        render_glific_contact_csv(rows, headers=headers),
         f"{GLIFIC_CONTACTS_FOLDER}/{file_name}",
         project_id,
         content_type="text/csv",
     )
 
 
-def render_glific_contact_csv(rows: list[dict]) -> bytes:
+def render_glific_contact_csv(
+    rows: list[dict],
+    headers: Sequence[str] | None = None,
+) -> bytes:
+    fieldnames = list(headers or GLIFIC_CSV_HEADERS)
     buffer = StringIO()
-    writer = csv.DictWriter(buffer, fieldnames=GLIFIC_CSV_HEADERS)
+    writer = csv.DictWriter(buffer, fieldnames=fieldnames)
     writer.writeheader()
-    writer.writerows(rows)
+    writer.writerows([
+        {header: _csv_value(row.get(header)) for header in fieldnames}
+        for row in rows
+    ])
     return buffer.getvalue().encode("utf-8")
+
+
+def _csv_value(value: object) -> str:
+    return "" if value is None else str(value)

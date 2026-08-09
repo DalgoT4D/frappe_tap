@@ -71,7 +71,7 @@ def get_rabbitmq_settings():
             "username": "aoafhbrm",
             "password": "@@@@",
             "virtual_host": "aoafhbrm",
-            "queue": "feedback_q_local",
+            "queue": "feedback_q",
         }
     except Exception as e:
         print(f"Error fetching RabbitMQ settings: {e}")

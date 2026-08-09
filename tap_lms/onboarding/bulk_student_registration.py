@@ -17,7 +17,8 @@ from psycopg2.extras import execute_values
 from tap_lms.onboarding.backend_upload_utils import (
     FAILED_ROWS_GCP_PROJECT_ID,
     GCP_CREDENTIALS_PROJECT_ID,
-    GLIFIC_CSV_HEADERS,
+    GLIFIC_EXISTING_STUDENT_CSV_HEADERS,
+    GLIFIC_NEW_STUDENT_CSV_HEADERS,
     get_google_service_account_credentials as _get_google_service_account_credentials,
     get_google_service_account_email as _get_google_service_account_email,
     upload_bytes_to_gcs as _upload_bytes_to_gcs,
@@ -199,6 +200,7 @@ def run_import(
                     log_fn,
                     "[student-import] glific_contacts_file "
                     f"tab={export_file['tab_name']} "
+                    f"student_type={export_file.get('student_type') or ''} "
                     f"rows={export_file['row_count']} "
                     f"url={export_file['file_path']}"
                 )
@@ -392,12 +394,33 @@ def _build_failed_rows_filename_stem(job_name: str | None, timestamp: str) -> st
     return f"{sanitized_job_name or 'student_bulk_import'}_{timestamp}"
 
 
+def _build_glific_contact_file_name(
+    tab_name: str,
+    student_type: str,
+    timestamp: str,
+) -> str:
+    sanitized_tab_name = re.sub(
+        r"[^A-Za-z0-9_-]+",
+        "_",
+        (tab_name or "").strip(),
+    ).strip("_")
+    return f"{sanitized_tab_name or 'sheet'}_{student_type}_students_{timestamp}.csv"
+
+
+def _glific_contact_row_for_headers(row: dict, headers: Iterable[str]) -> dict[str, str]:
+    return {
+        header: "" if row.get(header) is None else str(row.get(header))
+        for header in headers
+    }
+
+
 def _create_and_upload_glific_contact_csvs(tab_names: list[str]) -> list[dict]:
     rows = _rows("""
         SELECT
             x.source_tab,
             x.source_priority,
             x.row_in_tab,
+            COALESCE(x.existed_before_import, false) AS existed_before_import,
             COALESCE(s.name1, '') AS name,
             COALESCE(s.phone, '') AS phone,
             COALESCE(lang.language_name, '') AS language,
@@ -428,24 +451,45 @@ def _create_and_upload_glific_contact_csvs(tab_names: list[str]) -> list[dict]:
         ORDER BY x.source_priority, x.row_in_tab
     """)
 
-    rows_by_tab: dict[str, list[dict]] = {tab_name: [] for tab_name in tab_names}
+    rows_by_tab: dict[str, dict[str, list[dict]]] = {
+        tab_name: {"new": [], "existing": []}
+        for tab_name in tab_names
+    }
     for row in rows:
-        rows_by_tab.setdefault(row["source_tab"], []).append({
-            header: str(row.get(header) or "")
-            for header in GLIFIC_CSV_HEADERS
-        })
+        student_type = "existing" if row.get("existed_before_import") else "new"
+        headers = (
+            GLIFIC_EXISTING_STUDENT_CSV_HEADERS
+            if student_type == "existing"
+            else GLIFIC_NEW_STUDENT_CSV_HEADERS
+        )
+        contact_row = _glific_contact_row_for_headers(row, headers)
+        rows_by_tab.setdefault(
+            row["source_tab"],
+            {"new": [], "existing": []},
+        )[student_type].append(contact_row)
 
     timestamp = frappe.utils.now_datetime().strftime("%Y%m%d_%H%M%S")
     exported_files: list[dict] = []
     for tab_name in tab_names:
-        file_name = f"{tab_name}_{timestamp}.csv"
-        file_path = _upload_glific_contact_csv(file_name, rows_by_tab.get(tab_name, []))
-        exported_files.append({
-            "tab_name": tab_name,
-            "file_name": file_name,
-            "file_path": file_path,
-            "row_count": len(rows_by_tab.get(tab_name, [])),
-        })
+        rows_for_tab = rows_by_tab.get(tab_name, {"new": [], "existing": []})
+        for student_type, headers in (
+            ("new", GLIFIC_NEW_STUDENT_CSV_HEADERS),
+            ("existing", GLIFIC_EXISTING_STUDENT_CSV_HEADERS),
+        ):
+            contact_rows = rows_for_tab.get(student_type, [])
+            file_name = _build_glific_contact_file_name(tab_name, student_type, timestamp)
+            file_path = _upload_glific_contact_csv(
+                file_name,
+                contact_rows,
+                headers=headers,
+            )
+            exported_files.append({
+                "tab_name": tab_name,
+                "student_type": student_type,
+                "file_name": file_name,
+                "file_path": file_path,
+                "row_count": len(contact_rows),
+            })
     return exported_files
 
 
@@ -561,7 +605,8 @@ def _prepare_temp_tables() -> None:
         grade_in text,
         derived_level text,
         batch_name text,
-        vertical_id text
+        vertical_id text,
+        existed_before_import boolean NOT NULL DEFAULT false
     );
     """
     frappe.db.sql(sql)
@@ -1341,7 +1386,8 @@ def _insert_enrollments(import_date: date, import_user: str) -> int:
             grade_in,
             derived_level,
             batch_name,
-            vertical_id
+            vertical_id,
+            existed_before_import
         )
         SELECT
             source_tab,
@@ -1352,7 +1398,8 @@ def _insert_enrollments(import_date: date, import_user: str) -> int:
             grade_in,
             derived_level,
             batch_name,
-            vertical_id
+            vertical_id,
+            existed_before_import
         FROM tmp_student_import_resolved
     """)
     return total_rows
