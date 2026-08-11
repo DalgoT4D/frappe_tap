@@ -41,8 +41,7 @@ SCHOOL_FLOW_REGISTRATION_CITIES = {
     "DoE Zone 27",
     "DoE Zone 28",
     "DoE- North Zone 7",
-    "DoE North Zone 8",
-    "DOE - Central"
+    "DoE Zone 8"
 }
 
 
