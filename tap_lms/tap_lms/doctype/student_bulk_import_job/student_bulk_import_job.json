@@ -31,6 +31,7 @@
   "run_details_row_5_section_break",
   "failed_rows",
   "failed_rows_file_url",
+  "remaining_rows",
   "glific_contact_files",
   "summary_json",
   "last_error",
@@ -159,6 +160,12 @@
    "fieldname": "failed_rows_file_url",
    "fieldtype": "Long Text",
    "label": "Failed Rows File URL",
+   "read_only": 1
+  },
+  {
+   "fieldname": "remaining_rows",
+   "fieldtype": "Long Text",
+   "label": "Remaining Rows",
    "read_only": 1
   },
   {

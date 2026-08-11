@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timedelta
 from io import BytesIO
 from typing import Callable, Iterable
 from urllib.parse import urlparse
@@ -63,6 +63,16 @@ FAILED_WORKBOOK_HEADERS = [
     "School ID",
     "Language",
 ]
+REMAINING_ROWS_WORKBOOK_HEADERS = [
+    "Student Name",
+    "Contact No.",
+    "Gender",
+    "School ID",
+    "Language",
+    "Batch",
+    "Grade",
+    "Course",
+]
 
 @dataclass(frozen=True)
 class RawRow:
@@ -94,6 +104,18 @@ def _emit_progress(
         progress_fn(payload)
 
 
+def _should_stop_before_timeout(
+    started_at: datetime,
+    timeout_seconds: int | None,
+    stop_before_timeout_seconds: int,
+) -> bool:
+    if not timeout_seconds:
+        return False
+    deadline = started_at + timedelta(seconds=timeout_seconds)
+    remaining_seconds = (deadline - frappe.utils.now_datetime()).total_seconds()
+    return remaining_seconds <= stop_before_timeout_seconds
+
+
 def run_import(
     spreadsheet_url: str | None = None,
     tab_names: list[str] | None = None,
@@ -101,6 +123,9 @@ def run_import(
     batch_size: int | None = None,
     import_user: str | None = None,
     job_name: str | None = None,
+    import_date: date | str | None = None,
+    timeout_seconds: int | None = None,
+    stop_before_timeout_seconds: int = 600,
     log_fn: Callable[[str], None] | None = None,
     progress_fn: Callable[[dict], None] | None = None,
 ) -> dict:
@@ -119,7 +144,7 @@ def run_import(
     if batch_size <= 0:
         raise ValueError("batch_size must be > 0")
 
-    import_date = date.today()
+    import_date = frappe.utils.getdate(import_date) if import_date else date.today()
     started_at = frappe.utils.now_datetime()
     _emit(
         log_fn,
@@ -151,8 +176,13 @@ def run_import(
             "updated_students": 0,
             "inserted_students": 0,
             "inserted_enrollments": 0,
+            "skipped_duplicate_enrollments": 0,
             "batches_processed": 0,
             "effective_rows": total_effective_rows,
+            "processed_rows": 0,
+            "remaining_rows_count": 0,
+            "remaining_rows": "",
+            "stopped_before_timeout": False,
             "failed_rows": precheck["invalid_rows"],
             "skipped_rows": precheck["invalid_rows"],
             "failed_rows_file_url": failed_rows_file_url,
@@ -169,7 +199,9 @@ def run_import(
             summary["updated_students"] += batch_summary["updated_students"]
             summary["inserted_students"] += batch_summary["inserted_students"]
             summary["inserted_enrollments"] += batch_summary["inserted_enrollments"]
+            summary["skipped_duplicate_enrollments"] += batch_summary["skipped_duplicate_enrollments"]
             summary["batches_processed"] = batch_no
+            summary["processed_rows"] = min(offset + batch_summary["batch_rows"], total_effective_rows)
             elapsed = frappe.utils.now_datetime() - started_at
             batch_message = (
                 "[student-import] batch completed "
@@ -178,7 +210,8 @@ def run_import(
                 f"updated_in_batch={batch_summary['updated_students']} "
                 f"inserted_in_batch={batch_summary['inserted_students']} "
                 f"enrollments_in_batch={batch_summary['inserted_enrollments']} "
-                f"processed_total={min(offset + batch_summary['batch_rows'], total_effective_rows)}/{total_effective_rows} "
+                f"duplicate_enrollments_skipped={batch_summary['skipped_duplicate_enrollments']} "
+                f"processed_total={summary['processed_rows']}/{total_effective_rows} "
                 f"elapsed={elapsed}"
             )
             _emit(log_fn, batch_message)
@@ -186,12 +219,44 @@ def run_import(
                 "event": "batch_completed",
                 "batch_no": batch_no,
                 "batch_rows": batch_summary["batch_rows"],
-                "processed_total": min(offset + batch_summary["batch_rows"], total_effective_rows),
+                "processed_total": summary["processed_rows"],
                 "effective_rows": total_effective_rows,
                 "elapsed": str(elapsed),
                 "summary": dict(summary),
                 "message": batch_message,
             })
+            if (
+                summary["processed_rows"] < total_effective_rows
+                and _should_stop_before_timeout(started_at, timeout_seconds, stop_before_timeout_seconds)
+            ):
+                remaining_rows_url, remaining_rows_count = _create_and_upload_remaining_rows_workbook(
+                    processed_total=int(summary["processed_rows"]),
+                    tab_names=tab_names,
+                    job_name=job_name,
+                )
+                summary["remaining_rows"] = remaining_rows_url
+                summary["remaining_rows_count"] = remaining_rows_count
+                summary["stopped_before_timeout"] = True
+                summary["stop_reason"] = (
+                    f"Stopped with <= {stop_before_timeout_seconds} seconds remaining before worker timeout."
+                )
+                stop_message = (
+                    "[student-import] stopped before timeout "
+                    f"processed_total={summary['processed_rows']}/{total_effective_rows} "
+                    f"remaining_rows={remaining_rows_count} "
+                    f"remaining_rows_file_url={remaining_rows_url}"
+                )
+                _emit(log_fn, stop_message)
+                _emit_progress(progress_fn, {
+                    "event": "stopped_before_timeout",
+                    "processed_total": summary["processed_rows"],
+                    "effective_rows": total_effective_rows,
+                    "elapsed": str(frappe.utils.now_datetime() - started_at),
+                    "summary": dict(summary),
+                    "message": stop_message,
+                })
+                frappe.db.commit()
+                break
 
         try:
             summary["glific_contact_files"] = _create_and_upload_glific_contact_csvs(tab_names)
@@ -389,9 +454,70 @@ def _create_and_upload_failed_rows_workbook(tab_names: list[str], job_name: str 
     return _upload_bytes_to_gcs(buffer.getvalue(), object_name, FAILED_ROWS_GCP_PROJECT_ID)
 
 
+def _create_and_upload_remaining_rows_workbook(
+    processed_total: int,
+    tab_names: list[str],
+    job_name: str | None = None,
+) -> tuple[str, int]:
+    remaining_rows = _rows("""
+        SELECT
+            source_tab,
+            student_name_raw AS "Student Name",
+            contact_no_raw AS "Contact No.",
+            gender_raw AS "Gender",
+            school_id_raw AS "School ID",
+            language_raw AS "Language",
+            batch_raw AS "Batch",
+            grade_raw AS "Grade",
+            course_raw AS "Course"
+        FROM (
+            SELECT
+                v.*,
+                row_number() OVER (ORDER BY source_priority, row_in_tab) AS import_position
+            FROM tmp_student_import_valid v
+        ) ordered
+        WHERE import_position > %s
+        ORDER BY import_position
+    """, (processed_total,))
+
+    rows_by_tab: dict[str, list[dict]] = {tab_name: [] for tab_name in tab_names}
+    for row in remaining_rows:
+        rows_by_tab.setdefault(row["source_tab"], []).append(row)
+
+    wb = Workbook()
+    default_sheet = wb.active
+    wb.remove(default_sheet)
+    for tab_name in tab_names:
+        ws = wb.create_sheet(title=tab_name or "Sheet")
+        ws.append(REMAINING_ROWS_WORKBOOK_HEADERS)
+        for row in rows_by_tab.get(tab_name, []):
+            ws.append([
+                row.get(header) or ""
+                for header in REMAINING_ROWS_WORKBOOK_HEADERS
+            ])
+
+    buffer = BytesIO()
+    wb.save(buffer)
+
+    timestamp = frappe.utils.now_datetime().strftime("%Y%m%d_%H%M%S")
+    file_stem = _build_remaining_rows_filename_stem(job_name, timestamp)
+    object_name = f"student-bulk-import-remaining/{file_stem}.xlsx"
+    file_url = _upload_bytes_to_gcs(
+        buffer.getvalue(),
+        object_name,
+        FAILED_ROWS_GCP_PROJECT_ID,
+    )
+    return file_url, len(remaining_rows)
+
+
 def _build_failed_rows_filename_stem(job_name: str | None, timestamp: str) -> str:
     sanitized_job_name = re.sub(r"[^A-Za-z0-9_-]+", "_", (job_name or "").strip()).strip("_")
     return f"{sanitized_job_name or 'student_bulk_import'}_{timestamp}"
+
+
+def _build_remaining_rows_filename_stem(job_name: str | None, timestamp: str) -> str:
+    sanitized_job_name = re.sub(r"[^A-Za-z0-9_-]+", "_", (job_name or "").strip()).strip("_")
+    return f"{sanitized_job_name or 'student_bulk_import'}_remaining_rows_{timestamp}"
 
 
 def _build_glific_contact_file_name(
@@ -1120,13 +1246,14 @@ def _execute_import(import_date: date, import_user: str, source_table: str = "tm
 
     updated_count = _update_existing_students(import_user=import_user)
     inserted_count = _insert_new_students(import_date=import_date, import_user=import_user)
-    enrollment_count = _insert_enrollments(import_date=import_date, import_user=import_user)
+    enrollment_summary = _insert_enrollments(import_date=import_date, import_user=import_user)
 
     return {
         "batch_rows": _scalar(f"SELECT count(*) FROM {source_table}"),
         "updated_students": updated_count,
         "inserted_students": inserted_count,
-        "inserted_enrollments": enrollment_count,
+        "inserted_enrollments": enrollment_summary["inserted_enrollments"],
+        "skipped_duplicate_enrollments": enrollment_summary["skipped_duplicate_enrollments"],
     }
 
 
@@ -1280,8 +1407,9 @@ def _sync_student_series_counter() -> None:
     """)
 
 
-def _insert_enrollments(import_date: date, import_user: str) -> int:
+def _insert_enrollments(import_date: date, import_user: str) -> dict:
     frappe.db.sql("DROP TABLE IF EXISTS tmp_student_import_resolved")
+    frappe.db.sql("DROP TABLE IF EXISTS tmp_student_import_enrollment_to_insert")
     frappe.db.sql("""
         CREATE TEMP TABLE tmp_student_import_resolved AS
         SELECT
@@ -1320,7 +1448,30 @@ def _insert_enrollments(import_date: date, import_user: str) -> int:
 
     total_rows = _scalar("SELECT count(*) FROM tmp_student_import_resolved")
     if not total_rows:
-        return 0
+        return {
+            "inserted_enrollments": 0,
+            "skipped_duplicate_enrollments": 0,
+        }
+
+    frappe.db.sql("""
+        CREATE TEMP TABLE tmp_student_import_enrollment_to_insert AS
+        SELECT r.*
+        FROM tmp_student_import_resolved r
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM "tabStudent Enrollment" existing
+            WHERE existing.parent = r.student_id
+              AND existing.parenttype = 'Student'
+              AND existing.parentfield = 'enrollment'
+              AND existing.batch IS NOT DISTINCT FROM r.batch_name
+              AND existing.vertical IS NOT DISTINCT FROM r.vertical_id
+              AND existing.level IS NOT DISTINCT FROM r.derived_level
+              AND existing.grade IS NOT DISTINCT FROM r.grade_in
+              AND existing.school IS NOT DISTINCT FROM r.school_id
+        )
+    """)
+
+    enrollment_rows_to_insert = _scalar("SELECT count(*) FROM tmp_student_import_enrollment_to_insert")
 
     frappe.db.sql("""
         INSERT INTO "tabStudent Enrollment" (
@@ -1371,7 +1522,7 @@ def _insert_enrollments(import_date: date, import_user: str) -> int:
             %(import_date)s,
             r.school_id,
             0
-        FROM tmp_student_import_resolved r
+        FROM tmp_student_import_enrollment_to_insert r
     """, {
         "import_user": import_user,
         "import_date": import_date,
@@ -1402,7 +1553,10 @@ def _insert_enrollments(import_date: date, import_user: str) -> int:
             existed_before_import
         FROM tmp_student_import_resolved
     """)
-    return total_rows
+    return {
+        "inserted_enrollments": enrollment_rows_to_insert,
+        "skipped_duplicate_enrollments": total_rows - enrollment_rows_to_insert,
+    }
 
 
 def _scalar(sql: str, params: object | None = None) -> int:
