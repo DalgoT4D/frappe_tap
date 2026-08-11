@@ -92,6 +92,8 @@ logging:
     # JSON structure and use modify_fields to map the timestamp separately.
     parse_tap_lms_json:
       type: parse_json
+      time_key: timestamp
+      time_format: "%Y-%m-%dT%H:%M:%S.%f"
 
     # ── Promote severity field to LogEntry.severity ────────────────────────
     # monitoring.py emits `"severity": "ERROR"` as a plain JSON field.
@@ -108,10 +110,8 @@ logging:
     promote_severity:
       type: modify_fields
       fields:
-        logging.googleapis.com/severity:
+        severity:
           move_from: jsonPayload.severity
-        time:
-          move_from: jsonPayload.timestamp
 
     # ── Exclude high-volume INFO http_request logs from storage ───────────
     # http_request logs are emitted for every API call (needed for P95
