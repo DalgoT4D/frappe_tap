@@ -37,11 +37,12 @@ SCHOOL_STATE_LANGUAGE_MAP = {
     "DELHI": "Hinglish",
 }
 
-SCHOOL_REGISTRATION_TYPE_MAP = {
-    "MAHARASHTRA": "form",
-    "PUNJAB": "form",
-    "UTTAR PRADESH": "flow",
-    "DELHI": "flow",
+SCHOOL_FLOW_REGISTRATION_CITIES = {
+    "DoE Zone 27",
+    "DoE Zone 28",
+    "DoE- North Zone 7",
+    "DoE North Zone 8",
+    "DOE - Central"
 }
 
 
@@ -163,8 +164,8 @@ def _get_school_language(state):
     return SCHOOL_STATE_LANGUAGE_MAP.get(state, "")
 
 
-def _get_school_registration_type(state):
-    return SCHOOL_REGISTRATION_TYPE_MAP.get(state, "flow")
+def _get_school_registration_type(city):
+    return "flow" if (city or "").strip() in SCHOOL_FLOW_REGISTRATION_CITIES else "form"
 
 
 def _upsert_student_consent(phone_number, school_id=None, whatsapp_consent=0):
@@ -267,7 +268,7 @@ def verify_school_by_id(school_id, phone_number=None):
                 "district": school_row["district"],
                 "city": school_row["city"],
                 "school_langugage": _get_school_language(school_row["state"]),
-                "registration_type": _get_school_registration_type(school_row["state"]),
+                "registration_type": _get_school_registration_type(school_row["city"]),
                 "student_registration_url": (
                     f"http://registration.theapprenticeproject.org/student/{school_row['school_id']}"
                 ),
