@@ -127,6 +127,73 @@ class TestStudentRegistrationType(unittest.TestCase):
         self.assertEqual(responses[0][0], 200)
         self.assertEqual(responses[0][1]["registration_type"], "flow")
 
+    def test_create_student_web_retries_transient_db_conflict(self):
+        error = Exception("could not serialize access due to concurrent update")
+        student_registration.frappe.db.rollback.reset_mock()
+
+        with patch.object(
+            student_registration,
+            "_get_request_data",
+            return_value={"phone": "919999999999"},
+        ), patch.object(
+            student_registration,
+            "_create_student_web_once",
+            side_effect=[error, None],
+        ) as create_once, patch.object(
+            student_registration,
+            "_sleep_before_create_student_retry",
+        ) as sleep_before_retry, patch.object(
+            student_registration,
+            "_respond",
+        ) as respond:
+            student_registration.create_student_web()
+
+        self.assertEqual(create_once.call_count, 2)
+        student_registration.frappe.db.rollback.assert_called_once()
+        sleep_before_retry.assert_called_once_with(0)
+        respond.assert_not_called()
+
+    def test_create_student_web_returns_500_after_retry_exhaustion(self):
+        error = Exception("could not serialize access due to concurrent update")
+        student_registration.frappe.db.rollback.reset_mock()
+
+        with patch.object(
+            student_registration,
+            "_get_request_data",
+            return_value={"phone": "919999999999"},
+        ), patch.object(
+            student_registration,
+            "_create_student_web_once",
+            side_effect=error,
+        ) as create_once, patch.object(
+            student_registration,
+            "_sleep_before_create_student_retry",
+        ) as sleep_before_retry, patch.object(
+            student_registration,
+            "_respond",
+        ) as respond:
+            student_registration.create_student_web()
+
+        self.assertEqual(
+            create_once.call_count,
+            student_registration.CREATE_STUDENT_WEB_MAX_RETRIES + 1,
+        )
+        self.assertEqual(
+            student_registration.frappe.db.rollback.call_count,
+            student_registration.CREATE_STUDENT_WEB_MAX_RETRIES + 1,
+        )
+        self.assertEqual(
+            sleep_before_retry.call_count,
+            student_registration.CREATE_STUDENT_WEB_MAX_RETRIES,
+        )
+        respond.assert_called_once_with(
+            500,
+            {
+                "status": "failure",
+                "message": "could not serialize access due to concurrent update",
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
