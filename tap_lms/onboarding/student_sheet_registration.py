@@ -307,12 +307,12 @@ def _prepare_source_row(
     base["gender"] = _normalize_gender(base["gender_raw"])
     base["student_name"] = _clean_student_name(base["student_name_raw"])
 
-    consent = _get_latest_student_consent(phone)
-    if not consent:
-        return _prepared_error(base, "Student Consent not found for contact_phone_number")
-    if not consent.get("school"):
-        return _prepared_error(base, "Student Consent has no school")
-    school_id = consent["school"]
+    school_id, school_error = _get_school_id_for_registration(
+        phone,
+        base["student_name"],
+    )
+    if school_error:
+        return _prepared_error(base, school_error)
     if not frappe.db.exists("School", school_id):
         return _prepared_error(base, f"School not found: {school_id}")
     base["school_id"] = school_id
@@ -597,6 +597,35 @@ def _get_latest_student_consent(phone: str) -> dict | None:
         LIMIT 1
     """, {"phones": tuple(_phone_variants(phone))}, as_dict=True)
     return rows[0] if rows else None
+
+
+def _get_school_id_for_registration(phone: str, student_name: str) -> tuple[str, str]:
+    consent = _get_latest_student_consent(phone)
+    if consent:
+        school_id = str(consent.get("school") or "").strip()
+        if not school_id:
+            return "", "Student Consent has no school"
+        return school_id, ""
+
+    existing_student = _get_existing_student_for_phone(phone, student_name)
+    if not existing_student:
+        return "", "Student Consent not found and Student not found for contact_phone_number"
+
+    school_id = str(existing_student.get("school_id") or "").strip()
+    if not school_id:
+        return "", "Existing Student has no school_id for contact_phone_number"
+    return school_id, ""
+
+
+def _get_existing_student_for_phone(phone: str, student_name: str) -> dict | None:
+    student = _find_existing_student(phone, student_name)
+    if not student:
+        return None
+    school_id = frappe.db.get_value("Student", student, "school_id") or ""
+    return {
+        "name": student,
+        "school_id": school_id,
+    }
 
 
 def _get_course_from_school_enrollment(school_enrollment, grade: str) -> dict:

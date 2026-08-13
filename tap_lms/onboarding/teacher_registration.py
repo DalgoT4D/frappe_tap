@@ -23,6 +23,7 @@ from tap_lms.onboarding.utils import (
     _validate_phone,
 )
 from tap_lms.utils.api_failures import log_api_failure
+from tap_lms.utils.glific_timeout import log_glific_timeout
 
 try:
     import psycopg2.errors as pg_errors
@@ -368,6 +369,7 @@ def _create_teacher_web_once(data):
 
 
 @frappe.whitelist(allow_guest=True)
+@log_glific_timeout()
 def teacher_whatsapp_response(phone_number):
     _run_teacher_write_with_retry(
         "teacher_whatsapp_response",

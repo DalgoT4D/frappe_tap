@@ -3,6 +3,7 @@ import time
 
 import frappe
 from frappe.utils import now_datetime
+from tap_lms.utils.glific_timeout import log_glific_timeout
 
 try:
     import psycopg2.errors as pg_errors
@@ -49,7 +50,7 @@ STUDENT_COURSE_NAME_ALIASES = {
 }
 
 SCHOOL_STATE_LANGUAGE_MAP = {
-    "MAHARASHTRA": "Marathi",
+    "MAHARASHTRA": "undetected",
     "PUNJAB": "Punjabi",
     "UTTAR PRADESH": "Hindi",
     "DELHI": "Hinglish",
@@ -293,6 +294,7 @@ def _upsert_student_consent(phone_number, school_id=None, whatsapp_consent=0):
 
 
 @frappe.whitelist(allow_guest=True)
+@log_glific_timeout()
 def verify_school_by_id(school_id, phone_number=None):
     try:
         school_id = str(school_id or "").strip()
@@ -497,6 +499,7 @@ def _create_student_web_once(data):
 
 
 @frappe.whitelist(allow_guest=True)
+@log_glific_timeout()
 def student_whatsapp_response(phone_number):
     try:
         phone, phone_error = _require_valid_phone(phone_number)
@@ -553,6 +556,7 @@ def student_whatsapp_response(phone_number):
 
 
 @frappe.whitelist(allow_guest=True)
+@log_glific_timeout()
 def set_student_course_level(phone_number, course_name):
     try:
         phone, phone_error = _require_valid_phone(phone_number)
