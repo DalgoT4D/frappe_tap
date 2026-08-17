@@ -31,6 +31,7 @@ import json
 
 import frappe
 from frappe.utils import now_datetime
+from tap_lms.monitoring import emit
 
 from tap_lms.summer_program.constants import (
     VOCALLABS_MAX_RETRIES,
@@ -97,6 +98,11 @@ def initiate_parent_call(pe_name, escalation_step, retry_count=0):
             message=f"Vocallabs: PE {pe_name} not found; skipping parent call.",
             title=VOCALLABS_DLQ_LOG_TITLE,
         )
+        emit(
+            severity="ERROR",
+            message="vocallabs_pe_not_found",
+            pe_name=pe_name
+        )
         return False
 
     # ── Settings check ──────────────────────────────────────
@@ -106,6 +112,11 @@ def initiate_parent_call(pe_name, escalation_step, retry_count=0):
             message=f"Vocallabs: VoiceAgentSettings singleton missing for PE {pe_name}; skipping.",
             title="SP Vocallabs Config",
         )
+        emit(
+            severity="ERROR",
+            message="vocallabs_settings_missing",
+            pe_name=pe_name
+        )
         return False
 
     if not getattr(settings, "enabled", 0):
@@ -114,6 +125,11 @@ def initiate_parent_call(pe_name, escalation_step, retry_count=0):
             message=f"Vocallabs disabled (VoiceAgentSettings.enabled=0); "
             f"skipping parent call for PE {pe_name}.",
             title="SP Vocallabs Skipped",
+        )
+        emit(
+            severity="WARNING",
+            message="vocallabs_disabled",
+            pe_name=pe_name
         )
         return False
 
@@ -128,6 +144,11 @@ def initiate_parent_call(pe_name, escalation_step, retry_count=0):
             f"Skipping parent call; the cohort is NOT blocked.",
             title="SP Vocallabs Config",
         )
+        emit(
+            severity="WARNING",
+            message="vocallabs_config_missing",
+            pe_name=pe_name
+        )
         return False
 
     # ── Resolve student + parent phone ──────────────────────
@@ -139,12 +160,24 @@ def initiate_parent_call(pe_name, escalation_step, retry_count=0):
             f"cannot place parent call for PE {pe_name}.",
             title="SP Vocallabs Config",
         )
+        emit(
+            severity="WARNING",
+            message="vocallabs_phone_missing",
+            pe_name=pe_name,
+            student_id=pe.student
+        )
         return False
 
     # ── Render status ──────────────────────────────────────
     welcome_greeting = _resolve_welcome_greeting(pe)
     if welcome_greeting == "None":
         frappe.logger().info("Skipping parent call for Dormant/Arm B student per config.")
+        emit(
+            severity="INFO",
+            message="vocallabs_dormant_skipped",
+            pe_name=pe_name,
+            student_id=pe.student
+        )
         return True
 
     status_text = _render_status_template(
@@ -153,6 +186,14 @@ def initiate_parent_call(pe_name, escalation_step, retry_count=0):
     )
 
     # ── Run the 3-step Vocallabs sequence ──────────────────
+    emit(
+        severity="INFO",
+        message="vocallabs_initiating_call",
+        pe_name=pe.name,
+        student_id=pe.student,
+        phone=parent_phone,
+        step=escalation_step.get("escalation_order")
+    )
     try:
         token = _get_auth_token(settings)
         if not token:
@@ -179,6 +220,15 @@ def initiate_parent_call(pe_name, escalation_step, retry_count=0):
             parent_phone=parent_phone, error=e, retry_count=retry_count,
         )
 
+    emit(
+        severity="INFO",
+        message="vocallabs_call_success",
+        pe_name=pe.name,
+        student_id=pe.student,
+        phone=parent_phone,
+        step=escalation_step.get("escalation_order"),
+        prospect_id=getattr(student, "vocallabs_prospect_id", "")
+    )
     # Success — log a successful parent-call attempt for the funnel.
     # Field names per programeventlog.json: `enrollment` (reqd), `student`
     # (reqd), `batch` (reqd), `program_type`, `week`, `event_type`,
@@ -1163,6 +1213,15 @@ def _handle_failure(pe, escalation_step, parent_phone, error, retry_count):
 
     # ── Permanent-failure short-circuit (task #80) ──────────
     if isinstance(error, PermanentVocallabsError):
+        emit(
+            severity="WARNING",
+            message="vocallabs_call_duplicate_prospect_no_retry",
+            pe_name=pe_name,
+            student_id=pe.student,
+            parent_phone=parent_phone,
+            escalation_order=escalation_order,
+            error=str(error)
+        )
         frappe.log_error(
             title=VOCALLABS_DUPLICATE_PROSPECT_LOG_TITLE,
             message=json.dumps({
@@ -1185,6 +1244,17 @@ def _handle_failure(pe, escalation_step, parent_phone, error, retry_count):
     if retry_count <= VOCALLABS_MAX_RETRIES:
         # Log the transient + re-enqueue (no backoff for parity with the
         # Glific sync retry policy in state_machine.py).
+        emit(
+            severity="WARNING",
+            message="vocallabs_call_transient_failure",
+            pe_name=pe_name,
+            student_id=pe.student,
+            parent_phone=parent_phone,
+            escalation_order=escalation_order,
+            retry_count=retry_count,
+            max_retries=VOCALLABS_MAX_RETRIES,
+            error=str(error)
+        )
         frappe.log_error(
             title=VOCALLABS_RETRY_LOG_TITLE,
             message=(
@@ -1208,6 +1278,17 @@ def _handle_failure(pe, escalation_step, parent_phone, error, retry_count):
         except Exception as enqueue_err:
             # Double-fault — surface to DLQ immediately so the call request
             # isn't silently lost (mirrors state_machine.py's double-fault).
+            emit(
+                severity="ERROR",
+                message="vocallabs_call_double_fault",
+                pe_name=pe_name,
+                student_id=pe.student,
+                parent_phone=parent_phone,
+                escalation_order=escalation_order,
+                retry_count=retry_count,
+                error=str(error),
+                enqueue_error=str(enqueue_err)
+            )
             frappe.log_error(
                 title=VOCALLABS_DLQ_LOG_TITLE,
                 message=json.dumps({
@@ -1225,6 +1306,16 @@ def _handle_failure(pe, escalation_step, parent_phone, error, retry_count):
             return False
 
     # Retries exhausted → permanent DLQ.
+    emit(
+        severity="ERROR",
+        message="vocallabs_call_dlq_exhausted",
+        pe_name=pe_name,
+        student_id=pe.student,
+        parent_phone=parent_phone,
+        escalation_order=escalation_order,
+        retry_count=retry_count,
+        error=str(error)
+    )
     frappe.log_error(
         title=VOCALLABS_DLQ_LOG_TITLE,
         message=json.dumps({

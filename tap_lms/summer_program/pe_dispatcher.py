@@ -47,6 +47,7 @@ from tap_lms.summer_program.constants import (
     PATH_CORE,
 )
 from tap_lms.summer_program.event_log import log_event
+from tap_lms.monitoring import emit
 
 
 # ════════════════════════════════════════════════════════════
@@ -84,6 +85,10 @@ def process_program_actions():
     those batchers are partitioned by action type, not by Batch. See
     architecture §8.
     """
+    import time as _time
+    from tap_lms.monitoring import record_dispatcher_cycle
+    _t0 = _time.monotonic()
+
     now = now_datetime()
 
     # SELECT candidate PEs with FOR UPDATE SKIP LOCKED so multiple parallel
@@ -209,6 +214,19 @@ def process_program_actions():
         "queue_depth": queue_depth,
     })
 
+    # SRE: structured dispatcher cycle log — feeds Cloud Monitoring dashboard
+    # and the dispatcher_errors alert policy.
+    try:
+        record_dispatcher_cycle(
+            processed=processed,
+            skipped=skipped,
+            errors=errors,
+            duration_ms=(_time.monotonic() - _t0) * 1000,
+            queue_depth=queue_depth,
+        )
+    except Exception:
+        pass
+
     return {"dispatched": processed, "skipped": skipped, "errors": errors}
 
 
@@ -276,6 +294,15 @@ def handle_content_delivery(pe_row):
     )
 
     flow_id = _get_flow_id(pe_row.batch, ACTION_CONTENT_DELIVERY)
+    emit(
+        severity="INFO",
+        message="dispatcher_content_delivery",
+        pe_name=pe_row.name,
+        student_id=pe_row.student,
+        batch=pe_row.batch,
+        current_week=pe_row.current_week,
+        flow_id=flow_id
+    )
     if not flow_id:
         _clear_action(pe_row.name)
         return
@@ -321,6 +348,13 @@ def handle_escalation(pe_row):
     steps = _get_escalation_steps_for_pe(pe)
     if not steps:
         # No escalation config — go to grace
+        emit(
+            severity="INFO",
+            message="dispatcher_escalation_no_config",
+            pe_name=pe.name,
+            student_id=pe.student,
+            state=state
+        )
         if state == STATE_NORMAL_ESCALATION:
             t5_escalation_to_grace(pe, "dispatcher")
         elif state == STATE_REMEDIAL_ESCALATION:
@@ -338,6 +372,13 @@ def handle_escalation(pe_row):
         # Students who never submitted go to grace, then drop per CR-001.
         # CR-003: the grace clock is already armed at the week start; T5/T11
         # preserve it.
+        emit(
+            severity="INFO",
+            message="dispatcher_escalation_steps_exhausted",
+            pe_name=pe.name,
+            student_id=pe.student,
+            state=state
+        )
         if state in (STATE_NORMAL_CONTENT, STATE_NORMAL_ESCALATION):
             t5_escalation_to_grace(pe, "dispatcher")
         elif state in (STATE_REMEDIAL_CONTENT, STATE_REMEDIAL_ESCALATION):
@@ -408,7 +449,14 @@ def handle_escalation(pe_row):
         # SP_Escalation entirely — Glific is not involved for parent calls.
         # The Vocallabs module handles its own retry/DLQ; the dispatcher
         # tick continues without waiting on the actual call.
-
+        emit(
+            severity="INFO",
+            message="dispatcher_escalation_parent_call",
+            pe_name=pe.name,
+            student_id=pe.student,
+            step=next_step,
+            hours=next_hours
+        )
 
         frappe.enqueue(
             "tap_lms.summer_program.vocallabs.initiate_parent_call",
@@ -427,6 +475,16 @@ def handle_escalation(pe_row):
     # Text or voice-note channels → fire SP_Escalation flow.
 
     flow_id = _get_flow_id(pe_row.batch, ACTION_ESCALATION)
+    emit(
+        severity="INFO",
+        message="dispatcher_escalation_flow",
+        pe_name=pe.name,
+        student_id=pe.student,
+        step=next_step,
+        escalation_type=escalation_type,
+        hours=next_hours,
+        flow_id=flow_id
+    )
     if flow_id and pe.glific_id:
         _trigger_flow(flow_id, pe.glific_id, pe.name, "escalation")
 
@@ -458,6 +516,11 @@ def handle_feedback_timeout(pe_row):
 
     if pe.resolved_flow_state != STATE_SUBMITTED_AWAITING:
         # FeedbackConsumer already handled it — state moved
+        emit(
+            severity="INFO",
+            message="dispatcher_feedback_timeout_stale",
+            pe_name=pe.name
+        )
         _clear_action(pe_row.name)
         return
 
@@ -475,6 +538,12 @@ def handle_feedback_timeout(pe_row):
 
     if has_feedback:
         # Feedback arrived but state wasn't updated — trigger T12 as fallback
+        emit(
+            severity="INFO",
+            message="dispatcher_feedback_timeout_resolved",
+            pe_name=pe.name,
+            student_id=pe.student
+        )
         t12_feedback_ready(pe, "scheduler")
     else:
         # Retry: schedule another check in 1 hour (max 3 retries)
@@ -486,6 +555,13 @@ def handle_feedback_timeout(pe_row):
         # claim and this branch. The atomic increment (P-002) is race-safe.
         retry_count = pe.delivery_failure_count or 0
         if retry_count < 3:
+            emit(
+                severity="WARNING",
+                message="dispatcher_feedback_timeout_retry",
+                pe_name=pe.name,
+                student_id=pe.student,
+                retry_count=retry_count + 1
+            )
             frappe.db.sql(
                 """
                 UPDATE "tabProgramEnrollment"
@@ -504,6 +580,12 @@ def handle_feedback_timeout(pe_row):
             )
         else:
             # Give up — alert admin, clear action
+            emit(
+                severity="ERROR",
+                message="dispatcher_feedback_timeout_exhausted",
+                pe_name=pe.name,
+                student_id=pe.student
+            )
             frappe.log_error(
                 f"Feedback timeout: AI feedback not received for PE {pe.name} "
                 f"(student={pe.student}, week={pe.current_week}). "
@@ -529,6 +611,11 @@ def handle_week_advancement(pe_row):
     pe = frappe.get_doc("ProgramEnrollment", pe_row.name)
 
     if pe.resolved_flow_state != STATE_WEEK_COMPLETED:
+        emit(
+            severity="INFO",
+            message="dispatcher_week_advancement_stale",
+            pe_name=pe.name
+        )
         _clear_action(pe_row.name)
         return
 
@@ -539,6 +626,12 @@ def handle_week_advancement(pe_row):
 
     if next_week > total_weeks:
         # Program completed
+        emit(
+            severity="INFO",
+            message="dispatcher_program_completed",
+            pe_name=pe.name,
+            student_id=pe.student
+        )
         t16_program_completed(pe, "dispatcher")
         # Trigger program_complete flow
         flow_id = _get_flow_id(pe.batch, "program_complete")
@@ -549,6 +642,14 @@ def handle_week_advancement(pe_row):
         # Binge limit — can't go faster than batch calendar
         # Calculate when next week opens (next Monday or batch schedule)
         next_open = _get_next_week_open_date(batch, next_week)
+        emit(
+            severity="INFO",
+            message="dispatcher_binge_paused",
+            pe_name=pe.name,
+            student_id=pe.student,
+            next_week=next_week,
+            max_allowed=max_allowed
+        )
         t15_binge_pause(pe, next_open, "dispatcher")
         # Trigger binge info flow
         flow_id = _get_flow_id(pe.batch, ACTION_PAUSE_CHECK)
@@ -557,6 +658,13 @@ def handle_week_advancement(pe_row):
 
     else:
         # Normal advancement
+        emit(
+            severity="INFO",
+            message="dispatcher_week_advanced",
+            pe_name=pe.name,
+            student_id=pe.student,
+            next_week=next_week
+        )
         week_rule = _get_week_rule(pe, batch, next_week)
         t14_week_advance(pe, next_week, week_rule, "dispatcher")
 
@@ -585,6 +693,11 @@ def handle_grace_check(pe_row):
     # Student already moved out of grace_waiting (submission landed → T17
     # transitioned them, or they were dropped by an admin). No-op.
     if pe.resolved_flow_state != STATE_GRACE_WAITING:
+        emit(
+            severity="INFO",
+            message="dispatcher_grace_check_stale",
+            pe_name=pe.name
+        )
         _clear_action(pe_row.name)
         return
 
@@ -592,6 +705,12 @@ def handle_grace_check(pe_row):
     # submitted within the window. Don't drop — clear the action and let
     # the next T19 (week advance) re-arm the clock.
     if pe.weekly_submission_done:
+        emit(
+            severity="INFO",
+            message="dispatcher_grace_check_submitted",
+            pe_name=pe.name,
+            student_id=pe.student
+        )
         _clear_action(pe_row.name)
         return
 
@@ -603,6 +722,13 @@ def handle_grace_check(pe_row):
     # dispatcher's atomic claim and this branch.
     now = now_datetime()
     if pe.grace_window_end_at and get_datetime(pe.grace_window_end_at) > now:
+        emit(
+            severity="INFO",
+            message="dispatcher_grace_check_rescheduled",
+            pe_name=pe.name,
+            student_id=pe.student,
+            grace_window_end_at=pe.grace_window_end_at
+        )
         frappe.db.set_value(
             "ProgramEnrollment", pe.name,
             {
@@ -614,6 +740,12 @@ def handle_grace_check(pe_row):
         return
 
     # Clock expired AND no submission this week → drop.
+    emit(
+        severity="INFO",
+        message="dispatcher_grace_expired_dropped",
+        pe_name=pe.name,
+        student_id=pe.student
+    )
     t17_grace_expired(pe, "dispatcher")
 
 
@@ -636,6 +768,11 @@ def handle_pause_check(pe_row):
     pe = frappe.get_doc("ProgramEnrollment", pe_row.name)
 
     if pe.resolved_flow_state != STATE_PAUSED_BINGE:
+        emit(
+            severity="INFO",
+            message="dispatcher_pause_check_stale",
+            pe_name=pe.name
+        )
         _clear_action(pe_row.name)
         return
 
@@ -655,6 +792,13 @@ def handle_pause_check(pe_row):
 
     if next_week <= max_allowed:
         # Calendar caught up — resume
+        emit(
+            severity="INFO",
+            message="dispatcher_binge_resumed",
+            pe_name=pe.name,
+            student_id=pe.student,
+            next_week=next_week
+        )
         t21_binge_resume(pe, "dispatcher")
     else:
         # Still ahead of calendar — check again next Monday.
@@ -664,6 +808,14 @@ def handle_pause_check(pe_row):
         # bumps because award handlers gate on get_active_pe → would skip
         # a paused student, but defensive consistency with the rest of the
         # dispatcher matters more than the 1-line shortcut).
+        emit(
+            severity="INFO",
+            message="dispatcher_binge_paused_remaining",
+            pe_name=pe.name,
+            student_id=pe.student,
+            next_week=next_week,
+            max_allowed=max_allowed
+        )
         frappe.db.set_value(
             "ProgramEnrollment", pe.name,
             {

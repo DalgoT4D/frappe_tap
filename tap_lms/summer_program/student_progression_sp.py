@@ -22,6 +22,7 @@ from frappe.utils import (
 
 from tap_lms.summer_program.custom_messages import EXPECTED_SUBMISSION_LABELS
 from tap_lms.summer_program.state_machine import get_active_pe
+from tap_lms.monitoring import emit
 from tap_lms.summer_program.utils import (
     glific_response,
     normalize_unicode_surrogates,
@@ -1373,6 +1374,21 @@ def start_quiz(student_id, course_level, quiz_id, language=None,
             "correct_option": first_q.get("correct_option"),
         }
         response.update(_option_fields(first_q))
+
+        try:
+            emit(
+                severity="INFO",
+                message="quiz_started",
+                student_id=student_id,
+                quiz_attempt_id=attempt.name,
+                quiz_id=quiz_id,
+                course_level=course_level,
+                total_questions=len(questions),
+                attempt_number=attempt.attempt_number,
+            )
+        except Exception:
+            pass
+
         return response
 
     except Exception as e:
@@ -1426,6 +1442,20 @@ def _resume_quiz(attempt, progress_data, language=None):
         "correct_option": q_details.get("correct_option"),
     }
     response.update(_option_fields(q_details))
+
+    try:
+        emit(
+            severity="INFO",
+            message="quiz_resumed",
+            student_id=attempt.student,
+            quiz_attempt_id=attempt.name,
+            quiz_id=quiz_id,
+            question_index=next_index,
+            questions_answered=len(attempt.answers),
+        )
+    except Exception:
+        pass
+
     return response
 
 
@@ -1594,6 +1624,21 @@ def submit_answer(student_id, quiz_attempt_id, question_index, answer,
             "correct_option": next_q.get("correct_option"),
         }
         response.update(_option_fields(next_q))
+
+        try:
+            emit(
+                severity="INFO",
+                message="quiz_answer_submitted",
+                student_id=student_id,
+                quiz_attempt_id=attempt.name,
+                quiz_id=quiz_id,
+                question_index=question_index,
+                was_correct=is_correct,
+                time_spent_seconds=time_spent,
+            )
+        except Exception:
+            pass
+
         return response
 
     except Exception as e:
@@ -1633,6 +1678,24 @@ def _complete_quiz_sp(attempt, quiz_doc, questions, language=None):
     # response below (where quiz_score now carries GAMIFICATION POINTS earned,
     # not the percentage — see CR 2026-05-22).
     attempt.reload()
+
+    try:
+        emit(
+            severity="INFO",
+            message="quiz_completed",
+            student_id=attempt.student,
+            quiz_attempt_id=attempt.name,
+            quiz_id=attempt.quiz,
+            score=round(score, 1),
+            passed=passed,
+            correct_answers=correct_count,
+            total_questions=total,
+            points_earned=int(attempt.points_earned or 0),
+            time_spent_seconds=total_time,
+            attempt_number=attempt.attempt_number,
+        )
+    except Exception:
+        pass
 
     # Get progress
     progress_data = frappe.db.get_value(

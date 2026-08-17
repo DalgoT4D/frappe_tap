@@ -1,0 +1,177 @@
+# /etc/google-cloud-ops-agent/config.yaml
+#
+# GCP Ops Agent configuration for TAP LMS server.
+#
+# Covers:
+#   1. Structured JSON logs from tap_lms (gcp_structured.log)
+#   2. Structured JSON logs from rag_service (if co-located)
+#   3. Frappe/nginx/supervisor system logs
+#   4. Hardware metrics (CPU, memory, disk, network) — built-in, no config needed
+#
+# After editing, restart the agent:
+#   sudo systemctl restart google-cloud-ops-agent
+#
+# Verify logs are arriving:
+#   gcloud logging read 'logName=~"tap_lms_structured"' --limit=5 --project=<PROJECT_ID>
+#
+# ── IMPORTANT: severity field mapping ─────────────────────────────────────────
+# Our monitoring.py emits `"severity": "ERROR"` as a plain JSON field.
+# The Ops Agent only promotes a field to LogEntry.severity if it is named
+# `logging.googleapis.com/severity`. The modify_fields processor below
+# renames our `severity` field so Cloud Logging displays the correct
+# severity level and colour-coding in Log Explorer, and so log-based
+# alert policies can filter on `severity=ERROR` directly.
+#
+# Similarly, our `timestamp` field is promoted to LogEntry.timestamp via
+# the parse_json time_key setting.
+# ─────────────────────────────────────────────────────────────────────────────
+
+logging:
+  receivers:
+
+    # ── tap_lms structured log ─────────────────────────────────────────────
+    tap_lms_structured:
+      type: files
+      include_paths:
+        - /home/*/frappe-bench/logs/gcp_structured.log
+      # wildcard_refresh_interval handles log rotation — after copytruncate,
+      # a new file appears and the agent picks it up within this interval.
+      wildcard_refresh_interval: 30s
+
+    # ── rag_service structured log (if co-located on same VM) ─────────────
+    rag_service_structured:
+      type: files
+      include_paths:
+        - /home/*/frappe-bench/logs/rag_gcp_structured.log
+      wildcard_refresh_interval: 30s
+
+    # ── Frappe application log ─────────────────────────────────────────────
+    frappe_app:
+      type: files
+      include_paths:
+        - /home/*/frappe-bench/logs/frappe.log
+        - /home/*/frappe-bench/logs/worker.log
+      wildcard_refresh_interval: 30s
+
+    # ── nginx access + error logs ──────────────────────────────────────────
+    nginx_access:
+      type: files
+      include_paths:
+        - /var/log/nginx/access.log
+        - /home/*/frappe-bench/logs/access.log
+
+    nginx_error:
+      type: files
+      include_paths:
+        - /var/log/nginx/error.log
+
+    # ── Feedback consumer log ──────────────────────────────────────────────
+    feedback_consumer:
+      type: files
+      include_paths:
+        - /home/*/frappe-bench/logs/feedback-consumer.log
+        - /home/*/frappe-bench/logs/feedback-consumer.error.log
+      wildcard_refresh_interval: 30s
+
+    # ── Supervisor logs ────────────────────────────────────────────────────
+    supervisor:
+      type: files
+      include_paths:
+        - /var/log/supervisor/supervisord.log
+
+  processors:
+
+    # ── Parse tap_lms structured JSON ─────────────────────────────────────
+    # Parses each line of gcp_structured.log as JSON and extracts the
+    # timestamp field so it becomes LogEntry.timestamp in Cloud Logging.
+    # Format matches monitoring.py output: 2026-07-31T10:24:40.313895
+    # Note: Fluent Bit uses strptime — %L is milliseconds (3 digits),
+    # %f is NOT supported. Use %s.%N for full nanosecond precision,
+    # or omit time_key entirely and let Cloud Logging use ingestion time.
+    # The safest cross-version approach is to let parse_json handle the
+    # JSON structure and use modify_fields to map the timestamp separately.
+    parse_tap_lms_json:
+      type: parse_json
+      time_key: timestamp
+      time_format: "%Y-%m-%dT%H:%M:%S.%f"
+
+    # ── Promote severity field to LogEntry.severity ────────────────────────
+    # monitoring.py emits `"severity": "ERROR"` as a plain JSON field.
+    # This processor moves it to `logging.googleapis.com/severity` so
+    # Cloud Logging promotes it to the top-level severity field, enabling:
+    #   - Correct colour-coding in Log Explorer
+    #   - Filtering with `severity=ERROR` in alert policies
+    #   - The severity histogram in the Logs Explorer sidebar
+    #
+    # Also maps the timestamp field. Fluent Bit's strptime does not support
+    # %f (microseconds) so we move the raw timestamp string into the special
+    # logging.googleapis.com field and let Cloud Logging parse it — it
+    # handles ISO8601 with microseconds natively.
+    promote_severity:
+      type: modify_fields
+      fields:
+        severity:
+          move_from: jsonPayload.severity
+
+    # ── Exclude high-volume INFO http_request logs from storage ───────────
+    # http_request logs are emitted for every API call (needed for P95
+    # latency and error rate metrics) but don't need to be stored long-term.
+    # This reduces Cloud Logging ingestion costs without losing error coverage.
+    # Remove or comment out this processor if you want full HTTP logs stored.
+    exclude_http_info:
+      type: exclude_logs
+      match_any:
+        - 'jsonPayload.message = "http_request" AND jsonPayload.severity = "INFO"'
+
+  service:
+    pipelines:
+
+      # tap_lms structured logs pipeline
+      tap_lms_pipeline:
+        receivers: [tap_lms_structured]
+        processors: [parse_tap_lms_json, promote_severity, exclude_http_info]
+
+      # rag_service structured logs pipeline
+      rag_service_pipeline:
+        receivers: [rag_service_structured]
+        processors: [parse_tap_lms_json, promote_severity]
+
+      # Frappe application logs (plain text — no JSON parsing)
+      frappe_pipeline:
+        receivers: [frappe_app]
+
+      # nginx logs
+      nginx_pipeline:
+        receivers: [nginx_access, nginx_error]
+
+      # Feedback consumer logs
+      feedback_consumer_pipeline:
+        receivers: [feedback_consumer]
+
+      # Supervisor logs
+      supervisor_pipeline:
+        receivers: [supervisor]
+
+# ── Hardware metrics ───────────────────────────────────────────────────────────
+# The Ops Agent collects CPU, memory, disk, network, and process metrics
+# automatically via the built-in hostmetrics receiver. No additional
+# configuration is needed — these are already active by default.
+#
+# Metrics are visible in:
+#   GCP Console → Monitoring → Metrics Explorer
+#   Filter: resource.type = "gce_instance"
+#   Metric prefix: agent.googleapis.com/
+#
+# Key metrics available out of the box:
+#   agent.googleapis.com/cpu/utilization
+#   agent.googleapis.com/memory/usage (state: used/free/cached/buffered)
+#   agent.googleapis.com/disk/usage (device: sda1 etc.)
+#   agent.googleapis.com/network/tcp_connections
+#   agent.googleapis.com/processes/count
+#
+# To increase collection frequency (default is 60s), uncomment below:
+# metrics:
+#   receivers:
+#     hostmetrics:
+#       type: hostmetrics
+#       collection_interval: 30s

@@ -10,6 +10,7 @@ or import the base helpers from there.
 """
 import frappe
 import json
+from tap_lms.monitoring import emit
 
 from tap_lms.glific_integration import (
     get_glific_settings,
@@ -66,6 +67,13 @@ def start_group_flow(flow_id, group_id, default_results=None):
 
         if "errors" in data:
             frappe.logger().error(f"Glific API error in start_group_flow: {data['errors']}")
+            emit(
+                severity="ERROR",
+                message="glific_start_group_flow_api_error",
+                flow_id=flow_id,
+                group_id=group_id,
+                errors=data['errors']
+            )
             return False
 
         success = data.get("data", {}).get("startGroupFlow", {}).get("success")
@@ -73,9 +81,22 @@ def start_group_flow(flow_id, group_id, default_results=None):
             frappe.logger().info(
                 f"Started group flow {flow_id} on collection {group_id}"
             )
+            emit(
+                severity="INFO",
+                message="glific_start_group_flow_success",
+                flow_id=flow_id,
+                group_id=group_id
+            )
             return True
 
         frappe.logger().error(f"start_group_flow failed. Response: {data}")
+        emit(
+            severity="ERROR",
+            message="glific_start_group_flow_failed",
+            flow_id=flow_id,
+            group_id=group_id,
+            response=data
+        )
         return False
 
     except Exception as e:
@@ -88,6 +109,13 @@ def start_group_flow(flow_id, group_id, default_results=None):
             )
         except Exception:
             frappe.logger().error(f"start_group_flow error (double-fault): {e}")
+        emit(
+            severity="ERROR",
+            message="glific_start_group_flow_exception",
+            flow_id=flow_id,
+            group_id=group_id,
+            error=str(e)
+        )
         return False
 
 
@@ -139,6 +167,13 @@ def add_contacts_to_group_bulk(contact_ids, group_id):
             frappe.logger().error(
                 f"Glific API error in add_contacts_to_group_bulk: {data['errors']}"
             )
+            emit(
+                severity="ERROR",
+                message="glific_add_contacts_bulk_api_error",
+                group_id=group_id,
+                count=len(contact_ids),
+                errors=data['errors']
+            )
             return False
 
         result = data.get("data", {}).get("updateGroupContacts")
@@ -146,9 +181,22 @@ def add_contacts_to_group_bulk(contact_ids, group_id):
             frappe.logger().info(
                 f"Bulk-added {len(contact_ids)} contacts to group {group_id}"
             )
+            emit(
+                severity="INFO",
+                message="glific_add_contacts_bulk_success",
+                group_id=group_id,
+                count=len(contact_ids)
+            )
             return True
 
         frappe.logger().error(f"add_contacts_to_group_bulk unexpected response: {data}")
+        emit(
+            severity="ERROR",
+            message="glific_add_contacts_bulk_failed",
+            group_id=group_id,
+            count=len(contact_ids),
+            response=data
+        )
         return False
 
     except Exception as e:
@@ -162,6 +210,13 @@ def add_contacts_to_group_bulk(contact_ids, group_id):
             )
         except Exception:
             frappe.logger().error(f"add_contacts_to_group_bulk error (double-fault): {e}")
+        emit(
+            severity="ERROR",
+            message="glific_add_contacts_bulk_exception",
+            group_id=group_id,
+            count=len(contact_ids) if contact_ids else 0,
+            error=str(e)
+        )
         return False
 
 
@@ -219,6 +274,13 @@ def remove_contacts_from_group_bulk(contact_ids, group_id):
             frappe.logger().error(
                 f"Glific API error in remove_contacts_from_group_bulk: {data['errors']}"
             )
+            emit(
+                severity="ERROR",
+                message="glific_remove_contacts_bulk_api_error",
+                group_id=group_id,
+                count=len(contact_ids),
+                errors=data['errors']
+            )
             return False
 
         result = data.get("data", {}).get("updateGroupContacts")
@@ -226,10 +288,23 @@ def remove_contacts_from_group_bulk(contact_ids, group_id):
             frappe.logger().info(
                 f"Bulk-removed {len(contact_ids)} contacts from group {group_id}"
             )
+            emit(
+                severity="INFO",
+                message="glific_remove_contacts_bulk_success",
+                group_id=group_id,
+                count=len(contact_ids)
+            )
             return True
 
         frappe.logger().error(
             f"remove_contacts_from_group_bulk unexpected response: {data}"
+        )
+        emit(
+            severity="ERROR",
+            message="glific_remove_contacts_bulk_failed",
+            group_id=group_id,
+            count=len(contact_ids),
+            response=data
         )
         return False
 
@@ -244,6 +319,13 @@ def remove_contacts_from_group_bulk(contact_ids, group_id):
             )
         except Exception:
             frappe.logger().error(f"remove_contacts_from_group_bulk error (double-fault): {e}")
+        emit(
+            severity="ERROR",
+            message="glific_remove_contacts_bulk_exception",
+            group_id=group_id,
+            count=len(contact_ids) if contact_ids else 0,
+            error=str(e)
+        )
         return False
 
 
@@ -395,6 +477,13 @@ def bulk_add_to_group_with_circuit_breaker(
             )
             if consecutive_failures >= max_consecutive_failures:
                 summary["circuit_tripped"] = True
+                emit(
+                    severity="ERROR",
+                    message="glific_bulk_add_circuit_tripped",
+                    group_id=group_id,
+                    op_label=op_label,
+                    consecutive_failures=consecutive_failures
+                )
                 try:
                     frappe.log_error(
                         message=(
@@ -417,6 +506,16 @@ def bulk_add_to_group_with_circuit_breaker(
         f"chunks_failed={summary['chunks_failed']} "
         f"added={summary['added']} circuit_tripped={summary['circuit_tripped']} "
         f"skipped_after_trip={summary['skipped_after_trip']}"
+    )
+    emit(
+        severity="INFO",
+        message="glific_bulk_add_complete",
+        group_id=group_id,
+        op_label=op_label,
+        total=total,
+        added=summary['added'],
+        failed=summary['chunks_failed'],
+        tripped=summary['circuit_tripped']
     )
     return summary
 
@@ -524,6 +623,13 @@ def bulk_remove_from_group_with_circuit_breaker(
             )
             if consecutive_failures >= max_consecutive_failures:
                 summary["circuit_tripped"] = True
+                emit(
+                    severity="ERROR",
+                    message="glific_bulk_remove_circuit_tripped",
+                    group_id=group_id,
+                    op_label=op_label,
+                    consecutive_failures=consecutive_failures
+                )
                 try:
                     frappe.log_error(
                         message=(
@@ -546,5 +652,15 @@ def bulk_remove_from_group_with_circuit_breaker(
         f"chunks_failed={summary['chunks_failed']} "
         f"removed={summary['removed']} circuit_tripped={summary['circuit_tripped']} "
         f"skipped_after_trip={summary['skipped_after_trip']}"
+    )
+    emit(
+        severity="INFO",
+        message="glific_bulk_remove_complete",
+        group_id=group_id,
+        op_label=op_label,
+        total=total,
+        removed=summary['removed'],
+        failed=summary['chunks_failed'],
+        tripped=summary['circuit_tripped']
     )
     return summary

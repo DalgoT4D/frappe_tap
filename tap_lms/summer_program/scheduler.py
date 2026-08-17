@@ -52,22 +52,46 @@ def run_daily_actions():
     Main scheduler entry point. Called daily by Frappe scheduler.
     Finds all active BatchProgramRuns and processes scheduled actions.
     """
-    active_bprs = frappe.get_all(
-        "BatchProgramRun",
-        filters={"status": BPR_ACTIVE},
-        fields=["name"],
-    )
+    import time as _time
+    from tap_lms.monitoring import record_job
+    _t0 = _time.monotonic()
+    _status = "success"
+    _error = None
+    _bpr_count = 0
 
-    for row in active_bprs:
+    try:
+        active_bprs = frappe.get_all(
+            "BatchProgramRun",
+            filters={"status": BPR_ACTIVE},
+            fields=["name"],
+        )
+        _bpr_count = len(active_bprs)
+
+        for row in active_bprs:
+            try:
+                bpr = frappe.get_doc("BatchProgramRun", row.name)
+                batch = frappe.get_doc("Batch", bpr.batch)
+                _process_bpr_actions(bpr, batch)
+            except Exception as e:
+                frappe.log_error(
+                    f"Scheduler error for BPR {row.name}: {str(e)}",
+                    "SP Scheduler",
+                )
+    except Exception as e:
+        _status = "error"
+        _error = str(e)
+        raise
+    finally:
         try:
-            bpr = frappe.get_doc("BatchProgramRun", row.name)
-            batch = frappe.get_doc("Batch", bpr.batch)
-            _process_bpr_actions(bpr, batch)
-        except Exception as e:
-            frappe.log_error(
-                f"Scheduler error for BPR {row.name}: {str(e)}",
-                "SP Scheduler",
+            record_job(
+                job_name="run_daily_actions",
+                status=_status,
+                duration_ms=(_time.monotonic() - _t0) * 1000,
+                error=_error,
+                bpr_count=_bpr_count,
             )
+        except Exception:
+            pass
 
 
 def _process_bpr_actions(bpr, batch):
@@ -319,66 +343,90 @@ def weekly_content_delivery_trigger():
     is the documented mitigation. No code-level mutex per locked decision
     2026-05-15.
     """
-    process_pending_feedback_ready_before_weekly_content()
+    import time as _time
+    from tap_lms.monitoring import record_job
+    _t0 = _time.monotonic()
+    _status = "success"
+    _error = None
+    _triggered = 0
 
-    active_bprs = frappe.db.sql(
-        """
-        SELECT name, batch, content_delivery_flow
-          FROM "tabBatchProgramRun"
-         WHERE status = 'active'
-           AND content_delivery_flow IS NOT NULL
-        """,
-        as_dict=True,
-    )
+    try:
+        process_pending_feedback_ready_before_weekly_content()
 
-    for bpr in active_bprs:
-        main_col = frappe.db.sql(
+        active_bprs = frappe.db.sql(
             """
-            SELECT name, glific_group_id, collection_label, member_count
-              FROM "tabPGCollection"
-             WHERE parent = %s
-               AND kind = %s
-               AND COALESCE(is_active, 0) = 1
-             LIMIT 1
+            SELECT name, batch, content_delivery_flow
+              FROM "tabBatchProgramRun"
+             WHERE status = 'active'
+               AND content_delivery_flow IS NOT NULL
             """,
-            (bpr["name"], "main"),
             as_dict=True,
         )
-        if not main_col:
-            continue
-        main_col = main_col[0]
 
-        if not main_col.get("glific_group_id"):
-            continue
-
-        # Skip BPRs whose main collection has zero members. Reading
-        # member_count avoids a needless Glific call (which would either
-        # error or no-op). The count is maintained by the state-driven
-        # collection_membership writes (Approach B); if a deployment doesn't
-        # yet maintain member_count, treat NULL as zero to be safe.
-        if (main_col.get("member_count") or 0) <= 0:
-            frappe.logger().info(
-                f"weekly_content_delivery_trigger: skipping BPR "
-                f"{bpr['name']} — main collection empty"
+        for bpr in active_bprs:
+            main_col = frappe.db.sql(
+                """
+                SELECT name, glific_group_id, collection_label, member_count
+                  FROM "tabPGCollection"
+                 WHERE parent = %s
+                   AND kind = %s
+                   AND COALESCE(is_active, 0) = 1
+                 LIMIT 1
+                """,
+                (bpr["name"], "main"),
+                as_dict=True,
             )
-            continue
+            if not main_col:
+                continue
+            main_col = main_col[0]
 
+            if not main_col.get("glific_group_id"):
+                continue
+
+            # Skip BPRs whose main collection has zero members. Reading
+            # member_count avoids a needless Glific call (which would either
+            # error or no-op). The count is maintained by the state-driven
+            # collection_membership writes (Approach B); if a deployment doesn't
+            # yet maintain member_count, treat NULL as zero to be safe.
+            if (main_col.get("member_count") or 0) <= 0:
+                frappe.logger().info(
+                    f"weekly_content_delivery_trigger: skipping BPR "
+                    f"{bpr['name']} — main collection empty"
+                )
+                continue
+
+            try:
+                start_group_flow(
+                    flow_id=str(bpr["content_delivery_flow"]),
+                    group_id=str(main_col["glific_group_id"]),
+                )
+                frappe.logger().info(
+                    f"weekly_content_delivery_trigger: fired flow "
+                    f"{bpr['content_delivery_flow']} for BPR {bpr['name']} "
+                    f"(main members: {main_col.get('member_count', 0)})"
+                )
+                _triggered += 1
+            except Exception as e:
+                frappe.log_error(
+                    f"weekly_content_delivery_trigger failed for BPR "
+                    f"{bpr['name']}: {e}",
+                    "SP Weekly Content Delivery",
+                )
+    except Exception as e:
+        _status = "error"
+        _error = str(e)
+        raise
+    finally:
         try:
-            start_group_flow(
-                flow_id=str(bpr["content_delivery_flow"]),
-                group_id=str(main_col["glific_group_id"]),
+            record_job(
+                job_name="weekly_content_delivery_trigger",
+                status=_status,
+                duration_ms=(_time.monotonic() - _t0) * 1000,
+                error=_error,
+                bprs_triggered=_triggered,
             )
-            frappe.logger().info(
-                f"weekly_content_delivery_trigger: fired flow "
-                f"{bpr['content_delivery_flow']} for BPR {bpr['name']} "
-                f"(main members: {main_col.get('member_count', 0)})"
-            )
-        except Exception as e:
-            frappe.log_error(
-                f"weekly_content_delivery_trigger failed for BPR "
-                f"{bpr['name']}: {e}",
-                "SP Weekly Content Delivery",
-            )
+        except Exception:
+            pass
 
 
 # ════════════════════════════════════════════════════════════
@@ -595,51 +643,73 @@ def weekly_content_sweep():
 
     Returns a summary dict (also logged to the scheduler log + Error Log).
     """
-    active_bprs = _active_bprs_for_sweep()
+    import time as _time
+    from tap_lms.monitoring import record_job
+    _t0 = _time.monotonic()
+    _status = "success"
+    _error = None
 
-    summary = {
-        "active_bprs": len(active_bprs),
-        "phase1_demoted": 0,
-        "phase1_failed": 0,
-        "phase1_no_config": 0,
-        "phase1_removed_from_main": 0,
-        "phase1_added_to_escalation": 0,
-        "phase2_triggered": 0,
-        "phase2_groups_used": [],
-        "bprs_without_content_flow": 0,
-        "bprs_with_no_phase2_candidates": 0,
-        "errors": [],
-    }
+    try:
+        active_bprs = _active_bprs_for_sweep()
 
-    if not active_bprs:
-        frappe.logger().info("weekly_content_sweep: no active BPRs — nothing to do.")
+        summary = {
+            "active_bprs": len(active_bprs),
+            "phase1_demoted": 0,
+            "phase1_failed": 0,
+            "phase1_no_config": 0,
+            "phase1_removed_from_main": 0,
+            "phase1_added_to_escalation": 0,
+            "phase2_triggered": 0,
+            "phase2_groups_used": [],
+            "bprs_without_content_flow": 0,
+            "bprs_with_no_phase2_candidates": 0,
+            "errors": [],
+        }
+
+        if not active_bprs:
+            frappe.logger().info("weekly_content_sweep: no active BPRs — nothing to do.")
+            return summary
+
+        _sweep_phase1_demote_behind(active_bprs, summary)
+        _sweep_phase2_deliver_current_week(active_bprs, summary)
+
+        # Final summary — logged to the scheduler log AND the Error Log so
+        # operators can monitor the run from the Frappe Desk Error Log list view.
+        msg = (
+            f"weekly_content_sweep DONE: active_bprs={summary['active_bprs']} "
+            f"phase1_demoted={summary['phase1_demoted']} "
+            f"phase1_failed={summary['phase1_failed']} "
+            f"phase1_no_config={summary['phase1_no_config']} "
+            f"phase1_removed_from_main={summary['phase1_removed_from_main']} "
+            f"phase1_added_to_escalation={summary['phase1_added_to_escalation']} "
+            f"phase2_triggered={summary['phase2_triggered']} "
+            f"bprs_without_content_flow={summary['bprs_without_content_flow']} "
+            f"bprs_with_no_phase2_candidates={summary['bprs_with_no_phase2_candidates']} "
+            f"errors={len(summary['errors'])}"
+        )
+        frappe.logger().info(msg)
+        try:
+            frappe.log_error(msg, "CR-027 Weekly Sweep Summary")
+            frappe.db.commit()
+        except Exception:
+            frappe.logger().error(f"weekly_content_sweep: failed to log summary: {msg}")
+
         return summary
 
-    _sweep_phase1_demote_behind(active_bprs, summary)
-    _sweep_phase2_deliver_current_week(active_bprs, summary)
-
-    # Final summary — logged to the scheduler log AND the Error Log so
-    # operators can monitor the run from the Frappe Desk Error Log list view.
-    msg = (
-        f"weekly_content_sweep DONE: active_bprs={summary['active_bprs']} "
-        f"phase1_demoted={summary['phase1_demoted']} "
-        f"phase1_failed={summary['phase1_failed']} "
-        f"phase1_no_config={summary['phase1_no_config']} "
-        f"phase1_removed_from_main={summary['phase1_removed_from_main']} "
-        f"phase1_added_to_escalation={summary['phase1_added_to_escalation']} "
-        f"phase2_triggered={summary['phase2_triggered']} "
-        f"bprs_without_content_flow={summary['bprs_without_content_flow']} "
-        f"bprs_with_no_phase2_candidates={summary['bprs_with_no_phase2_candidates']} "
-        f"errors={len(summary['errors'])}"
-    )
-    frappe.logger().info(msg)
-    try:
-        frappe.log_error(msg, "CR-027 Weekly Sweep Summary")
-        frappe.db.commit()
-    except Exception:
-        frappe.logger().error(f"weekly_content_sweep: failed to log summary: {msg}")
-
-    return summary
+    except Exception as e:
+        _status = "error"
+        _error = str(e)
+        raise
+    finally:
+        try:
+            record_job(
+                job_name="weekly_content_sweep",
+                status=_status,
+                duration_ms=(_time.monotonic() - _t0) * 1000,
+                error=_error,
+            )
+        except Exception:
+            pass
 
 
 # ════════════════════════════════════════════════════════════
@@ -807,32 +877,56 @@ def glific_sync_dlq_watcher():
     Read-only — does NOT replay. Manual replay via
     `dev_tools.reconcile_pe_to_glific(pe_name)` remains the recovery path.
     """
-    from tap_lms.summer_program.constants import GLIFIC_SYNC_DLQ_LOG_TITLE
+    import time as _time
+    from tap_lms.monitoring import record_job
+    _t0 = _time.monotonic()
+    _status = "success"
+    _error = None
+    _dlq_count = 0
 
-    new_dlq = frappe.db.sql(
-        """
-        SELECT COUNT(*) AS n
-          FROM "tabError Log"
-         WHERE method = %s
-           AND creation > NOW() AT TIME ZONE 'UTC' - INTERVAL '1 hour'
-        """,
-        (GLIFIC_SYNC_DLQ_LOG_TITLE,),
-        as_dict=True,
-    )
-    count = new_dlq[0].n if new_dlq else 0
+    try:
+        from tap_lms.summer_program.constants import GLIFIC_SYNC_DLQ_LOG_TITLE
 
-    if count > 0:
-        frappe.log_error(
-            f"SP Glific Sync DLQ has {count} new entries in the last hour. "
-            f"Operator action required — replay manually via "
-            f"`dev_tools.reconcile_pe_to_glific(pe_name)` for each stuck PE. "
-            f"List the DLQ entries: `SELECT creation, LEFT(error::text, 400) "
-            f"FROM \"tabError Log\" WHERE method = "
-            f"'{GLIFIC_SYNC_DLQ_LOG_TITLE}' "
-            f"ORDER BY creation DESC LIMIT {count};`",
-            "SP DLQ Watcher Alert",
+        new_dlq = frappe.db.sql(
+            """
+            SELECT COUNT(*) AS n
+              FROM "tabError Log"
+             WHERE method = %s
+               AND creation > NOW() AT TIME ZONE 'UTC' - INTERVAL '1 hour'
+            """,
+            (GLIFIC_SYNC_DLQ_LOG_TITLE,),
+            as_dict=True,
         )
-    # No new DLQ entries → silent (don't fill Error Log with no-op pings).
+        _dlq_count = new_dlq[0].n if new_dlq else 0
+
+        if _dlq_count > 0:
+            frappe.log_error(
+                f"SP Glific Sync DLQ has {_dlq_count} new entries in the last hour. "
+                f"Operator action required — replay manually via "
+                f"`dev_tools.reconcile_pe_to_glific(pe_name)` for each stuck PE. "
+                f"List the DLQ entries: `SELECT creation, LEFT(error::text, 400) "
+                f"FROM \"tabError Log\" WHERE method = "
+                f"'{GLIFIC_SYNC_DLQ_LOG_TITLE}' "
+                f"ORDER BY creation DESC LIMIT {_dlq_count};`",
+                "SP DLQ Watcher Alert",
+            )
+        # No new DLQ entries → silent (don't fill Error Log with no-op pings).
+
+    except Exception as e:
+        _status = "error"
+        _error = str(e)
+        raise
+    finally:
+        try:
+            record_job(
+                job_name="glific_sync_dlq_watcher",
+                status=_status,
+                duration_ms=(_time.monotonic() - _t0) * 1000,
+                error=_error,
+                dlq_count=_dlq_count,
+            )
+        except Exception:
+            pass
 
 
 def rq_queue_depth_watcher():
@@ -851,54 +945,76 @@ def rq_queue_depth_watcher():
     Read-only — does NOT restart workers or flush queues. Operator action
     is to inspect the worker log and restart the supervisor process.
     """
-    try:
-        from rq import Queue
-        from frappe.utils.background_jobs import get_redis_conn
-    except Exception as e:
-        # If RQ isn't importable in this environment, skip silently — this
-        # watcher is best-effort, not load-bearing.
-        frappe.logger().warning(f"rq_queue_depth_watcher: rq import failed: {e}")
-        return
+    import time as _time
+    from tap_lms.monitoring import record_job
+    _t0 = _time.monotonic()
+    _status = "success"
+    _error = None
 
     try:
-        conn = get_redis_conn()
-    except Exception as e:
-        frappe.log_error(
-            f"rq_queue_depth_watcher: cannot connect to Redis: {e}",
-            "SP Queue Watcher Error",
-        )
-        return
-
-    # Frappe's standard RQ queues. If the deployment uses custom queue names,
-    # add them here. Threshold applies per-queue independently.
-    queue_names = ["default", "short", "long"]
-    alerts = []
-    for name in queue_names:
         try:
-            q = Queue(name, connection=conn)
-            depth = len(q)
-            failed_depth = q.failed_job_registry.count
-            if depth > RQ_QUEUE_DEPTH_ALERT_THRESHOLD:
-                alerts.append(
-                    f"queue={name} depth={depth} (threshold "
-                    f"{RQ_QUEUE_DEPTH_ALERT_THRESHOLD})"
-                )
-            if failed_depth > 0:
-                alerts.append(
-                    f"queue={name} failed_jobs={failed_depth} "
-                    f"(non-zero — operator should review)"
-                )
+            from rq import Queue
+            from frappe.utils.background_jobs import get_redis_conn
         except Exception as e:
-            alerts.append(f"queue={name}: probe failed: {e}")
+            # If RQ isn't importable in this environment, skip silently — this
+            # watcher is best-effort, not load-bearing.
+            frappe.logger().warning(f"rq_queue_depth_watcher: rq import failed: {e}")
+            return
 
-    if alerts:
-        frappe.log_error(
-            "RQ queue-depth alert (operator action required):\n" +
-            "\n".join(alerts) +
-            f"\n\nDiagnostic: in bench console run `from rq import Queue; "
-            f"from frappe.utils.background_jobs import get_redis_conn; "
-            f"q = Queue('default', connection=get_redis_conn()); "
-            f"print(len(q), q.jobs[:5])` to see queued jobs.",
-            "SP Queue Watcher Alert",
-        )
-    # All queues healthy → silent.
+        try:
+            conn = get_redis_conn()
+        except Exception as e:
+            frappe.log_error(
+                f"rq_queue_depth_watcher: cannot connect to Redis: {e}",
+                "SP Queue Watcher Error",
+            )
+            return
+
+        # Frappe's standard RQ queues. If the deployment uses custom queue names,
+        # add them here. Threshold applies per-queue independently.
+        queue_names = ["default", "short", "long"]
+        alerts = []
+        for name in queue_names:
+            try:
+                q = Queue(name, connection=conn)
+                depth = len(q)
+                failed_depth = q.failed_job_registry.count
+                if depth > RQ_QUEUE_DEPTH_ALERT_THRESHOLD:
+                    alerts.append(
+                        f"queue={name} depth={depth} (threshold "
+                        f"{RQ_QUEUE_DEPTH_ALERT_THRESHOLD})"
+                    )
+                if failed_depth > 0:
+                    alerts.append(
+                        f"queue={name} failed_jobs={failed_depth} "
+                        f"(non-zero — operator should review)"
+                    )
+            except Exception as e:
+                alerts.append(f"queue={name}: probe failed: {e}")
+
+        if alerts:
+            frappe.log_error(
+                "RQ queue-depth alert (operator action required):\n" +
+                "\n".join(alerts) +
+                "\n\nDiagnostic: in bench console run `from rq import Queue; "
+                "from frappe.utils.background_jobs import get_redis_conn; "
+                "q = Queue('default', connection=get_redis_conn()); "
+                "print(len(q), q.jobs[:5])` to see queued jobs.",
+                "SP Queue Watcher Alert",
+            )
+        # All queues healthy → silent.
+
+    except Exception as e:
+        _status = "error"
+        _error = str(e)
+        raise
+    finally:
+        try:
+            record_job(
+                job_name="rq_queue_depth_watcher",
+                status=_status,
+                duration_ms=(_time.monotonic() - _t0) * 1000,
+                error=_error,
+            )
+        except Exception:
+            pass

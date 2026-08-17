@@ -1,8 +1,11 @@
-import frappe
-import requests
 import json
 from datetime import datetime, timedelta, timezone
+
+import frappe
+import requests
 from dateutil.parser import isoparse
+
+from tap_lms.monitoring import emit
 
 # ── CR-004 Slice 0: shared session + explicit timeout on every Glific call ──
 # A module-level Session reuses the TLS connection across calls (keep-alive).
@@ -11,6 +14,7 @@ from dateutil.parser import isoparse
 # causing supervisor STOPPING / orphaned-worker incidents (2026-05-31).
 _GLIFIC_SESSION = requests.Session()
 GLIFIC_TIMEOUT = 10  # seconds, connect+read combined
+
 
 def get_glific_settings():
     return frappe.get_single("Glific Settings")
@@ -30,6 +34,7 @@ def get_glific_settings():
 # IMPORTANT: This is NOT called from get_glific_auth_headers() itself (the
 # auth POST). It is ONLY called from _glific_post_with_401_retry() which wraps
 # API POSTs. The auth POST is never wrapped (else infinite recursion).
+
 
 def _invalidate_stored_token():
     """Clear the cached Glific token to force re-authentication on next call.
@@ -64,6 +69,7 @@ def _invalidate_stored_token():
 # get_glific_auth_headers). To guard against that, callers must pass only
 # the GraphQL /api endpoint — auth is auto-wired internally.
 
+
 def _glific_post_with_401_retry(url, payload, max_attempts=2):
     """POST to a Glific API endpoint with automatic 401-token-refresh retry.
 
@@ -84,8 +90,9 @@ def _glific_post_with_401_retry(url, payload, max_attempts=2):
     last_response = None
     for attempt in range(1, max_attempts + 1):
         headers = get_glific_auth_headers()
-        resp = _GLIFIC_SESSION.post(url, json=payload, headers=headers,
-                                    timeout=GLIFIC_TIMEOUT)
+        resp = _GLIFIC_SESSION.post(
+            url, json=payload, headers=headers, timeout=GLIFIC_TIMEOUT
+        )
         if resp.status_code == 401:
             frappe.logger().warning(
                 f"_glific_post_with_401_retry: 401 on attempt {attempt} "
@@ -114,56 +121,62 @@ def _glific_post_with_401_retry(url, payload, max_attempts=2):
 def get_glific_auth_headers():
     settings = get_glific_settings()
     current_time = datetime.now(timezone.utc)
-    
+
     # Convert token_expiry_time to datetime if it's a string
     if settings.token_expiry_time:
         if isinstance(settings.token_expiry_time, str):
             settings.token_expiry_time = isoparse(settings.token_expiry_time)
         elif settings.token_expiry_time.tzinfo is None:
-            settings.token_expiry_time = settings.token_expiry_time.replace(tzinfo=timezone.utc)
-    
-    if not settings.access_token or not settings.token_expiry_time or \
-       current_time >= settings.token_expiry_time:
+            settings.token_expiry_time = settings.token_expiry_time.replace(
+                tzinfo=timezone.utc
+            )
+
+    if (
+        not settings.access_token
+        or not settings.token_expiry_time
+        or current_time >= settings.token_expiry_time
+    ):
         # Token is expired or not set, get a new one
         url = f"{settings.api_url}/api/v1/session"
         payload = {
-            "user": {
-                "phone": settings.phone_number,
-                "password": settings.password
-            }
+            "user": {"phone": settings.phone_number, "password": settings.password}
         }
-        headers = {
-            "Content-Type": "application/json",
-            "Accept": "application/json"
-        }
-        response = _GLIFIC_SESSION.post(url, json=payload, headers=headers,
-                                        timeout=GLIFIC_TIMEOUT)
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        response = _GLIFIC_SESSION.post(
+            url, json=payload, headers=headers, timeout=GLIFIC_TIMEOUT
+        )
         if response.status_code == 200:
             data = response.json()["data"]
 
             # Parse the token_expiry_time string to a timezone-aware datetime object
             token_expiry_time = isoparse(data["token_expiry_time"])
-            
+
             # Update the Glific Settings directly in the database
-            frappe.db.set_value("Glific Settings", settings.name, {
-                "access_token": data["access_token"],
-                "renewal_token": data["renewal_token"],
-                "token_expiry_time": token_expiry_time
-            }, update_modified=False)
-            
+            frappe.db.set_value(
+                "Glific Settings",
+                settings.name,
+                {
+                    "access_token": data["access_token"],
+                    "renewal_token": data["renewal_token"],
+                    "token_expiry_time": token_expiry_time,
+                },
+                update_modified=False,
+            )
+
             frappe.db.commit()
-            
+
             return {
                 "authorization": data["access_token"],
-                "Content-Type": "application/json"
+                "Content-Type": "application/json",
             }
         else:
             frappe.throw("Failed to authenticate with Glific API")
     else:
         return {
             "authorization": settings.access_token,
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
         }
+
 
 def create_contact(name, phone, school_name, model_name, language_id, batch_id):
     settings = get_glific_settings()
@@ -175,23 +188,23 @@ def create_contact(name, phone, school_name, model_name, language_id, batch_id):
         "school": {
             "value": school_name,
             "type": "string",
-            "inserted_at": datetime.now(timezone.utc).isoformat()
+            "inserted_at": datetime.now(timezone.utc).isoformat(),
         },
         "model": {
             "value": model_name,
             "type": "string",
-            "inserted_at": datetime.now(timezone.utc).isoformat()
+            "inserted_at": datetime.now(timezone.utc).isoformat(),
         },
         "buddy_name": {
             "value": name,
             "type": "string",
-            "inserted_at": datetime.now(timezone.utc).isoformat()
+            "inserted_at": datetime.now(timezone.utc).isoformat(),
         },
         "batch_id": {
             "value": batch_id,
             "type": "string",
-            "inserted_at": datetime.now(timezone.utc).isoformat()
-        }
+            "inserted_at": datetime.now(timezone.utc).isoformat(),
+        },
     }
 
     payload = {
@@ -201,12 +214,14 @@ def create_contact(name, phone, school_name, model_name, language_id, batch_id):
                 "name": name,
                 "phone": phone,
                 "fields": json.dumps(fields),
-                "languageId": int(language_id)
+                "languageId": int(language_id),
             }
-        }
+        },
     }
 
-    frappe.logger().info(f"Attempting to create Glific contact. Name: {name}, Phone: {phone}, School: {school_name}, Model: {model_name}, Language ID: {language_id}, Batch ID: {batch_id}")
+    frappe.logger().info(
+        f"Attempting to create Glific contact. Name: {name}, Phone: {phone}, School: {school_name}, Model: {model_name}, Language ID: {language_id}, Batch ID: {batch_id}"
+    )
     frappe.logger().info(f"Glific API URL: {url}")
     frappe.logger().info(f"Glific API Payload: {payload}")
 
@@ -219,24 +234,66 @@ def create_contact(name, phone, school_name, model_name, language_id, batch_id):
         if response.status_code == 200:
             data = response.json()
             if "errors" in data:
-                frappe.logger().error(f"Error creating Glific contact: {data['errors']}")
+                frappe.logger().error(
+                    f"Error creating Glific contact: {data['errors']}"
+                )
+                emit(
+                    severity="ERROR",
+                    message="glific_create_contact_failed",
+                    errors=data["errors"],
+                    phone=phone,
+                    name=name,
+                )
                 return None
-            if "data" in data and "createContact" in data["data"] and "contact" in data["data"]["createContact"]:
+            if (
+                "data" in data
+                and "createContact" in data["data"]
+                and "contact" in data["data"]["createContact"]
+            ):
                 contact = data["data"]["createContact"]["contact"]
                 frappe.logger().info(f"Glific contact created successfully: {contact}")
+                emit(
+                    severity="INFO",
+                    message="glific_contact_created",
+                    glific_id=contact.get("id"),
+                    phone=phone,
+                    name=name,
+                )
                 return contact
             else:
                 frappe.logger().error(f"Unexpected response structure: {data}")
+                emit(
+                    severity="ERROR",
+                    message="glific_create_contact_failed",
+                    error="unexpected_response_structure",
+                    response=str(data),
+                    phone=phone,
+                    name=name,
+                )
                 return None
         else:
-            frappe.logger().error(f"Failed to create Glific contact. Status code: {response.status_code}")
+            frappe.logger().error(
+                f"Failed to create Glific contact. Status code: {response.status_code}"
+            )
+            emit(
+                severity="ERROR",
+                message="glific_create_contact_failed",
+                status_code=response.status_code,
+                phone=phone,
+                name=name,
+            )
             return None
     except requests.exceptions.RequestException as e:
-        frappe.logger().error(f"Network error creating Glific contact: {str(e)}", exc_info=True)
+        frappe.logger().error(
+            f"Network error creating Glific contact: {str(e)}", exc_info=True
+        )
         raise  # FIX 2: transient network errors must propagate
     except Exception as e:
-        frappe.logger().error(f"Exception occurred while creating Glific contact: {str(e)}", exc_info=True)
+        frappe.logger().error(
+            f"Exception occurred while creating Glific contact: {str(e)}", exc_info=True
+        )
         return None
+
 
 def update_contact_fields(contact_id, fields_to_update, language_id=None):
     """
@@ -283,7 +340,7 @@ def update_contact_fields(contact_id, fields_to_update, language_id=None):
           }
         }
         """,
-        "variables": {"id": str(contact_id)}
+        "variables": {"id": str(contact_id)},
     }
 
     try:
@@ -292,7 +349,9 @@ def update_contact_fields(contact_id, fields_to_update, language_id=None):
         fetch_data = fetch_response.json()
 
         if "errors" in fetch_data:
-            frappe.logger().error(f"Glific fetch contact error for {contact_id}: {fetch_data['errors']}")
+            frappe.logger().error(
+                f"Glific fetch contact error for {contact_id}: {fetch_data['errors']}"
+            )
             return False
 
         contact_data = fetch_data.get("data", {}).get("contact", {}).get("contact")
@@ -313,7 +372,7 @@ def update_contact_fields(contact_id, fields_to_update, language_id=None):
             existing_fields[key] = {
                 "value": str(value),
                 "type": "string",
-                "inserted_at": datetime.now(timezone.utc).isoformat()
+                "inserted_at": datetime.now(timezone.utc).isoformat(),
             }
 
         # ── Step 3: Write merged fields back ───────────────────
@@ -360,25 +419,62 @@ def update_contact_fields(contact_id, fields_to_update, language_id=None):
         update_data = update_response.json()
 
         if "errors" in update_data:
-            frappe.logger().error(f"Glific updateContact error for {contact_id}: {update_data['errors']}")
+            frappe.logger().error(
+                f"Glific updateContact error for {contact_id}: {update_data['errors']}"
+            )
             return False
 
         result = update_data.get("data", {}).get("updateContact", {})
         if result.get("errors"):
-            frappe.logger().error(f"Glific updateContact mutation error for {contact_id}: {result['errors']}")
+            frappe.logger().error(
+                f"Glific updateContact mutation error for {contact_id}: {result['errors']}"
+            )
             return False
 
         if result.get("contact"):
+            emit(
+                severity="INFO",
+                message="glific_contact_fields_updated",
+                glific_id=contact_id,
+                fields=list(fields_to_update.keys()),
+            )
             return True
 
-        frappe.logger().error(f"Glific updateContact unexpected response for {contact_id}: {update_data}")
+        frappe.logger().error(
+            f"Glific updateContact unexpected response for {contact_id}: {update_data}"
+        )
+        emit(
+            severity="ERROR",
+            message="glific_update_contact_failed",
+            glific_id=contact_id,
+            error="unexpected_response",
+            response=str(update_data),
+        )
         return False
 
     except requests.exceptions.RequestException as e:
-        frappe.logger().error(f"Glific API request error for contact {contact_id}: {str(e)}")
+        frappe.logger().error(
+            f"Glific API request error for contact {contact_id}: {str(e)}"
+        )
+        emit(
+            severity="ERROR",
+            message="glific_update_contact_failed",
+            glific_id=contact_id,
+            error="request_exception",
+            details=str(e),
+        )
         raise  # FIX 2: transient network errors must propagate
     except Exception as e:
-        frappe.logger().error(f"Glific update_contact_fields error for {contact_id}: {str(e)}")
+        frappe.logger().error(
+            f"Glific update_contact_fields error for {contact_id}: {str(e)}"
+        )
+        emit(
+            severity="ERROR",
+            message="glific_update_contact_failed",
+            glific_id=contact_id,
+            error="exception",
+            details=str(e),
+        )
         return False
 
 
@@ -411,8 +507,8 @@ def update_contact_fields(contact_id, fields_to_update, language_id=None):
 # `dev_tools.bootstrap_sp_contact_fields()`. After that, the standard
 # update_contact_fields path is sufficient because the definitions persist.
 
-def register_contact_field(shortcode, display_name, value_type="TEXT",
-                           scope="CONTACT"):
+
+def register_contact_field(shortcode, display_name, value_type="TEXT", scope="CONTACT"):
     """Register a Glific contact field DEFINITION (idempotent).
 
     Args:
@@ -510,8 +606,7 @@ def register_contact_field(shortcode, display_name, value_type="TEXT",
         return False
     except Exception as e:
         frappe.logger().error(
-            f"Glific register_contact_field error "
-            f"for shortcode={shortcode!r}: {e}"
+            f"Glific register_contact_field error for shortcode={shortcode!r}: {e}"
         )
         return False
 
@@ -538,9 +633,7 @@ def get_contact_by_phone(phone):
           }
         }
         """,
-        "variables": {
-            "phone": phone
-        }
+        "variables": {"phone": phone},
     }
 
     try:
@@ -549,7 +642,9 @@ def get_contact_by_phone(phone):
         data = response.json()
 
         if "errors" in data:
-            frappe.logger().error(f"Glific API Error in getting contact by phone: {data['errors']}")
+            frappe.logger().error(
+                f"Glific API Error in getting contact by phone: {data['errors']}"
+            )
             return None
 
         contact = data.get("data", {}).get("contactByPhone", {}).get("contact")
@@ -559,8 +654,11 @@ def get_contact_by_phone(phone):
             frappe.logger().error(f"Contact not found for phone: {phone}")
             return None
     except requests.exceptions.RequestException as e:
-        frappe.logger().error(f"Error calling Glific API to get contact by phone: {str(e)}")
+        frappe.logger().error(
+            f"Error calling Glific API to get contact by phone: {str(e)}"
+        )
         raise  # FIX 2: transient network errors must propagate so the retry/DLQ path fires
+
 
 def optin_contact(phone, name):
     settings = get_glific_settings()
@@ -584,10 +682,7 @@ def optin_contact(phone, name):
           }
         }
         """,
-        "variables": {
-            "phone": phone,
-            "name": name
-        }
+        "variables": {"phone": phone, "name": name},
     }
 
     try:
@@ -596,7 +691,9 @@ def optin_contact(phone, name):
         data = response.json()
 
         if "errors" in data:
-            frappe.logger().error(f"Glific API Error in opting in contact: {data['errors']}")
+            frappe.logger().error(
+                f"Glific API Error in opting in contact: {data['errors']}"
+            )
             return False
 
         contact = data.get("data", {}).get("optinContact", {}).get("contact")
@@ -610,20 +707,18 @@ def optin_contact(phone, name):
         frappe.logger().error(f"Error calling Glific API to opt in contact: {str(e)}")
         raise  # FIX 2: transient network errors must propagate
 
+
 def create_contact_old(name, phone):
     settings = get_glific_settings()
     url = f"{settings.api_url}/api"
     payload = {
         "query": "mutation createContact($input:ContactInput!) { createContact(input: $input) { contact { id name phone } errors { key message } } }",
-        "variables": {
-            "input": {
-                "name": name,
-                "phone": phone
-            }
-        }
+        "variables": {"input": {"name": name, "phone": phone}},
     }
 
-    frappe.logger().info(f"Attempting to create Glific contact. Name: {name}, Phone: {phone}")
+    frappe.logger().info(
+        f"Attempting to create Glific contact. Name: {name}, Phone: {phone}"
+    )
     frappe.logger().info(f"Glific API URL: {url}")
     frappe.logger().info(f"Glific API Payload: {payload}")
 
@@ -636,21 +731,61 @@ def create_contact_old(name, phone):
         if response.status_code == 200:
             data = response.json()
             if "errors" in data:
-                frappe.logger().error(f"Error creating Glific contact: {data['errors']}")
+                frappe.logger().error(
+                    f"Error creating Glific contact: {data['errors']}"
+                )
+                emit(
+                    severity="ERROR",
+                    message="glific_create_contact_failed",
+                    errors=data["errors"],
+                    phone=phone,
+                    name=name,
+                )
                 return None
-            if "data" in data and "createContact" in data["data"] and "contact" in data["data"]["createContact"]:
+            if (
+                "data" in data
+                and "createContact" in data["data"]
+                and "contact" in data["data"]["createContact"]
+            ):
                 contact = data["data"]["createContact"]["contact"]
                 frappe.logger().info(f"Glific contact created successfully: {contact}")
+                emit(
+                    severity="INFO",
+                    message="glific_contact_created",
+                    glific_id=contact.get("id"),
+                    phone=phone,
+                    name=name,
+                )
                 return contact
             else:
                 frappe.logger().error(f"Unexpected response structure: {data}")
+                emit(
+                    severity="ERROR",
+                    message="glific_create_contact_failed",
+                    error="unexpected_response_structure",
+                    response=str(data),
+                    phone=phone,
+                    name=name,
+                )
                 return None
         else:
-            frappe.logger().error(f"Failed to create Glific contact. Status code: {response.status_code}")
+            frappe.logger().error(
+                f"Failed to create Glific contact. Status code: {response.status_code}"
+            )
+            emit(
+                severity="ERROR",
+                message="glific_create_contact_failed",
+                status_code=response.status_code,
+                phone=phone,
+                name=name,
+            )
             return None
     except Exception as e:
-        frappe.logger().error(f"Exception occurred while creating Glific contact: {str(e)}", exc_info=True)
+        frappe.logger().error(
+            f"Exception occurred while creating Glific contact: {str(e)}", exc_info=True
+        )
         return None
+
 
 def start_contact_flow(flow_id, contact_id, default_results):
     settings = get_glific_settings()
@@ -670,8 +805,8 @@ def start_contact_flow(flow_id, contact_id, default_results):
         "variables": {
             "flowId": flow_id,
             "contactId": contact_id,
-            "defaultResults": json.dumps(default_results)
-        }
+            "defaultResults": json.dumps(default_results),
+        },
     }
 
     try:
@@ -681,14 +816,29 @@ def start_contact_flow(flow_id, contact_id, default_results):
 
         if "errors" in data:
             frappe.logger().error(f"{data}")
-            frappe.logger().error(f"Glific API Error in starting flow: {data['errors']}")
+            frappe.logger().error(
+                f"Glific API Error in starting flow: {data['errors']}"
+            )
             return False
 
         success = data.get("data", {}).get("startContactFlow", {}).get("success")
         if success:
+            emit(
+                severity="INFO",
+                message="glific_flow_started",
+                flow_id=flow_id,
+                contact_id=contact_id,
+            )
             return True
         else:
             frappe.logger().error(f"Failed to start Glific flow. Response: {data}")
+            emit(
+                severity="ERROR",
+                message="glific_flow_start_failed",
+                flow_id=flow_id,
+                contact_id=contact_id,
+                response=str(data),
+            )
             return False
     except requests.exceptions.RequestException as e:
         # L-035: surface to the Error Log (operator-visible + picked up by the
@@ -708,12 +858,13 @@ def start_contact_flow(flow_id, contact_id, default_results):
             frappe.logger().error(f"start_contact_flow error (double-fault): {e}")
         return False
 
+
 def update_student_glific_ids(batch_size=100):
     def format_phone(phone):
-        phone = phone.strip().replace(' ', '')
+        phone = phone.strip().replace(" ", "")
         if len(phone) == 10:
             return f"91{phone}"
-        elif len(phone) == 12 and phone.startswith('91'):
+        elif len(phone) == 12 and phone.startswith("91"):
             return phone
         else:
             return None
@@ -722,25 +873,32 @@ def update_student_glific_ids(batch_size=100):
         "Student",
         filters={"glific_id": ["in", ["", None]]},
         fields=["name", "phone"],
-        limit=batch_size
+        limit=batch_size,
     )
 
     for student in students:
         formatted_phone = format_phone(student.phone)
         if not formatted_phone:
-            frappe.logger().warning(f"Invalid phone number for student {student.name}: {student.phone}")
+            frappe.logger().warning(
+                f"Invalid phone number for student {student.name}: {student.phone}"
+            )
             continue
 
         glific_contact = get_contact_by_phone(formatted_phone)
-        if glific_contact and 'id' in glific_contact:
-            frappe.db.set_value("Student", student.name, "glific_id", glific_contact['id'])
-            frappe.logger().info(f"Updated Glific ID for student {student.name}: {glific_contact['id']}")
+        if glific_contact and "id" in glific_contact:
+            frappe.db.set_value(
+                "Student", student.name, "glific_id", glific_contact["id"]
+            )
+            frappe.logger().info(
+                f"Updated Glific ID for student {student.name}: {glific_contact['id']}"
+            )
         else:
-            frappe.logger().warning(f"No Glific contact found for student {student.name} with phone {formatted_phone}")
+            frappe.logger().warning(
+                f"No Glific contact found for student {student.name} with phone {formatted_phone}"
+            )
 
     frappe.db.commit()
     return len(students)
-
 
 
 def check_glific_group_exists(group_label):
@@ -757,12 +915,7 @@ def check_glific_group_exists(group_label):
           }
         }
         """,
-        "variables": {
-            "filter": {
-                "label": group_label
-            },
-            "opts": {}
-        }
+        "variables": {"filter": {"label": group_label}, "opts": {}},
     }
 
     try:
@@ -771,7 +924,9 @@ def check_glific_group_exists(group_label):
         data = response.json()
 
         if "errors" in data:
-            frappe.logger().error(f"Glific API Error in checking group: {data['errors']}")
+            frappe.logger().error(
+                f"Glific API Error in checking group: {data['errors']}"
+            )
             return None
 
         groups = data.get("data", {}).get("groups", [])
@@ -781,6 +936,7 @@ def check_glific_group_exists(group_label):
     except Exception as e:
         frappe.logger().error(f"Error checking Glific group: {str(e)}")
         return None
+
 
 def create_glific_group(label, description=""):
     """Create a new group in Glific"""
@@ -803,12 +959,7 @@ def create_glific_group(label, description=""):
           }
         }
         """,
-        "variables": {
-            "input": {
-                "label": label,
-                "description": description
-            }
-        }
+        "variables": {"input": {"label": label, "description": description}},
     }
 
     try:
@@ -817,11 +968,16 @@ def create_glific_group(label, description=""):
         data = response.json()
 
         if "errors" in data:
-            frappe.logger().error(f"Glific API Error in creating group: {data['errors']}")
+            frappe.logger().error(
+                f"Glific API Error in creating group: {data['errors']}"
+            )
             return None
 
         if "data" in data and "createGroup" in data["data"]:
-            if "errors" in data["data"]["createGroup"] and data["data"]["createGroup"]["errors"]:
+            if (
+                "errors" in data["data"]["createGroup"]
+                and data["data"]["createGroup"]["errors"]
+            ):
                 errors = data["data"]["createGroup"]["errors"]
                 frappe.logger().error(f"Glific API Error in creating group: {errors}")
                 return None
@@ -835,15 +991,18 @@ def create_glific_group(label, description=""):
         frappe.logger().error(f"Error creating Glific group: {str(e)}")
         return None
 
+
 def create_or_get_glific_group_for_batch(set_id):
     """Create a Glific group for a backend onboarding batch or get existing one"""
     # Get the batch document
     set = frappe.get_doc("Backend Student Onboarding", set_id)
 
     # Check if we already have a mapping for this batch
-    existing_mapping = frappe.get_all("GlificContactGroup",
-                                   filters={"backend_onboarding_set": set_id},
-                                   fields=["name", "group_id", "label"])
+    existing_mapping = frappe.get_all(
+        "GlificContactGroup",
+        filters={"backend_onboarding_set": set_id},
+        fields=["name", "group_id", "label"],
+    )
 
     if existing_mapping:
         return existing_mapping[0]
@@ -859,13 +1018,12 @@ def create_or_get_glific_group_for_batch(set_id):
         glific_group = frappe.new_doc("GlificContactGroup")
         glific_group.group_id = existing_group["id"]
         glific_group.label = existing_group["label"]
-        glific_group.description = f"Auto-created for backend onboarding batch {set.set_name}"
+        glific_group.description = (
+            f"Auto-created for backend onboarding batch {set.set_name}"
+        )
         glific_group.backend_onboarding_set = set_id
         glific_group.insert()
-        return {
-            "group_id": existing_group["id"],
-            "label": existing_group["label"]
-        }
+        return {"group_id": existing_group["id"], "label": existing_group["label"]}
 
     # Group doesn't exist, create it in Glific
     new_group = create_glific_group(group_label, f"Students from batch {set.set_name}")
@@ -875,16 +1033,16 @@ def create_or_get_glific_group_for_batch(set_id):
         glific_group = frappe.new_doc("GlificContactGroup")
         glific_group.group_id = new_group["id"]
         glific_group.label = new_group["label"]
-        glific_group.description = f"Auto-created for backend onboarding batch {set.set_name}"
+        glific_group.description = (
+            f"Auto-created for backend onboarding batch {set.set_name}"
+        )
         glific_group.backend_onboarding_set = set_id
         glific_group.insert()
-        return {
-            "group_id": new_group["id"],
-            "label": new_group["label"]
-        }
+        return {"group_id": new_group["id"], "label": new_group["label"]}
 
     # Failed to create group
     return None
+
 
 def remove_contact_from_group(contact_id, group_id):
     """Remove a single contact from a single Glific group.
@@ -916,9 +1074,9 @@ def remove_contact_from_group(contact_id, group_id):
             "input": {
                 "groupId": group_id,
                 "addContactIds": [],
-                "deleteContactIds": [contact_id]
+                "deleteContactIds": [contact_id],
             }
-        }
+        },
     }
 
     try:
@@ -999,9 +1157,9 @@ def add_contact_to_group(contact_id, group_id):
             "input": {
                 "groupId": group_id,
                 "addContactIds": [contact_id],
-                "deleteContactIds": []
+                "deleteContactIds": [],
             }
-        }
+        },
     }
 
     try:
@@ -1010,13 +1168,20 @@ def add_contact_to_group(contact_id, group_id):
         data = response.json()
 
         if "errors" in data:
-            frappe.logger().error(f"Glific API Error adding contact to group: {data['errors']}")
+            frappe.logger().error(
+                f"Glific API Error adding contact to group: {data['errors']}"
+            )
             return False
 
         if "data" in data and "updateGroupContacts" in data["data"]:
-            if "errors" in data["data"]["updateGroupContacts"] and data["data"]["updateGroupContacts"]["errors"]:
+            if (
+                "errors" in data["data"]["updateGroupContacts"]
+                and data["data"]["updateGroupContacts"]["errors"]
+            ):
                 errors = data["data"]["updateGroupContacts"]["errors"]
-                frappe.logger().error(f"Glific API Error adding contact to group: {errors}")
+                frappe.logger().error(
+                    f"Glific API Error adding contact to group: {errors}"
+                )
                 return False
 
             return True
@@ -1030,15 +1195,24 @@ def add_contact_to_group(contact_id, group_id):
         return False
 
 
-
-def add_student_to_glific_for_onboarding(student_name, phone, school_name, batch_id, group_id, language_id=None, course_level_name=None, course_vertical_name=None, grade=None):
+def add_student_to_glific_for_onboarding(
+    student_name,
+    phone,
+    school_name,
+    batch_id,
+    group_id,
+    language_id=None,
+    course_level_name=None,
+    course_vertical_name=None,
+    grade=None,
+):
     """
     Function dedicated to backend onboarding that:
     1. Formats the phone number correctly
     2. Checks if contact already exists in Glific
     3. Creates contact if needed or just adds to group if exists
     4. ADDED: Opts in the contact for WhatsApp messaging
-    
+
     Args:
         student_name: Name of the student
         phone: Phone number
@@ -1049,17 +1223,17 @@ def add_student_to_glific_for_onboarding(student_name, phone, school_name, batch
         course_level_name: Course level name for Glific
         course_vertical_name: Course vertical name for Glific
         grade: Student grade for Glific
-        
+
     Returns:
         Contact information if successful, None otherwise
     """
     settings = get_glific_settings()
 
     # Format phone number
-    phone = phone.strip().replace(' ', '')
+    phone = phone.strip().replace(" ", "")
     if len(phone) == 10:
         phone = f"91{phone}"
-    elif len(phone) == 12 and phone.startswith('91'):
+    elif len(phone) == 12 and phone.startswith("91"):
         pass  # Phone is already properly formatted
     else:
         frappe.logger().warning(f"Invalid phone number format: {phone}")
@@ -1068,12 +1242,14 @@ def add_student_to_glific_for_onboarding(student_name, phone, school_name, batch
     # Check if contact already exists
     existing_contact = get_contact_by_phone(phone)
 
-    if existing_contact and 'id' in existing_contact:
-        frappe.logger().info(f"Contact already exists in Glific. Using existing contact: {existing_contact['id']}")
-        
+    if existing_contact and "id" in existing_contact:
+        frappe.logger().info(
+            f"Contact already exists in Glific. Using existing contact: {existing_contact['id']}"
+        )
+
         # ADDED: Check if contact is opted in and opt-in if needed
-        bsp_status = existing_contact.get('bspStatus', 'NONE')
-        if bsp_status not in ['SESSION', 'SESSION_AND_HSM']:
+        bsp_status = existing_contact.get("bspStatus", "NONE")
+        if bsp_status not in ["SESSION", "SESSION_AND_HSM"]:
             frappe.logger().info(f"Existing contact not opted in. Attempting opt-in...")
             try:
                 optin_result = optin_contact(phone, student_name)
@@ -1087,13 +1263,10 @@ def add_student_to_glific_for_onboarding(student_name, phone, school_name, batch
 
         # Add to group
         if group_id:
-            add_contact_to_group(existing_contact['id'], group_id)
+            add_contact_to_group(existing_contact["id"], group_id)
 
         # Optionally update fields to ensure they're current
-        fields_to_update = {
-            "buddy_name": student_name,
-            "batch_id": batch_id
-        }
+        fields_to_update = {"buddy_name": student_name, "batch_id": batch_id}
         if school_name:
             fields_to_update["school"] = school_name
         if course_level_name:
@@ -1110,7 +1283,7 @@ def add_student_to_glific_for_onboarding(student_name, phone, school_name, batch
         # as the field updates — parity with process_glific_contact's main
         # existing-contact path.
         update_contact_fields(
-            existing_contact['id'],
+            existing_contact["id"],
             fields_to_update,
             language_id=language_id,
         )
@@ -1121,18 +1294,22 @@ def add_student_to_glific_for_onboarding(student_name, phone, school_name, batch
         if language_id is None or language_id == "":
             # Try to get default language ID from Glific Settings
             try:
-                language_id = frappe.db.get_single_value("Glific Settings", "default_language_id")
+                language_id = frappe.db.get_single_value(
+                    "Glific Settings", "default_language_id"
+                )
             except Exception as e:
                 frappe.logger().warning(f"Error getting default_language_id: {str(e)}")
                 language_id = "1"  # Default to English if not found
-        
+
         # Ensure language_id is an integer
         try:
             language_id = int(language_id)
         except (ValueError, TypeError):
-            frappe.logger().warning(f"Invalid language_id format: {language_id}, using default (1)")
+            frappe.logger().warning(
+                f"Invalid language_id format: {language_id}, using default (1)"
+            )
             language_id = 1  # Default to English if not a valid integer
-        
+
         frappe.logger().info(f"Creating Glific contact with language_id: {language_id}")
 
         # Create new contact with minimal required fields
@@ -1149,9 +1326,9 @@ def add_student_to_glific_for_onboarding(student_name, phone, school_name, batch
                 "input": {
                     "name": student_name,
                     "phone": phone,
-                    "languageId": language_id
+                    "languageId": language_id,
                 }
-            }
+            },
         }
 
         # Add fields if available
@@ -1160,21 +1337,21 @@ def add_student_to_glific_for_onboarding(student_name, phone, school_name, batch
         fields["buddy_name"] = {
             "value": student_name,
             "type": "string",
-            "inserted_at": datetime.now(timezone.utc).isoformat()
+            "inserted_at": datetime.now(timezone.utc).isoformat(),
         }
-        
+
         if school_name:
             fields["school"] = {
                 "value": school_name,
                 "type": "string",
-                "inserted_at": datetime.now(timezone.utc).isoformat()
+                "inserted_at": datetime.now(timezone.utc).isoformat(),
             }
 
         if batch_id:
             fields["batch_id"] = {
                 "value": batch_id,
                 "type": "string",
-                "inserted_at": datetime.now(timezone.utc).isoformat()
+                "inserted_at": datetime.now(timezone.utc).isoformat(),
             }
 
         if course_level_name:
@@ -1182,21 +1359,21 @@ def add_student_to_glific_for_onboarding(student_name, phone, school_name, batch
                 "value": course_level_name,
                 "type": "string",
                 "label": "course_level",
-                "inserted_at": datetime.now(timezone.utc).isoformat()
+                "inserted_at": datetime.now(timezone.utc).isoformat(),
             }
 
         if course_vertical_name:
             fields["course"] = {
                 "value": course_vertical_name,
                 "type": "string",
-                "inserted_at": datetime.now(timezone.utc).isoformat()
+                "inserted_at": datetime.now(timezone.utc).isoformat(),
             }
 
         if grade:
             fields["grade"] = {
                 "value": grade,
                 "type": "string",
-                "inserted_at": datetime.now(timezone.utc).isoformat()
+                "inserted_at": datetime.now(timezone.utc).isoformat(),
             }
 
         if fields:
@@ -1211,7 +1388,9 @@ def add_student_to_glific_for_onboarding(student_name, phone, school_name, batch
             )
 
             if response.status_code != 200:
-                frappe.logger().error(f"Failed to create contact. Status: {response.status_code}, Response: {response.text}")
+                frappe.logger().error(
+                    f"Failed to create contact. Status: {response.status_code}, Response: {response.text}"
+                )
                 return None
 
             result = response.json()
@@ -1235,23 +1414,29 @@ def add_student_to_glific_for_onboarding(student_name, phone, school_name, batch
                 else:
                     frappe.logger().warning(f"Failed to opt-in new contact: {phone}")
             except Exception as e:
-                frappe.logger().warning(f"Error during opt-in for new contact: {str(e)}")
+                frappe.logger().warning(
+                    f"Error during opt-in for new contact: {str(e)}"
+                )
                 # Continue even if opt-in fails
 
             # Add to group
-            if group_id and 'id' in contact:
-                add_contact_to_group(contact['id'], group_id)
+            if group_id and "id" in contact:
+                add_contact_to_group(contact["id"], group_id)
 
             return contact
 
         except requests.exceptions.RequestException as e:
-            frappe.logger().error(f"Network error in add_student_to_glific_for_onboarding: {str(e)}", exc_info=True)
+            frappe.logger().error(
+                f"Network error in add_student_to_glific_for_onboarding: {str(e)}",
+                exc_info=True,
+            )
             raise  # FIX 2: transient network errors must propagate
         except Exception as e:
-            frappe.logger().error(f"Exception in add_student_to_glific_for_onboarding: {str(e)}", exc_info=True)
+            frappe.logger().error(
+                f"Exception in add_student_to_glific_for_onboarding: {str(e)}",
+                exc_info=True,
+            )
             return None
-
-
 
 
 def create_or_get_teacher_group_for_batch(batch_name, batch_id):
@@ -1265,19 +1450,25 @@ def create_or_get_teacher_group_for_batch(batch_name, batch_id):
 
     # Handle edge case for no active batch
     if not batch_id or batch_id == "no_active_batch_id" or not batch_name:
-        frappe.logger().warning(f"Invalid batch for teacher group: batch_name={batch_name}, batch_id={batch_id}")
+        frappe.logger().warning(
+            f"Invalid batch for teacher group: batch_name={batch_name}, batch_id={batch_id}"
+        )
         return None
 
     # Check if we already have a mapping for this batch document
-    existing_mapping = frappe.get_all("Glific Teacher Group",
-                                   filters={"batch": batch_name},
-                                   fields=["name", "glific_group_id", "group_label"])
+    existing_mapping = frappe.get_all(
+        "Glific Teacher Group",
+        filters={"batch": batch_name},
+        fields=["name", "glific_group_id", "group_label"],
+    )
 
     if existing_mapping:
-        frappe.logger().info(f"Found existing teacher group mapping for batch {batch_name}")
+        frappe.logger().info(
+            f"Found existing teacher group mapping for batch {batch_name}"
+        )
         return {
             "group_id": existing_mapping[0]["glific_group_id"],
-            "label": existing_mapping[0]["group_label"]
+            "label": existing_mapping[0]["group_label"],
         }
 
     # Derive group label from batch_id
@@ -1300,10 +1491,7 @@ def create_or_get_teacher_group_for_batch(batch_name, batch_id):
         teacher_group.insert(ignore_permissions=True)
         frappe.db.commit()
 
-        return {
-            "group_id": existing_group["id"],
-            "label": existing_group["label"]
-        }
+        return {"group_id": existing_group["id"], "label": existing_group["label"]}
 
     # Group doesn't exist, create it in Glific
     frappe.logger().info(f"Creating new Glific group for teacher batch {batch_id}")
@@ -1321,10 +1509,7 @@ def create_or_get_teacher_group_for_batch(batch_name, batch_id):
         teacher_group.insert(ignore_permissions=True)
         frappe.db.commit()
 
-        return {
-            "group_id": new_group["id"],
-            "label": new_group["label"]
-        }
+        return {"group_id": new_group["id"], "label": new_group["label"]}
 
     # Failed to create group
     frappe.logger().error(f"Failed to create Glific group for batch {batch_id}")
@@ -1348,6 +1533,7 @@ def create_or_get_teacher_group_for_batch(batch_name, batch_id):
 # (/api/v1/session) itself — _invalidate_stored_token just clears the DB value
 # so the next get_glific_auth_headers() call does the fresh login.
 
+
 def probe_token_health():
     """Hourly cron: verify the stored Glific token is still valid.
 
@@ -1359,45 +1545,92 @@ def probe_token_health():
     Scheduled in hooks.py under the existing "0 * * * *" hourly block.
     Requires `bench --site <site> migrate` to register the scheduler entry.
     """
-    settings = get_glific_settings()
-    url = f"{settings.api_url}/api"
-
-    # The lightest possible query — just reads the current user's name.
-    probe_payload = {
-        "query": "{ currentUser { user { name } } }"
-    }
+    import time as _time
+    from tap_lms.monitoring import record_job
+    _t0 = _time.monotonic()
+    _status = "success"
+    _error = None
+    _token_status = "ok"
 
     try:
-        headers = get_glific_auth_headers()
-        resp = _GLIFIC_SESSION.post(url, json=probe_payload, headers=headers,
-                                    timeout=GLIFIC_TIMEOUT)
+        settings = get_glific_settings()
+        url = f"{settings.api_url}/api"
 
-        if resp.status_code == 401:
-            frappe.logger().warning(
-                "probe_token_health: 401 from Glific — invalidating cached token "
-                "so next API call triggers fresh login."
-            )
-            _invalidate_stored_token()
-            frappe.log_error(
-                "probe_token_health detected stale Glific token (HTTP 401). "
-                "Token has been invalidated; next API call will re-authenticate. "
-                "If this fires repeatedly, check Glific credentials in Glific Settings.",
-                "Glific Token Health Alert",
-            )
-        elif resp.ok:
-            frappe.logger().debug(
-                f"probe_token_health: token OK (HTTP {resp.status_code})"
-            )
-        else:
-            frappe.logger().warning(
-                f"probe_token_health: unexpected HTTP {resp.status_code} — "
-                f"not a 401, so token not invalidated. Body: {resp.text[:200]}"
+        # The lightest possible query — just reads the current user's name.
+        probe_payload = {"query": "{ currentUser { user { name } } }"}
+
+        try:
+            headers = get_glific_auth_headers()
+            resp = _GLIFIC_SESSION.post(
+                url, json=probe_payload, headers=headers, timeout=GLIFIC_TIMEOUT
             )
 
-    except Exception as exc:
-        # Connection errors (timeout, DNS) don't indicate a bad token.
-        # Log the connectivity problem but don't invalidate — a valid token
-        # is better than no token when Glific comes back.
-        frappe.logger().error(
-            f"probe_token_health: connectivity error (not invalidating token): {exc}"
-        )
+            if resp.status_code == 401:
+                _token_status = "stale"
+                frappe.logger().warning(
+                    "probe_token_health: 401 from Glific — invalidating cached token "
+                    "so next API call triggers fresh login."
+                )
+                _invalidate_stored_token()
+                frappe.log_error(
+                    "probe_token_health detected stale Glific token (HTTP 401). "
+                    "Token has been invalidated; next API call will re-authenticate. "
+                    "If this fires repeatedly, check Glific credentials in Glific Settings.",
+                    "Glific Token Health Alert",
+                )
+                emit(
+                    severity="ERROR",
+                    message="glific_token_health",
+                    token_status="stale",
+                    http_status=resp.status_code,
+                )
+            elif resp.ok:
+                frappe.logger().debug(
+                    f"probe_token_health: token OK (HTTP {resp.status_code})"
+                )
+                # No structured log — absence of ERROR is the signal.
+            else:
+                _token_status = "unexpected"
+                frappe.logger().warning(
+                    f"probe_token_health: unexpected HTTP {resp.status_code} — "
+                    f"not a 401, so token not invalidated. Body: {resp.text[:200]}"
+                )
+                emit(
+                    severity="WARNING",
+                    message="glific_token_health",
+                    token_status="unexpected",
+                    http_status=resp.status_code,
+                    response_body=resp.text[:200],
+                )
+
+        except Exception as exc:
+            # Connection errors (timeout, DNS) don't indicate a bad token.
+            # Log the connectivity problem but don't invalidate — a valid token
+            # is better than no token when Glific comes back.
+            _token_status = "connectivity_error"
+            frappe.logger().error(
+                f"probe_token_health: connectivity error (not invalidating token): {exc}"
+            )
+            emit(
+                severity="WARNING",
+                message="glific_token_health",
+                token_status="connectivity_error",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+
+    except Exception as e:
+        _status = "error"
+        _error = str(e)
+        raise
+    finally:
+        try:
+            record_job(
+                job_name="probe_token_health",
+                status=_status,
+                duration_ms=(_time.monotonic() - _t0) * 1000,
+                error=_error,
+                token_status=_token_status,
+            )
+        except Exception:
+            pass

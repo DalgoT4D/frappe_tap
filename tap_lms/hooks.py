@@ -1,7 +1,3 @@
-from . import __version__ as app_version
-from frappe import get_all
-
-
 app_name = "tap_lms"
 app_title = "Tap Lms"
 app_publisher = "Techt4dev"
@@ -9,18 +5,36 @@ app_description = "Lms system for tap"
 app_email = "tech4dev@gmail.com"
 app_license = "MIT"
 
+# ── SRE Monitoring ────────────────────────────────────────────────────────────
+# List syntax required — Frappe merges hook lists across apps.
+# on_exception does NOT exist in Frappe v14 — exception detection is handled
+# inside after_request via sys.exc_info(). See tap_lms/middleware.py.
+# Verified against: Frappe 14.29.0 / bench 5.16.2
+before_request = ["tap_lms.middleware.before_request"]
+after_request = ["tap_lms.middleware.after_request"]
+
+# v15 exposes before_job / after_job hooks (PR #19971). Wire them here when
+# the bench is confirmed on v15 — they give automatic record_job coverage for
+# every scheduler function without per-function decoration.
+# before_job = ["tap_lms.monitoring.before_job_hook"]
+# after_job  = ["tap_lms.monitoring.after_job_hook"]
+
 
 # Document Events
 doc_events = {
-    "School": {
-        "before_save": "tap_lms.tap_lms.doctype.school.school.before_save"
+    # SRE: Frappe writes an Error Log record for every unhandled exception in
+    # both web requests and RQ/scheduler workers. Hooking after_insert here
+    # converts those writes into structured GCP log lines automatically —
+    # no sys.excepthook or on_exception hack required. Covers both surfaces
+    # (HTTP 500s and background job crashes) with a real traceback in the payload.
+    "Error Log": {
+        "after_insert": "tap_lms.monitoring.on_error_log_insert"
     },
-    "Teacher": {
-        "on_update": "tap_lms.glific_webhook.update_glific_contact"
-    },
+    "School": {"before_save": "tap_lms.tap_lms.doctype.school.school.before_save"},
+    "Teacher": {"on_update": "tap_lms.glific_webhook.update_glific_contact"},
     "StudentStageProgress": {
         "after_insert": "tap_lms.tap_lms.doctype.studentonboardingprogress.studentonboardingprogress.update_student_progress",
-        "on_update": "tap_lms.tap_lms.doctype.studentonboardingprogress.studentonboardingprogress.update_student_progress"
+        "on_update": "tap_lms.tap_lms.doctype.studentonboardingprogress.studentonboardingprogress.update_student_progress",
     },
     # CR-002 v2 gamification (2026-05-13): VideoClass completion via
     # StudentContentLog drives the activity-points handler. The handler also
@@ -36,7 +50,7 @@ doc_events = {
     # attempts are no-ops.
     "StudentQuizAttempt": {
         "on_update": "tap_lms.summer_program.quiz_points.handle_attempt_update"
-    }
+    },
 }
 
 # Scheduled Tasks
@@ -339,4 +353,4 @@ report_script_custom_doctypes = ["StudentStageProgress"]
 #       "tap_lms.auth.validate"
 # ]
 
-fixtures = [{ "doctype": "Client Script", "filters": [ ["module", "in", ( "Tap Lms" )] ] }]
+fixtures = [{"doctype": "Client Script", "filters": [["module", "in", ("Tap Lms")]]}]

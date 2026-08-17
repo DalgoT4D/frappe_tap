@@ -14,6 +14,8 @@ services:
         condition: service_started
       redis-queue:
         condition: service_started
+      rabbitmq:
+        condition: service_started
     env_file:
       - ../../env.local
     environment:
@@ -23,7 +25,7 @@ services:
       - "${SOCKETIO_PORT:-9000}:9000"
     volumes:
       - bench-data:/home/frappe/frappe-bench
-      - ../..:/workspace/frappe_tap:cached
+      - ../..:/workspace/frappe_tap:cached,z
     working_dir: /home/frappe
 
   postgres:
@@ -54,6 +56,15 @@ services:
     container_name: tap_lms_redis_queue
     ports:
       - "${REDIS_QUEUE_PORT:-6380}:6379"
+
+  rabbitmq:
+    image: docker.io/library/rabbitmq:4-management
+    ports:
+      - "5672:5672"       # AMQP protocol port
+      - "15672:15672"     # Web Management Dashboard
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
 
 volumes:
   bench-data:

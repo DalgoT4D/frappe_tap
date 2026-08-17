@@ -1,10 +1,16 @@
-import frappe
-import json
-import pika
 import base64
+import json
 import mimetypes
+import os
 from urllib.parse import urlparse
+
+import frappe
+import pika
+import requests
+from frappe.utils.file_manager import get_file_path
+from google.cloud import storage
 from tap_lms.imgana.gcs_client import upload_to_gcs
+from tap_lms.monitoring import emit
 
 URL_SUBMISSION_TYPES = {"audio", "image", "video"}
 
@@ -27,13 +33,14 @@ def get_rabbitmq_settings():
     """
     settings = frappe.get_single("RabbitMQ Settings")
     return {
-        'host': settings.host,
-        'port': int(settings.port),
-        'virtual_host': settings.virtual_host,
-        'username': settings.username,
-        'password': settings.get_password('password'),
-        'queue': settings.submission_queue
+        "host": settings.host,
+        "port": int(settings.port),
+        "virtual_host": settings.virtual_host,
+        "username": settings.username,
+        "password": settings.get_password("password"),
+        "queue": settings.submission_queue,
     }
+
 
 def process_submission_async(submission_id, raw_submission=None, submission_url=None):
     """
@@ -66,12 +73,14 @@ def process_submission_async(submission_id, raw_submission=None, submission_url=
         submission.save(ignore_permissions=True)
         frappe.db.commit()
 
-        frappe.logger("submission").debug(
-            f"Submission prepared for processing: assign_id={submission.assign_id}, "
-            f"student_id={submission.student_id}, "
-            f"submission_type={submission.submission_type}, "
-            f"raw_submission={raw_submission}, "
-            f"gcs_url={url}"
+        emit(
+            severity="DEBUG",
+            message="submission_prepared",
+            submission_id=submission_id,
+            assign_id=submission.assign_id,
+            student_id=submission.student_id,
+            submission_type=submission.submission_type,
+            gcs_url=url,
         )
 
         enqueue_submission(submission.name)
@@ -79,8 +88,11 @@ def process_submission_async(submission_id, raw_submission=None, submission_url=
     except Exception as e:
         frappe.db.rollback()
         error_message = str(e)
-        frappe.logger("submission").error(
-            f"Error in background processing for submission {submission_id}: {error_message}"
+        emit(
+            severity="ERROR",
+            message="submission_background_processing_failed",
+            submission_id=submission_id,
+            error=error_message,
         )
 
         try:
@@ -90,8 +102,11 @@ def process_submission_async(submission_id, raw_submission=None, submission_url=
             submission.save(ignore_permissions=True)
             frappe.db.commit()
         except Exception as log_error:
-            frappe.logger("submission").error(
-                f"Failed to update submission {submission_id} after background error: {str(log_error)}"
+            emit(
+                severity="ERROR",
+                message="submission_status_update_failed",
+                submission_id=submission_id,
+                error=str(log_error),
             )
 
 
@@ -188,7 +203,13 @@ def assignment_submission_internal(
         return _build_submission_response(submission)
     except Exception as e:
         frappe.db.rollback()
-        frappe.logger("submission").error(f"Error in assignment_submission_internal: {str(e)}")
+        emit(
+            severity="ERROR",
+            message="assignment_submission_internal_failed",
+            error=str(e),
+            student_id=student_id,
+            assign_id=assign_id,
+        )
         frappe.throw(f"Failed to process submission: {str(e)}")
     finally:
         frappe.set_user("Administrator")
@@ -227,7 +248,13 @@ def assignment_submission(
         return _build_submission_response(submission)
     except Exception as e:
         frappe.db.rollback()
-        frappe.logger("submission").error(f"Error in assignment_submission: {str(e)}")
+        emit(
+            severity="ERROR",
+            message="assignment_submission_failed",
+            error=str(e),
+            student_id=student.name,
+            assign_id=assign_id,
+        )
         frappe.throw(f"Failed to process submission: {str(e)}")
     finally:
         frappe.set_user("Administrator")
@@ -255,14 +282,17 @@ def enqueue_submission(submission_id):
 
         # Establish a connection to RabbitMQ
         credentials = pika.PlainCredentials(
-            rabbitmq_config['username'], 
-            rabbitmq_config['password']
+            rabbitmq_config["username"], rabbitmq_config["password"]
         )
         parameters = pika.ConnectionParameters(
-            rabbitmq_config['host'],
-            rabbitmq_config['port'],
-            rabbitmq_config['virtual_host'],
-            credentials
+            rabbitmq_config["host"],
+            rabbitmq_config["port"],
+            rabbitmq_config["virtual_host"],
+            credentials,
+            heartbeat=60,  # send keep-alive heartbeat every minute
+            connection_attempts=3,  # Automatically retry connecting
+            retry_delay=5,  # Wait 5 seconds between retries
+            blocked_connection_timeout=300,
         )
         connection = pika.BlockingConnection(parameters)
         channel = connection.channel()
@@ -270,30 +300,57 @@ def enqueue_submission(submission_id):
         # Declare the queue
         try:
             # First try passive declaration to check if queue exists
-            channel.queue_declare(queue=rabbitmq_config['queue'],durable=True,passive=True)
+            channel.queue_declare(
+                queue=rabbitmq_config["queue"], durable=True, passive=True
+            )
         except Exception:
             # If it doesn't exist, declare it
-            channel.queue_declare(queue=rabbitmq_config['queue'], durable=True)
-
+            channel.queue_declare(queue=rabbitmq_config["queue"], durable=True)
 
         # Publish the message to the queue
         channel.basic_publish(
-            exchange='',
-            routing_key=rabbitmq_config['queue'],
-            body=json.dumps(payload)
+            exchange="", routing_key=rabbitmq_config["queue"], body=json.dumps(payload)
         )
-        print("Submission payload:")
-        print(json.dumps(payload))
-        frappe.logger("submission").error(f"Enqueued submission {submission_id} with payload: {json.dumps(payload)}")
+
+        emit(
+            severity="INFO",
+            message="submission_enqueued_raw",
+            submission_id=submission_id,
+            payload=payload,
+        )
 
         # Close the connection
         connection.close()
-        
-        frappe.logger("submission").info(
-            f"Enqueued submission {submission_id} with type {submission.submission_type}"
+
+        # SRE: pipeline trace — step 1. This structured log is the anchor for
+        # the submission_id trace in Cloud Logging and BigQuery.
+        from tap_lms.monitoring import record_submission_published
+
+        try:
+            record_submission_published(
+                submission_id=submission_id,
+                student_id=payload.get("student_id", ""),
+                assign_id=payload.get("assign_id", ""),
+                submission_type=payload.get("submission_type", ""),
+                queue_name=rabbitmq_config["queue"],
+            )
+        except Exception as e:
+            print(f"[monitoring] record_submission_published failed: {e}", flush=True)
+            # Just print and do nothing else - monitoring issues should never fail the process
+
+        emit(
+            severity="INFO",
+            message="submission_enqueued",
+            submission_id=submission_id,
+            submission_type=submission.submission_type,
         )
     except Exception as e:
-        frappe.logger("submission").error(f"Failed to enqueue submission {submission_id}: {str(e)}")
+        emit(
+            severity="ERROR",
+            message="submission_enqueue_failed",
+            submission_id=submission_id,
+            error=str(e),
+        )
         raise frappe.ValidationError(f"Failed to enqueue submission: {str(e)}")
 
 
@@ -307,7 +364,7 @@ def assignment_feedback(api_key, submission_id):
 
     try:
         submission = frappe.get_doc("Submission", submission_id)
-        
+
         if submission.status == "Completed":
             response = {
                 "status": submission.status,
@@ -321,14 +378,22 @@ def assignment_feedback(api_key, submission_id):
                 "status": submission.status,
                 "submission_type": submission.submission_type,
             }
-        
+
         return response
 
     except frappe.DoesNotExistError:
         return {"error": "Submission not found"}
-    
+
     except Exception as e:
-        frappe.log_error(f"Error checking submission status: {str(e)}", "Submission Status Error")
+        frappe.log_error(
+            f"Error checking submission status: {str(e)}", "Submission Status Error"
+        )
+        emit(
+            severity="ERROR",
+            message="submission_status_check_failed",
+            submission_id=submission_id,
+            error=str(e),
+        )
         return {"error": "An error occurred while checking submission status"}
 
     finally:
@@ -353,12 +418,17 @@ def get_assignment_context(assignment_id, student_id=None):
                 with open(file_path, "rb") as image_file:
                     content = base64.b64encode(image_file.read()).decode("utf-8")
 
-                content_type = mimetypes.guess_type(file_doc.file_name or file_url)[0] or "image/jpeg"
-                images.append({
-                    "name": row.get("image_name") or file_doc.file_name,
-                    "content_type": content_type,
-                    "content": content,
-                })
+                content_type = (
+                    mimetypes.guess_type(file_doc.file_name or file_url)[0]
+                    or "image/jpeg"
+                )
+                images.append(
+                    {
+                        "name": row.get("image_name") or file_doc.file_name,
+                        "content_type": content_type,
+                        "content": content,
+                    }
+                )
             except Exception:
                 frappe.log_error(
                     frappe.get_traceback(),
@@ -367,13 +437,17 @@ def get_assignment_context(assignment_id, student_id=None):
 
         rubrics = {}
         for grade in assignment.get("rubric_grades") or []:
-            rubric_key = grade.get("rubric_name") or grade.get("skill_name") or "General"
-            rubrics.setdefault(rubric_key, []).append({
-                "grade_value": grade.get("grade_value"),
-                "grade_name": grade.get("grade_name"),
-                "grade_description": grade.get("grade_description"),
-                "skill_name": grade.get("skill_name"),
-            })
+            rubric_key = (
+                grade.get("rubric_name") or grade.get("skill_name") or "General"
+            )
+            rubrics.setdefault(rubric_key, []).append(
+                {
+                    "grade_value": grade.get("grade_value"),
+                    "grade_name": grade.get("grade_name"),
+                    "grade_description": grade.get("grade_description"),
+                    "skill_name": grade.get("skill_name"),
+                }
+            )
 
         learning_objectives = []
         for objective_row in assignment.get("learning_objectives") or []:
@@ -381,29 +455,35 @@ def get_assignment_context(assignment_id, student_id=None):
             if not objective_name:
                 continue
 
-            learning_objectives.append({
-                "objective": objective_name,
-                "description": frappe.db.get_value(
-                    "Learning Objective",
-                    objective_name,
-                    "description",
-                ),
-            })
+            learning_objectives.append(
+                {
+                    "objective": objective_name,
+                    "description": frappe.db.get_value(
+                        "Learning Objective",
+                        objective_name,
+                        "description",
+                    ),
+                }
+            )
 
         submission_rules = []
         for rule in assignment.get("submission_rules") or []:
-            submission_rules.append({
-                "submission_title": rule.get("submission_title"),
-                "allowed_submission_types": [
-                    item.strip()
-                    for item in (rule.get("allowed_submission_types") or "").split(",")
-                    if item.strip()
-                ],
-                "guided_text": rule.get("guided_text"),
-                "unguided_text": rule.get("unguided_text"),
-                "valid_criteria": rule.get("valid_criteria"),
-                "invalid_criteria": rule.get("invalid_criteria"),
-            })
+            submission_rules.append(
+                {
+                    "submission_title": rule.get("submission_title"),
+                    "allowed_submission_types": [
+                        item.strip()
+                        for item in (rule.get("allowed_submission_types") or "").split(
+                            ","
+                        )
+                        if item.strip()
+                    ],
+                    "guided_text": rule.get("guided_text"),
+                    "unguided_text": rule.get("unguided_text"),
+                    "valid_criteria": rule.get("valid_criteria"),
+                    "invalid_criteria": rule.get("invalid_criteria"),
+                }
+            )
 
         context = {
             "assignment": {
@@ -426,13 +506,18 @@ def get_assignment_context(assignment_id, student_id=None):
         # Add custom feedback prompt if enabled
         if assignment.enable_auto_feedback and assignment.feedback_prompt:
             context["feedback_prompt"] = assignment.feedback_prompt
-            
+
         return context
-        
+
     except Exception as e:
         frappe.log_error(
-            f"Error getting assignment context: {str(e)}",
-            "RAG Context Error"
+            f"Error getting assignment context: {str(e)}", "RAG Context Error"
+        )
+        emit(
+            severity="ERROR",
+            message="get_assignment_context_failed",
+            assignment_id=assignment_id,
+            error=str(e),
         )
         return None
 
@@ -442,28 +527,22 @@ def get_student_details(student_id):
     """Get student grade level and language details"""
     try:
         student = frappe.get_doc("Student", student_id)
-                    
+
         print(student)
-        
+
         if not student:
-            frappe.log_error(
-                f"Student {student_id} not found",
-                "Student Details Error"
-            )
+            frappe.log_error(f"Student {student_id} not found", "Student Details Error")
             return None
 
-            
-        
         return {
             "student_id": student.name,
             "grade": student.grade,
             "level": student.level,
-            "language": student.language
+            "language": student.language,
         }
-        
+
     except Exception as e:
         frappe.log_error(
-            f"Error getting student details: {str(e)}",
-            "Student Details Error"
+            f"Error getting student details: {str(e)}", "Student Details Error"
         )
         return None

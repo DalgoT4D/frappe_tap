@@ -1,0 +1,273 @@
+name: tap_lms_local
+
+# ── Changes from the original docker-compose.yml ─────────────────────────────
+#
+# Added/Updated services:
+#   tap_plg_worker + tap_plg_api + tap_plg_postgres — real ML service
+#   llm-stub      — fake OpenAI/TogetherAI/VertexAI (no real LLM calls)
+#   glific-stub   — fake Glific GraphQL API (no real WhatsApp messages)
+#
+# Container count: 10 total
+#   dev-lms, postgres, redis-cache, redis-queue, rabbitmq,
+#   tap_plg_postgres, tap_plg_worker, tap_plg_api, llm-stub, glific-stub
+
+services:
+    # ── Frappe dev container (tap_lms) ──────────────────────────
+
+    dev-lms:
+        user: "${UID:-1000}:${GID:-1000}"
+        build:
+            context: ../..
+            dockerfile: docker/local/Dockerfile
+        container_name: tap_lms_dev
+        # Runs the idempotent bootstrap, then bench + both consumers, so a
+        # plain `podman-compose up` is enough on its own — no more manual
+        # `exec ... bash -lc '...'` steps required after the containers exist.
+        # Override with `command: sleep infinity` if you'd rather exec in
+        # and drive things by hand.
+        command: ["bash", "/workspace/frappe_tap/scripts/entrypoint.sh"]
+        restart: on-failure
+        depends_on:
+            postgres:
+                condition: service_healthy
+            redis-cache:
+                condition: service_started
+            redis-queue:
+                condition: service_started
+            rabbitmq:
+                condition: service_started
+            glific-stub:
+                condition: service_started
+            tap_plg_api:
+                condition: service_started
+            llm-stub:
+                condition: service_started
+        env_file:
+            - ../../env.local
+        environment:
+            SHELL: /bin/bash
+            GLIFIC_API_URL: http://glific-stub:4000
+            APP_ENV: dev
+            STUB_MODE: "0"
+            # rag_service's isolated venv reuses downloaded wheels across
+            # rebuilds via this cache, so even a forced reinstall (changed
+            # requirements.txt) doesn't re-download numpy/opencv/etc. from
+            # the network every time.
+            PIP_CACHE_DIR: /home/frappe/.cache/pip
+        ports:
+            - "${WEB_PORT:-8000}:8000"
+            - "${SOCKETIO_PORT:-9000}:9000"
+        volumes:
+            - bench-data:/home/frappe/frappe-bench
+            - ../..:/workspace/frappe_tap:cached,z
+            - ../../../rag_service:/workspace/rag_service:cached,z
+            # Named volumes so the rag_service venv and its pip download
+            # cache survive container recreation (down/up, --build, etc.)
+            # instead of being rebuilt from scratch every time.
+            - rag-venv-data:/home/frappe/rag_venv
+            # Mount the local folder for pip cache so it survives
+            # volume deletions. the :U flag changes the UID/GID to
+            # that of the container.
+            - ~/.cache/pip-docker-cache:/home/frappe/.cache/pip:z,U
+        working_dir: /home/frappe
+
+    # ── PostgreSQL (Frappe) ────────────────────────────────────────────────────
+    postgres:
+        image: postgres:15
+        container_name: tap_lms_postgres
+        environment:
+            POSTGRES_USER: "${POSTGRES_USER:-postgres}"
+            POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-postgres}"
+            POSTGRES_DB: "${POSTGRES_DB:-postgres}"
+        healthcheck:
+            test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+            interval: 5s
+            timeout: 5s
+            retries: 20
+        ports:
+            - "${POSTGRES_PORT:-5432}:5432"
+        volumes:
+            - postgres-data:/var/lib/postgresql/data
+
+    # ── Redis cache ────────────────────────────────────────────────────────────
+    redis-cache:
+        image: redis:7-alpine
+        container_name: tap_lms_redis_cache
+        ports:
+            - "${REDIS_CACHE_PORT:-6379}:6379"
+
+    # ── Redis queue ────────────────────────────────────────────────────────────
+    redis-queue:
+        image: redis:7-alpine
+        container_name: tap_lms_redis_queue
+        ports:
+            - "${REDIS_QUEUE_PORT:-6380}:6379"
+
+    # ── RabbitMQ ───────────────────────────────────────────────────────────────
+    rabbitmq:
+        image: docker.io/library/rabbitmq:4-management
+        container_name: tap_lms_rabbitmq
+        ports:
+            - "5672:5672"
+            - "15672:15672"
+        environment:
+            RABBITMQ_DEFAULT_USER: guest
+            RABBITMQ_DEFAULT_PASS: guest
+
+    # ── tap_plg PostgreSQL (pgvector) ──────────────────────────────────────────
+    tap_plg_postgres:
+        image: pgvector/pgvector:pg16
+        container_name: tap_lms_plg_postgres
+        environment:
+            POSTGRES_DB: plagiarism_db
+            POSTGRES_USER: postgres
+            POSTGRES_PASSWORD: postgres
+        healthcheck:
+            test: ["CMD-SHELL", "pg_isready -U postgres -d plagiarism_db"]
+            interval: 5s
+            timeout: 5s
+            retries: 20
+        ports:
+            - "5433:5432"
+        volumes:
+            - tap_plg_postgres_data:/var/lib/postgresql/data
+
+    # ── tap_plg worker (Real ML Service) ──────────────────────────────────────
+    tap_plg_worker:
+        build:
+            context: ../../../tap_plg
+            dockerfile: Dockerfile
+        container_name: tap_lms_plg_worker
+        environment:
+            RABBITMQ_HOST: "${RABBITMQ_HOST:-rabbitmq}"
+            RABBITMQ_PORT: "${RABBITMQ_PORT:-5672}"
+            RABBITMQ_USER: "${RABBITMQ_USERNAME:-guest}"
+            RABBITMQ_PASS: "${RABBITMQ_PASSWORD:-guest}"
+            RABBITMQ_VHOST: "${RABBITMQ_VIRTUAL_HOST:-/}"
+            SUBMISSION_QUEUE: "${RABBITMQ_SUBMISSION_QUEUE:-submission_queue}"
+            FEEDBACK_QUEUE: "${RABBITMQ_PLAGIARISM_RESULTS_QUEUE:-plagiarism_feedback}"
+            POSTGRES_HOST: tap_plg_postgres
+            POSTGRES_PORT: 5432
+            POSTGRES_DB: plagiarism_db
+            POSTGRES_USER: postgres
+            POSTGRES_PASSWORD: postgres
+            CLIP_MODEL: "${CLIP_MODEL:-ViT-B/32}"
+            CLIP_PRETRAINED: "${CLIP_PRETRAINED:-openai}"
+            USE_PGVECTOR: "true"
+            MOCK_GLIFIC: "true"
+            APP_ENV: dev
+            LOG_LEVEL: INFO
+            # Ensure all ML libraries use the persistent cache volume
+            HF_HOME: /root/.cache/huggingface
+            TORCH_HOME: /root/.cache/torch
+            XDG_CACHE_HOME: /root/.cache
+            HF_HUB_DISABLE_SYMLINKS: "1"
+        depends_on:
+            rabbitmq:
+                condition: service_started
+            tap_plg_postgres:
+                condition: service_started
+        volumes:
+            - ../../../tap_plg:/app:cached,z
+            - tap_plg_model_cache:/root/.cache:z
+
+    # ── tap_plg API ────────────────────────────────────────────────────────────
+    tap_plg_api:
+        build:
+            context: ../../../tap_plg
+            dockerfile: Dockerfile.api
+        container_name: tap_lms_plg_api
+        command:
+            [
+                "uvicorn",
+                "api.api:app",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                "8000",
+                "--reload",
+            ]
+        environment:
+            RABBITMQ_HOST: "${RABBITMQ_HOST:-rabbitmq}"
+            RABBITMQ_PORT: "${RABBITMQ_PORT:-5672}"
+            RABBITMQ_USER: "${RABBITMQ_USERNAME:-guest}"
+            RABBITMQ_PASS: "${RABBITMQ_PASSWORD:-guest}"
+            RABBITMQ_VHOST: "${RABBITMQ_VIRTUAL_HOST:-/}"
+            SUBMISSION_QUEUE: "${RABBITMQ_SUBMISSION_QUEUE:-submission_queue}"
+            FEEDBACK_QUEUE: "${RABBITMQ_PLAGIARISM_RESULTS_QUEUE:-plagiarism_feedback}"
+            APP_ENV: dev
+            LOG_LEVEL: INFO
+        ports:
+            - "${TAP_PLG_API_PORT:-8080}:8000"
+        depends_on:
+            rabbitmq:
+                condition: service_started
+        volumes:
+            - ../../../tap_plg:/app:cached,z
+        healthcheck:
+            test:
+                ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+            interval: 30s
+            timeout: 5s
+            retries: 5
+
+    # ── LLM stub ──────────────────────────────────────────────────────────────
+    # Replaces OpenAI / TogetherAI / Vertex AI.
+    # Returns realistic randomised feedback JSON in OpenAI-compatible format.
+    # Deterministic per submission_id. Simulates 0.5–2s latency.
+    # Point rag_service LLM Settings → base_url at http://llm-stub:8001
+    llm-stub:
+        build:
+            context: ./llm_stub
+            dockerfile: Dockerfile
+        container_name: tap_lms_llm_stub
+        command:
+            [
+                "uvicorn",
+                "main:app",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                "8001",
+                "--reload",
+            ]
+        ports:
+            - "${LLM_STUB_PORT:-8001}:8001"
+        volumes:
+            - ./llm_stub:/app:z
+        healthcheck:
+            test:
+                ["CMD-SHELL", "curl -f http://localhost:8001/health || exit 1"]
+            interval: 30s
+            timeout: 5s
+            retries: 3
+
+    # ── Glific stub ────────────────────────────────────────────────────────────
+    # Replaces the Glific GraphQL API. No real WhatsApp messages sent.
+    # Stubs all 8 operations used by tap_lms/glific_integration.py.
+    #
+    # Developer audit endpoints:
+    #   GET http://localhost:4000/stub/flow-calls  — all startContactFlow calls
+    #   GET http://localhost:4000/stub/contacts    — all contacts created
+    #   GET http://localhost:4000/stub/reset       — clear state between tests
+    glific-stub:
+        build:
+            context: ./glific_stub
+            dockerfile: Dockerfile
+        container_name: tap_lms_glific_stub
+        ports:
+            - "${GLIFIC_STUB_PORT:-4000}:4000"
+        healthcheck:
+            test:
+                ["CMD-SHELL", "curl -f http://localhost:4000/health || exit 1"]
+            interval: 30s
+            timeout: 5s
+            retries: 3
+
+volumes:
+    bench-data:
+    postgres-data:
+    tap_plg_postgres_data:
+    tap_plg_model_cache:
+    rag-venv-data:
+    pip-cache:
