@@ -354,10 +354,21 @@ sudo sed -i '/http {/a\\n\tlog_format main '"'"'$remote_addr - $remote_user [$ti
 
 ### Set server_name
 
+If you have a domain name, use it directly. If not, use a temporary value
+and update it when the domain is ready (see Section 14a — SSL/HTTPS):
+
 ```bash
+# with domain name
+sed -i 's|server_name .*;|server_name lms-dev.theapprenticeproject.org;|' \
+    ~/frappe-bench/config/nginx.conf
+
+# without domain (temporary — IP access only)
 sed -i 's|server_name ;|server_name tap_lms.dev;|' \
     ~/frappe-bench/config/nginx.conf
 ```
+
+> **Note:** If `server_name` spans multiple lines in the nginx config (e.g.
+> after `bench setup nginx`), use `nano` to edit it directly rather than `sed`.
 
 ### Fix asset permissions
 
@@ -407,6 +418,96 @@ gcloud compute firewall-rules create allow-http \
 
 ---
 
+## 14a. SSL/HTTPS Setup (Let's Encrypt)
+
+Skip this section if you don't have a domain name yet. Come back once the
+client has set up an A record pointing the domain to your server's external IP.
+
+### Prerequisites
+
+- A domain name with an A record pointing to the server's external IP
+- Port 80 open in GCP firewall (Section 14)
+- nginx running and serving the site on HTTP
+
+### Verify DNS has propagated
+
+```bash
+dig <your-domain> +short
+# should return your server's external IP
+curl -s ifconfig.me
+# should return the same IP
+```
+
+### Update server_name to use the domain
+
+```bash
+# edit nginx.conf directly (server_name may span multiple lines)
+nano ~/frappe-bench/config/nginx.conf
+# find server_name block and change to:
+# server_name <your-domain>;
+
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+### Install Certbot and obtain certificate
+
+```bash
+sudo apt install -y certbot python3-certbot-nginx
+
+# obtain and install certificate automatically
+sudo certbot --nginx -d <your-domain>
+```
+
+Certbot will:
+- Obtain the SSL certificate from Let's Encrypt
+- Automatically update nginx config with HTTPS settings
+- Set up HTTP → HTTPS redirect
+
+If certbot can't find the server block automatically:
+
+```bash
+# install certificate manually after updating server_name
+sudo certbot install --cert-name <your-domain>
+```
+
+### Update Frappe host_name
+
+```bash
+bench --site tap_lms.dev set-config host_name "https://<your-domain>"
+bench --site tap_lms.dev clear-cache
+sudo supervisorctl restart all
+```
+
+### Verify
+
+```bash
+# HTTPS should return 200
+curl -s -o /dev/null -w "%{http_code}" https://<your-domain>
+
+# HTTP should redirect to HTTPS (301)
+curl -s -o /dev/null -w "%{http_code}" http://<your-domain>
+```
+
+### Auto-renewal
+
+Certbot sets up automatic renewal via a systemd timer. Verify it's active:
+
+```bash
+sudo systemctl status certbot.timer
+```
+
+Certificates renew automatically every 90 days. No manual action needed.
+
+### Open HTTPS port in GCP firewall
+
+```
+GCP Console → Compute Engine → VM Instances → click instance →
+Edit → Firewalls → check "Allow HTTPS traffic"
+```
+
+---
+
 ## 15. Final Steps
 
 ```bash
@@ -440,6 +541,9 @@ bench --site tap_lms.dev set-admin-password <newpassword>
 
 | Symptom | Cause | Fix |
 |---|---|---|
+| `Could not automatically find a matching server block` | certbot can't find domain in nginx config | Edit `server_name` in nginx.conf manually, reload nginx, then `certbot install --cert-name <domain>` |
+| `NXDOMAIN` from dig | Including `https://` in dig command | Run `dig <domain> +short` without protocol |
+| Certificate obtained but HTTPS not working | Port 443 not open in GCP | Check "Allow HTTPS traffic" in GCP Console → VM → Edit |
 | `bench: command not found` after pip install | `~/.local/bin` not in PATH | `echo 'export PATH=$HOME/.local/bin:$PATH' >> ~/.bashrc && source ~/.bashrc` |
 | `FileNotFoundError: /usr/bin/crontab` during bench init | cron not installed | `sudo apt install -y cron` then remove partial bench and retry |
 | `engine "node" is incompatible, Expected version ">=18"` | Wrong Node version for Frappe v15 | Install Node 18 via nvm; Node 16 is for v14 only |
