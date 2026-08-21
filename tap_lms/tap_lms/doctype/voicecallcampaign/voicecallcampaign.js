@@ -47,6 +47,22 @@ frappe.ui.form.on("VoiceCallCampaign", {
             }, __("Actions"));
         }
 
+
+        // Fetch Recordings button
+        if (["Complete", "Paused"].includes(frm.doc.status)) {
+            frm.add_custom_button(__("Fetch Recordings"), () => {
+                _call(frm, "fetch_recordings", "Fetching recordings from provider...");
+            }, __("Actions"));
+        }
+
+        // Provider indicator
+        if (frm.doc.provider) {
+            frm.page.set_indicator(
+                frm.doc.provider,
+                frm.doc.provider === "ElevenLabs" ? "purple" : "blue"
+            );
+        }
+
         // BigQuery sync
         frm.add_custom_button(__("Sync BigQuery Now"), () => {
             _call(frm, "sync_bigquery_now", "Syncing Glific context from BigQuery...");
