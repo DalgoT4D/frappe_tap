@@ -1,0 +1,59 @@
+{
+    "actions": [],
+    "autoname": "format:BLOCK-{phone}",
+    "creation": "2026-08-15 00:00:00.000000",
+    "default_view": "List",
+    "doctype": "DocType",
+    "engine": "InnoDB",
+    "field_order": [
+        "phone",
+        "reason",
+        "added_at"
+    ],
+    "fields": [
+        {
+            "description": "Phone number to block from all Vocallabs calls. Store without country code (e.g. 9876543210). Match is done after stripping 91 prefix from Vocallabs contact_phone.",
+            "fieldname": "phone",
+            "fieldtype": "Data",
+            "in_list_view": 1,
+            "label": "Phone Number",
+            "reqd": 1,
+            "search_index": 1,
+            "unique": 1
+        },
+        {
+            "fieldname": "reason",
+            "fieldtype": "Small Text",
+            "in_list_view": 1,
+            "label": "Reason"
+        },
+        {
+            "default": "Today",
+            "fieldname": "added_at",
+            "fieldtype": "Datetime",
+            "label": "Added At",
+            "read_only": 1
+        }
+    ],
+    "index_web_pages_for_search": 0,
+    "links": [],
+    "modified": "2026-08-15 00:00:00.000000",
+    "modified_by": "Administrator",
+    "module": "Tap Lms",
+    "name": "VoiceCallBlocklist",
+    "owner": "Administrator",
+    "permissions": [
+        {
+            "create": 1,
+            "delete": 1,
+            "read": 1,
+            "role": "System Manager",
+            "write": 1
+        }
+    ],
+    "sort_field": "added_at",
+    "sort_order": "DESC",
+    "states": [],
+    "title_field": "phone",
+    "track_changes": 1
+}
