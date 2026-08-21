@@ -48,6 +48,7 @@ from tap_lms.summer_program.utils import (
     check_glific_placeholders,
 )
 URL_SUBMISSION_TYPES = {"audio", "image", "video"}
+GLIFIC_FEEDBACK_FLOW_ID = "34108"
 SAVE_SUBMISSION_DB_RETRY_ATTEMPTS = 3
 SAVE_SUBMISSION_DB_RETRY_DELAY_SECONDS = 0.15
 
@@ -455,7 +456,9 @@ def ready_to_receive_feedback(submission_id, **_glific_kwargs):
                 "message": "Feedback flow already triggered.",
             }
 
-        submission.send_feedback = "yes"
+        submission.feedback_flow_id = (
+            submission.feedback_flow_id or GLIFIC_FEEDBACK_FLOW_ID
+        )
         submission.feedback_requested_at = requested_at
 
         if submission.status not in ("Completed", "Failed"):
@@ -514,15 +517,33 @@ def _mark_feedback_requested(submission_id, requested_at):
     result = frappe.db.sql(
         """
         UPDATE `tabSubmission`
-        SET send_feedback = 'yes',
+        SET feedback_flow_id = COALESCE(NULLIF(feedback_flow_id, ''), %s),
             feedback_requested_at = COALESCE(feedback_requested_at, %s)
         WHERE name = %s
           AND feedback_flow_triggered_at IS NULL
         RETURNING name
         """,
-        (requested_at, submission_id),
+        (GLIFIC_FEEDBACK_FLOW_ID, requested_at, submission_id),
     )
     return bool(result)
+
+
+def _get_student_payload_details(student_id):
+    try:
+        student = frappe.get_doc("Student", student_id)
+        return {
+            "student_id": student.name,
+            "grade": student.grade,
+            "level": student.level,
+            "language": student.language,
+        }
+    except frappe.DoesNotExistError:
+        return {
+            "student_id": student_id,
+            "grade": None,
+            "level": None,
+            "language": None,
+        }
 
 
 # ════════════════════════════════════════════════════════════
@@ -1044,7 +1065,7 @@ def enqueue_submission(submission_id, pe_context=None, retry_count=0):
         payload = {
             "submission_id": submission.name,
             "assign_id": submission.assign_id,
-            "student_id": submission.student_id,
+            **_get_student_payload_details(submission.student_id),
             "submission_type": submission.submission_type,
             "submission_text": submission.submission_text,
             "submission_url": submission.submission_url,
@@ -1063,7 +1084,6 @@ def enqueue_submission(submission_id, pe_context=None, retry_count=0):
             "archetype": pe_context.get("archetype", ""),
             "experiment_arm": pe_context.get("experiment_arm", ""),
             "expected_submission_type": pe_context.get("expected_submission_type", ""),
-            "language": pe_context.get("language", ""),
             "batch": pe_context.get("batch", ""),
             "current_week": pe_context.get("current_week", 1),
             "current_path": pe_context.get("current_path", ""),

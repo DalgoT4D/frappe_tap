@@ -317,7 +317,6 @@ def verify_school_by_id(school_id, phone_number=None):
             frappe.enqueue(
                 "tap_lms.onboarding.student_registration._upsert_student_consent",
                 queue="default",
-                enqueue_after_commit=True,
                 phone_number=phone_number,
                 school_id=school_id,
                 whatsapp_consent=0,

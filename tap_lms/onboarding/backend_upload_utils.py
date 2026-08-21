@@ -11,7 +11,7 @@ from google.oauth2 import service_account
 
 
 GCP_CREDENTIALS_PROJECT_ID = "rubrics-data-migration"
-FAILED_ROWS_GCP_PROJECT_ID = "axiomatic-treat-417617"
+FAILED_ROWS_GCP_PROJECT_ID = "central-phalanx-297915"
 GLIFIC_CONTACTS_FOLDER = "Glific_contacts"
 GLIFIC_NEW_STUDENT_CSV_HEADERS = [
     "name",

@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import csv
 import json
 import re
 from dataclasses import dataclass
-from io import BytesIO
+from datetime import date, datetime, time
+from io import BytesIO, StringIO
 from typing import Iterable
 from urllib.parse import quote
 
 import frappe
+from dateutil import parser as date_parser
 from google.auth.transport.requests import AuthorizedSession
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill
@@ -21,7 +24,6 @@ from tap_lms.onboarding.backend_upload_utils import (
     upload_bytes_to_gcs as _upload_bytes_to_gcs,
     upload_glific_contact_csv as _upload_glific_contact_csv,
 )
-from tap_lms.onboarding.utils import _get_latest_school_enrollment
 from tap_lms.tap_lms.doctype.student.student import _reserve_next_student_name
 
 
@@ -62,12 +64,16 @@ SOURCE_COLUMNS = {
     "student_name": "student_name",
 }
 REGISTRATION_STATUS_COLUMN = "registration_status"
+PROCESS_STATUS_COLUMN = "process status"
 
 STATUS_DONE = "Done"
 STATUS_PREPARED = "Prepared"
 STATUS_NOT_AGREE = "Skipped: shall_we_begin does not contain Agree"
 DUPLICATE_DONE_MESSAGE = "Duplicate contact_phone_number already registered; student not imported"
 DUPLICATE_RUN_MESSAGE = "Duplicate contact_phone_number in current run; first valid row will be imported"
+PROCESS_STATUS_COMPLETE = "complete"
+PROCESS_STATUS_FAIL = "fail"
+GLIFIC_CONTACT_FIELD_SCHOOL_ID = "school_id"
 
 PREPARED_HEADERS = [
     "Language",
@@ -88,6 +94,11 @@ PREPARED_HEADERS = [
     "Prepare Status",
     "Message",
 ]
+NOT_DONE_ROWS_CSV_HEADERS = [
+    *PREPARED_HEADERS,
+    "Registration Status",
+    "Process Status",
+]
 
 
 @dataclass(frozen=True)
@@ -99,6 +110,7 @@ class SourceSheet:
     sheet_title: str
     header_map: dict[str, int]
     status_column_index: int
+    process_status_column_index: int
     rows: list[dict]
 
 
@@ -110,6 +122,7 @@ def prepare_student_sheet_registration(log_fn=None, progress_fn=None) -> dict:
     prepared_rows: list[dict] = []
     status_updates: list[dict] = []
     ready_phones: set[str] = set()
+    school_lookup = _GlificSchoolLookup()
 
     raw_count = 0
     skipped_done = 0
@@ -126,16 +139,28 @@ def prepare_student_sheet_registration(log_fn=None, progress_fn=None) -> dict:
             current_status = source_row.get("registration_status") or ""
             if _status_is_done(current_status):
                 skipped_done += 1
+                status_updates.append(
+                    _process_status_update_from_source(sheet, source_row, PROCESS_STATUS_COMPLETE)
+                )
                 continue
 
-            prepared = _prepare_source_row(source_row, sheet, language_id, done_phones, ready_phones)
+            prepared = _prepare_source_row(
+                source_row,
+                sheet,
+                language_id,
+                done_phones,
+                ready_phones,
+                school_lookup,
+            )
             prepared_rows.append(prepared)
 
             if prepared["prepare_status"] == "Ready":
                 ready_phones.add(prepared["phone"])
                 status_updates.append(_status_update(prepared, STATUS_PREPARED))
+                status_updates.append(_process_status_update(prepared, PROCESS_STATUS_COMPLETE))
             elif prepared.get("message"):
                 status_updates.append(_status_update(prepared, prepared["message"]))
+                status_updates.append(_process_status_update(prepared, _process_status_for_row(prepared)))
 
     if status_updates:
         _write_status_updates(session, status_updates)
@@ -143,6 +168,7 @@ def prepare_student_sheet_registration(log_fn=None, progress_fn=None) -> dict:
     prepared_file_url = _create_and_upload_prepared_workbook(prepared_rows)
     failed_rows = [row for row in prepared_rows if row.get("prepare_status") != "Ready"]
     failed_rows_file_url = _create_and_upload_failed_rows_workbook(failed_rows) if failed_rows else ""
+    not_done_rows_file_url = _create_and_upload_not_done_rows_csv(failed_rows) if failed_rows else ""
 
     summary = {
         "raw_rows": raw_count,
@@ -155,6 +181,7 @@ def prepare_student_sheet_registration(log_fn=None, progress_fn=None) -> dict:
         ]),
         "prepared_file_url": prepared_file_url,
         "failed_rows_file_url": failed_rows_file_url,
+        "not_done_rows_file_url": not_done_rows_file_url,
         "sheets": [
             {
                 "language": sheet.language,
@@ -201,27 +228,35 @@ def upload_prepared_student_sheet_registration(
         })
 
         current_row = current_rows_by_key.get(_source_row_key(row))
+        if current_row and current_row.get("process_status_range") and not row.get("process_status_range"):
+            row["process_status_range"] = current_row["process_status_range"]
+
         current_status = (current_row or {}).get("registration_status") or ""
         current_phone = _canonicalize_phone((current_row or {}).get("contact_phone_number"))
 
         if not current_row:
             failed_rows.append(_failed_copy(row, "Source row not found; re-run Prepare Data"))
             status_updates.append(_status_update(row, "Source row not found; re-run Prepare Data"))
+            status_updates.append(_process_status_update(row, PROCESS_STATUS_FAIL))
             continue
         if current_phone != row.get("phone"):
             message = "Source row changed after prepare; re-run Prepare Data"
             failed_rows.append(_failed_copy(row, message))
             status_updates.append(_status_update(row, message))
+            status_updates.append(_process_status_update(row, PROCESS_STATUS_FAIL))
             continue
         if _status_is_done(current_status):
+            status_updates.append(_process_status_update(row, PROCESS_STATUS_COMPLETE))
             continue
         if row["phone"] in done_phones:
             failed_rows.append(_failed_copy(row, DUPLICATE_DONE_MESSAGE))
             status_updates.append(_status_update(row, DUPLICATE_DONE_MESSAGE))
+            status_updates.append(_process_status_update(row, PROCESS_STATUS_COMPLETE))
             continue
         if row["phone"] in uploaded_phones:
             failed_rows.append(_failed_copy(row, DUPLICATE_RUN_MESSAGE))
             status_updates.append(_status_update(row, DUPLICATE_RUN_MESSAGE))
+            status_updates.append(_process_status_update(row, PROCESS_STATUS_COMPLETE))
             continue
 
         savepoint = f"ssr_{index}"
@@ -236,11 +271,13 @@ def upload_prepared_student_sheet_registration(
             uploaded_phones.add(row["phone"])
             done_phones.add(row["phone"])
             status_updates.append(_status_update(row, STATUS_DONE))
+            status_updates.append(_process_status_update(row, PROCESS_STATUS_COMPLETE))
         except Exception as exc:
             frappe.db.rollback(save_point=savepoint)
             message = _short_error(exc)
             failed_rows.append(_failed_copy(row, message))
             status_updates.append(_status_update(row, message))
+            status_updates.append(_process_status_update(row, PROCESS_STATUS_FAIL))
             frappe.db.commit()
             _emit(log_fn, f"[student-sheet-registration] row_failed row={row.get('row_number')} error={message}")
 
@@ -248,12 +285,18 @@ def upload_prepared_student_sheet_registration(
         _write_status_updates(session, status_updates)
 
     failed_rows_file_url = _create_and_upload_failed_rows_workbook(failed_rows) if failed_rows else ""
+    not_done_rows_file_url = _create_and_upload_not_done_rows_csv(failed_rows) if failed_rows else ""
     glific_contact_files = _create_and_upload_glific_contact_csvs(success_rows)
     summary = {
         "prepared_rows": len(ready_rows),
         "uploaded_rows": len(success_rows),
         "failed_rows": len(failed_rows),
+        "duplicate_rows": len([
+            row for row in failed_rows
+            if str(row.get("message") or "").startswith("Duplicate contact_phone_number")
+        ]),
         "failed_rows_file_url": failed_rows_file_url,
+        "not_done_rows_file_url": not_done_rows_file_url,
         "glific_contact_files": glific_contact_files,
     }
     _emit(log_fn, f"[student-sheet-registration] uploaded summary={summary}")
@@ -267,6 +310,7 @@ def _prepare_source_row(
     language_id: str,
     done_phones: set[str],
     ready_phones: set[str],
+    school_lookup: "_GlificSchoolLookup | None" = None,
 ) -> dict:
     base = {
         "language": sheet.language,
@@ -278,6 +322,12 @@ def _prepare_source_row(
         "row_number": source_row["row_number"],
         "status_column_index": sheet.status_column_index,
         "status_range": _cell_range(sheet.sheet_title, sheet.status_column_index, source_row["row_number"]),
+        "process_status_column_index": sheet.process_status_column_index,
+        "process_status_range": _cell_range(
+            sheet.sheet_title,
+            sheet.process_status_column_index,
+            source_row["row_number"],
+        ),
         "timestamp": source_row.get("timestamp") or "",
         "contact_phone_number": source_row.get("contact_phone_number") or "",
         "student_name_raw": source_row.get("student_name") or "",
@@ -310,6 +360,7 @@ def _prepare_source_row(
     school_id, school_error = _get_school_id_for_registration(
         phone,
         base["student_name"],
+        school_lookup=school_lookup,
     )
     if school_error:
         return _prepared_error(base, school_error)
@@ -317,12 +368,17 @@ def _prepare_source_row(
         return _prepared_error(base, f"School not found: {school_id}")
     base["school_id"] = school_id
 
-    school_enrollment = _get_latest_school_enrollment(school_id)
+    school_enrollment, enrollment_error = _get_school_enrollment_for_registration(
+        school_id,
+        base["timestamp"],
+    )
+    if enrollment_error:
+        return _prepared_error(base, enrollment_error)
     if not school_enrollment:
-        return _prepared_error(base, "Latest School Batch Enrollment not found")
+        return _prepared_error(base, "School Batch Enrollment not found")
     batch = str(school_enrollment.batch_number or "").strip()
     if not batch:
-        return _prepared_error(base, "Latest School Batch Enrollment has no batch")
+        return _prepared_error(base, "Selected School Batch Enrollment has no batch")
     if not frappe.db.exists("Batch", batch):
         return _prepared_error(base, f"Batch not found: {batch}")
     base["batch"] = batch
@@ -472,6 +528,18 @@ def _read_source_sheet(session: AuthorizedSession, config: dict, ensure_status_c
         }])
         header.append(REGISTRATION_STATUS_COLUMN)
 
+    process_status_column_index = _find_header_index(header, PROCESS_STATUS_COLUMN)
+    if process_status_column_index is None:
+        if not ensure_status_column:
+            raise frappe.ValidationError(f"{PROCESS_STATUS_COLUMN} column is missing")
+        process_status_column_index = len(header) + 1
+        _write_status_updates(session, [{
+            "spreadsheet_id": config["spreadsheet_id"],
+            "range": _cell_range(sheet_title, process_status_column_index, 1),
+            "value": PROCESS_STATUS_COLUMN,
+        }])
+        header.append(PROCESS_STATUS_COLUMN)
+
     rows = []
     for row_number, raw_row in enumerate(values[1:], start=2):
         row = {
@@ -479,6 +547,9 @@ def _read_source_sheet(session: AuthorizedSession, config: dict, ensure_status_c
             for key, index in header_map.items()
         }
         row["registration_status"] = _get_raw_cell(raw_row, status_column_index - 1)
+        row["process_status"] = _get_raw_cell(raw_row, process_status_column_index - 1)
+        row["status_range"] = _cell_range(sheet_title, status_column_index, row_number)
+        row["process_status_range"] = _cell_range(sheet_title, process_status_column_index, row_number)
         row["row_number"] = row_number
         rows.append(row)
 
@@ -490,6 +561,7 @@ def _read_source_sheet(session: AuthorizedSession, config: dict, ensure_status_c
         sheet_title=sheet_title,
         header_map=header_map,
         status_column_index=status_column_index,
+        process_status_column_index=process_status_column_index,
         rows=rows,
     )
 
@@ -599,7 +671,11 @@ def _get_latest_student_consent(phone: str) -> dict | None:
     return rows[0] if rows else None
 
 
-def _get_school_id_for_registration(phone: str, student_name: str) -> tuple[str, str]:
+def _get_school_id_for_registration(
+    phone: str,
+    _student_name: str,
+    school_lookup: "_GlificSchoolLookup | None" = None,
+) -> tuple[str, str]:
     consent = _get_latest_student_consent(phone)
     if consent:
         school_id = str(consent.get("school") or "").strip()
@@ -607,38 +683,164 @@ def _get_school_id_for_registration(phone: str, student_name: str) -> tuple[str,
             return "", "Student Consent has no school"
         return school_id, ""
 
-    existing_student = _get_existing_student_for_phone(phone, student_name)
-    if not existing_student:
-        return "", "Student Consent not found and Student not found for contact_phone_number"
+    if school_lookup:
+        glific_school_id, glific_error = school_lookup.get_school_id(phone)
+    else:
+        glific_school_id, glific_error = _get_school_id_from_glific(phone)
+    if glific_school_id:
+        return glific_school_id, ""
+    if glific_error:
+        return "", glific_error
 
-    school_id = str(existing_student.get("school_id") or "").strip()
-    if not school_id:
-        return "", "Existing Student has no school_id for contact_phone_number"
-    return school_id, ""
+    return "", "Student Consent not found and Glific contact school_id not found"
 
 
-def _get_existing_student_for_phone(phone: str, student_name: str) -> dict | None:
-    student = _find_existing_student(phone, student_name)
-    if not student:
-        return None
-    school_id = frappe.db.get_value("Student", student, "school_id") or ""
-    return {
-        "name": student,
-        "school_id": school_id,
-    }
+class _GlificSchoolLookup:
+    def __init__(self) -> None:
+        self._contact_school_cache: dict[str, tuple[str, str]] = {}
+
+    def get_school_id(self, phone: str) -> tuple[str, str]:
+        phone = _canonicalize_phone(phone) or ""
+        if not phone:
+            return "", ""
+
+        if phone not in self._contact_school_cache:
+            try:
+                self._contact_school_cache[phone] = _get_school_id_from_glific_contact(phone)
+            except Exception as exc:
+                self._contact_school_cache[phone] = (
+                    "",
+                    f"Glific contact school lookup failed: {_short_error(exc)}",
+                )
+        return self._contact_school_cache[phone]
+
+
+def _get_school_id_from_glific(phone: str) -> tuple[str, str]:
+    lookup = _GlificSchoolLookup()
+    return lookup.get_school_id(phone)
+
+
+def _get_school_id_from_glific_contact(phone: str) -> tuple[str, str]:
+    from tap_lms.glific_integration import get_contact_by_phone
+
+    for candidate_phone in _phone_variants(phone):
+        contact = get_contact_by_phone(candidate_phone)
+        if not contact:
+            continue
+
+        fields = _parse_json_dict(contact.get("fields"))
+        school_id = _extract_glific_contact_field(fields, GLIFIC_CONTACT_FIELD_SCHOOL_ID)
+        if school_id:
+            return school_id, ""
+
+    return "", ""
+
+
+def _extract_glific_contact_field(fields: dict, fieldname: str) -> str:
+    value = fields.get(fieldname)
+    if isinstance(value, dict):
+        value = value.get("value")
+    return str(value or "").strip()
+
+
+def _parse_json_dict(value: object) -> dict:
+    parsed = value
+    for _ in range(3):
+        if isinstance(parsed, dict):
+            return parsed
+        if not isinstance(parsed, str):
+            return {}
+        try:
+            parsed = json.loads(parsed)
+        except json.JSONDecodeError:
+            return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _get_school_enrollment_for_registration(
+    school_id: str,
+    registration_timestamp: object,
+):
+    registration_dt = _parse_registration_timestamp(registration_timestamp)
+    if not registration_dt:
+        return None, f"Invalid registration timestamp: {registration_timestamp}"
+
+    school = frappe.get_doc("School", school_id)
+    candidates = []
+    for enrollment in school.get("batch_enrollments") or []:
+        enrollment_dt = _parse_enrollment_timestamp(getattr(enrollment, "doj", None))
+        if not enrollment_dt or enrollment_dt > registration_dt:
+            continue
+        candidates.append((enrollment_dt, int(getattr(enrollment, "idx", 0) or 0), enrollment))
+
+    if not candidates:
+        return None, (
+            "School Batch Enrollment not found on or before "
+            f"registration timestamp {registration_timestamp}"
+        )
+
+    return max(candidates, key=lambda item: (item[0], item[1]))[2], ""
+
+
+def _parse_registration_timestamp(value: object) -> datetime | None:
+    return _parse_datetime_value(value, date_only_time=time.max)
+
+
+def _parse_enrollment_timestamp(value: object) -> datetime | None:
+    return _parse_datetime_value(value, date_only_time=time.min)
+
+
+def _parse_datetime_value(value: object, date_only_time: time) -> datetime | None:
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, date):
+        parsed = datetime.combine(value, date_only_time)
+    else:
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+        try:
+            parsed = date_parser.parse(raw, fuzzy=True, dayfirst=_should_parse_day_first(raw))
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if (
+            parsed.hour == 0
+            and parsed.minute == 0
+            and parsed.second == 0
+            and parsed.microsecond == 0
+            and not re.search(r"\d{1,2}:\d{2}", raw)
+        ):
+            parsed = datetime.combine(parsed.date(), date_only_time)
+
+    if parsed.tzinfo:
+        parsed = parsed.astimezone().replace(tzinfo=None)
+    return parsed
+
+
+def _should_parse_day_first(raw: str) -> bool:
+    match = re.match(r"^\s*(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})", raw)
+    if not match:
+        return False
+    first = int(match.group(1))
+    second = int(match.group(2))
+    if first > 12:
+        return True
+    if second > 12:
+        return False
+    return False
 
 
 def _get_course_from_school_enrollment(school_enrollment, grade: str) -> dict:
     grades_courses = getattr(school_enrollment, "grades_courses", None)
     if not grades_courses:
-        return {"error": "Latest School Batch Enrollment has no grades_courses"}
+        return {"error": "Selected School Batch Enrollment has no grades_courses"}
     if not isinstance(grades_courses, dict):
         try:
             grades_courses = frappe.parse_json(grades_courses)
         except Exception:
-            return {"error": "Latest School Batch Enrollment grades_courses is invalid JSON"}
+            return {"error": "Selected School Batch Enrollment grades_courses is invalid JSON"}
     if not isinstance(grades_courses, dict):
-        return {"error": "Latest School Batch Enrollment grades_courses must be a JSON object"}
+        return {"error": "Selected School Batch Enrollment grades_courses must be a JSON object"}
 
     value = grades_courses.get(str(grade))
     if isinstance(value, str) and value.strip():
@@ -700,6 +902,8 @@ def _prepared_error(base: dict, message: str, status: str = "Error") -> dict:
     row.setdefault("level", _level_for_grade(row.get("grade")) if row.get("grade") else "")
     row["prepare_status"] = status
     row["message"] = message
+    row["final_registration_status"] = message
+    row["final_process_status"] = _process_status_for_row(row)
     return row
 
 
@@ -707,6 +911,8 @@ def _failed_copy(row: dict, message: str) -> dict:
     failed = dict(row)
     failed["prepare_status"] = "Error"
     failed["message"] = message
+    failed["final_registration_status"] = message
+    failed["final_process_status"] = _process_status_for_row(failed)
     return failed
 
 
@@ -714,6 +920,36 @@ def _status_update(row: dict, value: str) -> dict:
     return {
         "spreadsheet_id": row["spreadsheet_id"],
         "range": row["status_range"],
+        "value": value,
+    }
+
+
+def _process_status_update(row: dict, value: str) -> dict:
+    range_name = row.get("process_status_range")
+    if not range_name:
+        column_index = int(row.get("process_status_column_index") or 0)
+        if not column_index and row.get("status_column_index"):
+            column_index = int(row["status_column_index"]) + 1
+        range_name = _cell_range(row["sheet_title"], column_index, row["row_number"])
+
+    return {
+        "spreadsheet_id": row["spreadsheet_id"],
+        "range": range_name,
+        "value": value,
+    }
+
+
+def _process_status_for_row(row: dict) -> str:
+    message = str(row.get("message") or "")
+    if message.startswith("Duplicate contact_phone_number"):
+        return PROCESS_STATUS_COMPLETE
+    return PROCESS_STATUS_FAIL
+
+
+def _process_status_update_from_source(sheet: SourceSheet, source_row: dict, value: str) -> dict:
+    return {
+        "spreadsheet_id": sheet.spreadsheet_id,
+        "range": _cell_range(sheet.sheet_title, sheet.process_status_column_index, source_row["row_number"]),
         "value": value,
     }
 
@@ -732,6 +968,61 @@ def _create_and_upload_failed_rows_workbook(rows: list[dict]) -> str:
         prefix="student-sheet-registration/failures",
         filename_prefix="student_sheet_registration_failures",
     )
+
+
+def _create_and_upload_not_done_rows_csv(rows: list[dict]) -> str:
+    timestamp = frappe.utils.now_datetime().strftime("%Y%m%d_%H%M%S")
+    object_name = (
+        "student-sheet-registration/not-done/"
+        f"student_sheet_registration_not_done_{timestamp}.csv"
+    )
+    return _upload_bytes_to_gcs(
+        _render_not_done_rows_csv(rows),
+        object_name,
+        FAILED_ROWS_GCP_PROJECT_ID,
+        content_type="text/csv",
+    )
+
+
+def _render_not_done_rows_csv(rows: list[dict]) -> bytes:
+    buffer = StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=NOT_DONE_ROWS_CSV_HEADERS)
+    writer.writeheader()
+    writer.writerows(_not_done_csv_row(row) for row in rows)
+    return buffer.getvalue().encode("utf-8")
+
+
+def _not_done_csv_row(row: dict) -> dict[str, str]:
+    values = _workbook_row(row) + [
+        _not_done_registration_status(row),
+        _not_done_process_status(row),
+    ]
+    return {
+        header: str(value or "")
+        for header, value in zip(NOT_DONE_ROWS_CSV_HEADERS, values)
+    }
+
+
+def _not_done_registration_status(row: dict) -> str:
+    explicit_status = str(
+        row.get("final_registration_status")
+        or row.get("registration_status")
+        or ""
+    ).strip()
+    if explicit_status:
+        return explicit_status
+    return str(row.get("message") or row.get("prepare_status") or "").strip()
+
+
+def _not_done_process_status(row: dict) -> str:
+    explicit_status = str(
+        row.get("final_process_status")
+        or row.get("process_status")
+        or ""
+    ).strip()
+    if explicit_status:
+        return explicit_status
+    return _process_status_for_row(row)
 
 
 def _create_and_upload_rows_workbook(rows: list[dict], prefix: str, filename_prefix: str) -> str:
@@ -903,7 +1194,7 @@ def _row_is_blank(row: dict) -> bool:
 
 
 def _normalize_header(value: object) -> str:
-    return str(value or "").strip().lower()
+    return re.sub(r"[\s-]+", "_", str(value or "").strip().lower())
 
 
 def _find_header_index(header: list[str], column_name: str) -> int | None:

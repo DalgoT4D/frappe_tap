@@ -19,6 +19,7 @@ class StudentSheetRegistrationJob(Document):
 
 
 RUNNING_STATUSES = {"Preparing", "Uploading"}
+CRON_LOG_DOCTYPE = "Student Sheet Registration Cron Log"
 DAILY_STUDENT_SHEET_REGISTRATION_JOB_METHOD = (
     "tap_lms.tap_lms.doctype.student_sheet_registration_job."
     "student_sheet_registration_job.run_daily_student_sheet_registration_job"
@@ -52,6 +53,7 @@ def _create_daily_job() -> str:
         "skipped_done_rows": 0,
         "prepared_file_url": "",
         "failed_rows_file_url": "",
+        "not_done_rows_file_url": "",
         "summary_json": "",
         "last_error": "",
         "prepared_rows_json": "[]",
@@ -59,6 +61,72 @@ def _create_daily_job() -> str:
     })
     doc.insert(ignore_permissions=True)
     return doc.name
+
+
+def _cron_log_doctype_exists() -> bool:
+    try:
+        return bool(frappe.db.exists("DocType", CRON_LOG_DOCTYPE))
+    except Exception:
+        return False
+
+
+def _create_cron_log(job_name: str = "", status: str = "Started", message: str = "") -> str:
+    if not _cron_log_doctype_exists():
+        return ""
+
+    now = frappe.utils.now_datetime()
+    doc = frappe.get_doc({
+        "doctype": CRON_LOG_DOCTYPE,
+        "run_name": f"Daily Student Sheet Registration {now.strftime('%Y-%m-%d %H:%M')}",
+        "status": status,
+        "student_sheet_registration_job": job_name,
+        "started_at": now,
+        "completed_at": now if status in {"Skipped", "Failed"} else None,
+        "processed_rows": 0,
+        "successful_rows": 0,
+        "duplicate_rows": 0,
+        "failed_rows": 0,
+        "summary_json": "",
+        "last_error": message if status == "Failed" else "",
+    })
+    doc.insert(ignore_permissions=True)
+    return doc.name
+
+
+def _set_cron_log_state(logname: str, **updates) -> None:
+    if not logname or not _cron_log_doctype_exists():
+        return
+    if "summary_json" in updates and not isinstance(updates["summary_json"], str):
+        updates["summary_json"] = json.dumps(updates["summary_json"], ensure_ascii=True)
+    frappe.db.set_value(CRON_LOG_DOCTYPE, logname, updates, update_modified=False)
+
+
+def _cron_log_counts(summary: dict) -> dict:
+    duplicate_rows = int(summary.get("duplicate_rows") or 0)
+    raw_failed_rows = int(summary.get("failed_rows") or 0)
+    successful_rows = (
+        int(summary.get("uploaded_rows") or 0)
+        + int(summary.get("skipped_done_rows") or 0)
+    )
+    return {
+        "processed_rows": int(summary.get("raw_rows") or summary.get("prepared_rows") or 0),
+        "successful_rows": successful_rows,
+        "duplicate_rows": duplicate_rows,
+        "failed_rows": max(raw_failed_rows - duplicate_rows, 0),
+    }
+
+
+def _complete_cron_log(logname: str, status: str, summary: dict, last_error: str = "") -> None:
+    if not logname:
+        return
+    _set_cron_log_state(
+        logname,
+        status=status,
+        completed_at=frappe.utils.now_datetime(),
+        last_error=last_error,
+        summary_json=json.dumps(summary or {}, indent=2, sort_keys=True),
+        **_cron_log_counts(summary or {}),
+    )
 
 
 def _set_glific_contact_files(docname: str, files: list[dict]) -> None:
@@ -128,6 +196,8 @@ def _set_summary_counts(docname: str, summary: dict) -> None:
         updates["prepared_file_url"] = str(summary.get("prepared_file_url") or "")
     if "failed_rows_file_url" in summary:
         updates["failed_rows_file_url"] = str(summary.get("failed_rows_file_url") or "")
+    if "not_done_rows_file_url" in summary:
+        updates["not_done_rows_file_url"] = str(summary.get("not_done_rows_file_url") or "")
     frappe.db.set_value("Student Sheet Registration Job", docname, updates, update_modified=False)
 
 
@@ -136,9 +206,12 @@ def enqueue_daily_student_sheet_registration() -> dict:
     if running_job:
         message = f"Daily student sheet registration skipped; job {running_job} is already running."
         frappe.logger("tap_lms.student_sheet_registration").info(message)
+        cron_log = _create_cron_log(running_job, status="Skipped")
+        frappe.db.commit()
         return {"status": "Skipped", "running_job": running_job}
 
     docname = _create_daily_job()
+    cron_log = _create_cron_log(docname)
     try:
         _append_log(docname, "[student-sheet-registration] daily job created")
         frappe.db.commit()
@@ -149,8 +222,10 @@ def enqueue_daily_student_sheet_registration() -> dict:
             timeout=7200,
             job_name=f"student_sheet_registration_daily_{docname}",
             docname=docname,
+            cron_log_name=cron_log,
         )
         _append_log(docname, f"[student-sheet-registration] daily job queued rq_job_id={job.id}")
+        _set_cron_log_state(cron_log, status="Queued")
         frappe.db.commit()
         return {"job_id": job.id, "docname": docname, "status": "Preparing"}
     except Exception:
@@ -162,6 +237,7 @@ def enqueue_daily_student_sheet_registration() -> dict:
             completed_at=frappe.utils.now_datetime(),
             last_error=error_message,
         )
+        _complete_cron_log(cron_log, "Failed", {}, error_message)
         frappe.db.commit()
         raise
 
@@ -185,6 +261,7 @@ def start_prepare_student_sheet_registration_job(docname: str) -> dict:
         skipped_done_rows=0,
         prepared_file_url="",
         failed_rows_file_url="",
+        not_done_rows_file_url="",
         summary_json="",
         last_error="",
         prepared_rows_json="[]",
@@ -220,6 +297,7 @@ def start_upload_student_sheet_registration_job(docname: str) -> dict:
         uploaded_rows=0,
         failed_rows=0,
         failed_rows_file_url="",
+        not_done_rows_file_url="",
         summary_json="",
         last_error="",
     )
@@ -323,9 +401,17 @@ def run_upload_student_sheet_registration_job(docname: str) -> dict:
         raise
 
 
-def run_daily_student_sheet_registration_job(docname: str) -> dict:
+def run_daily_student_sheet_registration_job(docname: str, cron_log_name: str | None = None) -> dict:
     started_at = frappe.utils.now_datetime()
+    latest_summary: dict = {}
     try:
+        _set_cron_log_state(
+            cron_log_name or "",
+            status="Running",
+            started_at=started_at,
+            completed_at=None,
+            last_error="",
+        )
         _set_job_state(
             docname,
             status="Preparing",
@@ -339,6 +425,7 @@ def run_daily_student_sheet_registration_job(docname: str) -> dict:
             skipped_done_rows=0,
             prepared_file_url="",
             failed_rows_file_url="",
+            not_done_rows_file_url="",
             summary_json="",
             last_error="",
             prepared_rows_json="[]",
@@ -350,6 +437,7 @@ def run_daily_student_sheet_registration_job(docname: str) -> dict:
             log_fn=lambda message: _append_log(docname, message)
         )
         prepare_summary = prepare_result.get("summary") or {}
+        latest_summary = dict(prepare_summary)
         prepared_rows = prepare_result.get("prepared_rows") or []
         _set_summary_counts(docname, prepare_summary)
         _set_job_state(
@@ -366,6 +454,8 @@ def run_daily_student_sheet_registration_job(docname: str) -> dict:
             final_summary = dict(prepare_summary)
             final_summary.setdefault("uploaded_rows", 0)
             final_summary.setdefault("glific_contact_files", [])
+            final_summary.setdefault("not_done_rows_file_url", "")
+            latest_summary = dict(final_summary)
             _set_summary_counts(docname, final_summary)
             _set_glific_contact_files(docname, [])
             _set_job_state(
@@ -375,6 +465,7 @@ def run_daily_student_sheet_registration_job(docname: str) -> dict:
                 summary_json=json.dumps(final_summary, indent=2, sort_keys=True),
                 last_error="",
             )
+            _complete_cron_log(cron_log_name or "", "Completed", final_summary)
             frappe.db.commit()
             return final_summary
 
@@ -385,6 +476,7 @@ def run_daily_student_sheet_registration_job(docname: str) -> dict:
             uploaded_rows=0,
             failed_rows=0,
             failed_rows_file_url="",
+            not_done_rows_file_url="",
             last_error="",
         )
         _set_glific_contact_files(docname, [])
@@ -398,6 +490,7 @@ def run_daily_student_sheet_registration_job(docname: str) -> dict:
         )
         final_summary = dict(prepare_summary)
         final_summary.update(upload_result)
+        latest_summary = dict(final_summary)
         _set_summary_counts(docname, final_summary)
         _set_glific_contact_files(docname, upload_result.get("glific_contact_files") or [])
         _set_job_state(
@@ -407,6 +500,7 @@ def run_daily_student_sheet_registration_job(docname: str) -> dict:
             summary_json=json.dumps(final_summary, indent=2, sort_keys=True),
             last_error="",
         )
+        _complete_cron_log(cron_log_name or "", "Completed", final_summary)
         frappe.db.commit()
         return final_summary
     except Exception:
@@ -419,5 +513,6 @@ def run_daily_student_sheet_registration_job(docname: str) -> dict:
             completed_at=frappe.utils.now_datetime(),
             last_error=error_message,
         )
+        _complete_cron_log(cron_log_name or "", "Failed", latest_summary, error_message)
         frappe.db.commit()
         raise

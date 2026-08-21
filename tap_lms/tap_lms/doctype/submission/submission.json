@@ -15,7 +15,7 @@
   "submission_text",
   "submission_url",
   "status",
-  "send_feedback",
+  "feedback_flow_id",
   "feedback_requested_at",
   "feedback_ready_processed_at",
   "feedback_flow_triggered_at",
@@ -94,11 +94,9 @@
    "options": "Pending\nProcessing\nCompleted\nFailed"
   },
   {
-   "default": "no",
-   "fieldname": "send_feedback",
-   "fieldtype": "Select",
-   "label": "Send Feedback",
-   "options": "no\nyes"
+   "fieldname": "feedback_flow_id",
+   "fieldtype": "Text",
+   "label": "Feedback Flow ID"
   },
   {
    "fieldname": "feedback_requested_at",

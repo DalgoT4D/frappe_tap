@@ -2,57 +2,54 @@
  "actions": [],
  "allow_import": 1,
  "allow_rename": 1,
- "autoname": "format:SSR-{#####}",
- "creation": "2026-07-30 00:00:00.000000",
+ "autoname": "format:SSRC-{#####}",
+ "creation": "2026-08-18 00:00:00.000000",
  "default_view": "List",
  "doctype": "DocType",
  "editable_grid": 1,
  "engine": "InnoDB",
  "field_order": [
-  "job_name",
+  "run_name",
   "status",
+  "student_sheet_registration_job",
   "run_details_section",
   "started_at",
   "run_details_column_break",
   "completed_at",
   "counts_section",
-  "raw_rows",
+  "processed_rows",
   "counts_column_break_1",
-  "prepared_rows",
+  "successful_rows",
   "counts_column_break_2",
-  "uploaded_rows",
-  "counts_section_2",
-  "failed_rows",
-  "counts_column_break_3",
   "duplicate_rows",
-  "counts_column_break_4",
-  "skipped_done_rows",
-  "files_section",
-  "prepared_file_url",
-  "failed_rows_file_url",
-  "not_done_rows_file_url",
-  "glific_contact_files",
+  "counts_column_break_3",
+  "failed_rows",
   "details_section",
   "summary_json",
-  "last_error",
-  "processing_log",
-  "prepared_rows_json"
+  "last_error"
  ],
  "fields": [
   {
-   "fieldname": "job_name",
+   "fieldname": "run_name",
    "fieldtype": "Data",
    "in_list_view": 1,
-   "label": "Job Name",
+   "label": "Run Name",
    "reqd": 1
   },
   {
-   "default": "Draft",
+   "default": "Started",
    "fieldname": "status",
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Status",
-   "options": "Draft\nPreparing\nPrepared\nUploading\nCompleted\nFailed",
+   "options": "Started\nQueued\nRunning\nCompleted\nFailed\nSkipped",
+   "read_only": 1
+  },
+  {
+   "fieldname": "student_sheet_registration_job",
+   "fieldtype": "Link",
+   "label": "Student Sheet Registration Job",
+   "options": "Student Sheet Registration Job",
    "read_only": 1
   },
   {
@@ -83,9 +80,10 @@
   },
   {
    "default": "0",
-   "fieldname": "raw_rows",
+   "fieldname": "processed_rows",
    "fieldtype": "Int",
-   "label": "Raw Rows",
+   "in_list_view": 1,
+   "label": "Processed Rows",
    "read_only": 1
   },
   {
@@ -94,9 +92,10 @@
   },
   {
    "default": "0",
-   "fieldname": "prepared_rows",
+   "fieldname": "successful_rows",
    "fieldtype": "Int",
-   "label": "Prepared Rows",
+   "in_list_view": 1,
+   "label": "Successful Rows",
    "read_only": 1
   },
   {
@@ -105,20 +104,10 @@
   },
   {
    "default": "0",
-   "fieldname": "uploaded_rows",
+   "fieldname": "duplicate_rows",
    "fieldtype": "Int",
-   "label": "Uploaded Rows",
-   "read_only": 1
-  },
-  {
-   "fieldname": "counts_section_2",
-   "fieldtype": "Section Break"
-  },
-  {
-   "default": "0",
-   "fieldname": "failed_rows",
-   "fieldtype": "Int",
-   "label": "Failed Rows",
+   "in_list_view": 1,
+   "label": "Duplicate Rows",
    "read_only": 1
   },
   {
@@ -127,50 +116,10 @@
   },
   {
    "default": "0",
-   "fieldname": "duplicate_rows",
+   "fieldname": "failed_rows",
    "fieldtype": "Int",
-   "label": "Duplicate Rows",
-   "read_only": 1
-  },
-  {
-   "fieldname": "counts_column_break_4",
-   "fieldtype": "Column Break"
-  },
-  {
-   "default": "0",
-   "fieldname": "skipped_done_rows",
-   "fieldtype": "Int",
-   "label": "Skipped Done Rows",
-   "read_only": 1
-  },
-  {
-   "fieldname": "files_section",
-   "fieldtype": "Section Break",
-   "label": "Files"
-  },
-  {
-   "fieldname": "prepared_file_url",
-   "fieldtype": "Long Text",
-   "label": "Prepared File URL",
-   "read_only": 1
-  },
-  {
-   "fieldname": "failed_rows_file_url",
-   "fieldtype": "Long Text",
-   "label": "Failed Rows File URL",
-   "read_only": 1
-  },
-  {
-   "fieldname": "not_done_rows_file_url",
-   "fieldtype": "Long Text",
-   "label": "Not Done Rows CSV File URL",
-   "read_only": 1
-  },
-  {
-   "fieldname": "glific_contact_files",
-   "fieldtype": "Table",
-   "label": "Glific Contact File",
-   "options": "Student Bulk Import Job Glific File",
+   "in_list_view": 1,
+   "label": "Failed Rows",
    "read_only": 1
   },
   {
@@ -189,27 +138,14 @@
    "fieldtype": "Long Text",
    "label": "Last Error",
    "read_only": 1
-  },
-  {
-   "fieldname": "processing_log",
-   "fieldtype": "JSON",
-   "label": "Processing Log",
-   "read_only": 1
-  },
-  {
-   "fieldname": "prepared_rows_json",
-   "fieldtype": "Long Text",
-   "hidden": 1,
-   "label": "Prepared Rows JSON",
-   "read_only": 1
   }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-07-30 00:00:00.000000",
+ "modified": "2026-08-18 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Tap Lms",
- "name": "Student Sheet Registration Job",
+ "name": "Student Sheet Registration Cron Log",
  "naming_rule": "Expression",
  "owner": "Administrator",
  "permissions": [
@@ -229,6 +165,6 @@
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": [],
- "title_field": "job_name",
+ "title_field": "run_name",
  "track_changes": 1
 }

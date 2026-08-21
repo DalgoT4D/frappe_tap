@@ -18,6 +18,38 @@ DEMO_STUDENT_BY_LANGUAGE = {
     "punjabi": "ST00223226",
     "kannada": "ST00223225",
 }
+DEMO_STUDENT_PAYLOAD_DETAILS = {
+    "ST00034562": {
+        "student_id": "ST00034562",
+        "grade": 5,
+        "level": 2,
+        "language": "English",
+    },
+    "ST00055893": {
+        "student_id": "ST00055893",
+        "grade": 5,
+        "level": 2,
+        "language": "Hindi",
+    },
+    "ST00388465": {
+        "student_id": "ST00388465",
+        "grade": 5,
+        "level": 2,
+        "language": "Marathi",
+    },
+    "ST00223226": {
+        "student_id": "ST00223226",
+        "grade": 5,
+        "level": 2,
+        "language": "Punjabi",
+    },
+    "ST00223225": {
+        "student_id": "ST00223225",
+        "grade": 5,
+        "level": 2,
+        "language": "Kannada",
+    },
+}
 
 
 def _normalize_unicode_surrogates(value):
@@ -67,6 +99,18 @@ def _set_if_field(doc, fieldname, value):
         setattr(doc, fieldname, value)
 
 
+def _get_student_payload_details(student_id):
+    return DEMO_STUDENT_PAYLOAD_DETAILS.get(
+        student_id,
+        {
+            "student_id": student_id,
+            "grade": None,
+            "level": None,
+            "language": None,
+        },
+    )
+
+
 def _normalize_language(language):
     return _normalize_required_text(language, "Language")
 
@@ -79,9 +123,6 @@ def _resolve_demo_student_id(language):
             "Unsupported language. Supported languages: "
             + ", ".join(sorted(DEMO_STUDENT_BY_LANGUAGE))
         )
-
-    if not frappe.db.exists("Student", student_id):
-        frappe.throw(f"Demo Student {student_id} for language {language} not found")
 
     return student_id
 
@@ -96,7 +137,7 @@ def _create_submission(assignment_id, student_id, payload, language):
     submission_doc.status = "Pending"
 
     now = datetime.now()
-    _set_if_field(submission_doc, "send_feedback", "yes")
+    _set_if_field(submission_doc, "feedback_flow_id", GLIFIC_FEEDBACK_FLOW_ID)
     _set_if_field(submission_doc, "feedback_requested_at", now)
     _set_if_field(submission_doc, "created_at", now)
     _set_if_field(submission_doc, "is_primary", 1)
@@ -377,13 +418,12 @@ def enqueue_submission(submission_id, retry_count=0):
         payload = {
             "submission_id": submission_doc.name,
             "assign_id": submission_doc.assign_id,
-            "student_id": submission_doc.student_id,
+            **_get_student_payload_details(submission_doc.student_id),
             "submission_type": submission_doc.submission_type,
             "submission_text": submission_doc.submission_text,
             "submission_url": submission_doc.submission_url,
             "is_primary": getattr(submission_doc, "is_primary", 1),
             "created_at": str(getattr(submission_doc, "created_at", submission_doc.creation)),
-            "glific_feedback_flow_id": GLIFIC_FEEDBACK_FLOW_ID,
             "source": "demo_submission",
         }
 

@@ -309,10 +309,12 @@ class FeedbackConsumer:
                 ch.basic_reject(delivery_tag=method.delivery_tag, requeue=False)
 
     def _is_feedback_requested(self, submission_id):
-        return (
-            frappe.db.get_value("Submission", submission_id, "send_feedback")
-            == "yes"
+        feedback_flow_id = frappe.db.get_value(
+            "Submission",
+            submission_id,
+            "feedback_flow_id",
         )
+        return bool(str(feedback_flow_id or "").strip())
 
     def _uses_direct_glific_contact_id(self, student_id):
         student_id = str(student_id or "").strip()
@@ -320,6 +322,15 @@ class FeedbackConsumer:
             return False
 
         return not student_id.upper().startswith("ST")
+
+    def _get_feedback_flow_id(self, submission_id):
+        feedback_flow_id = frappe.db.get_value(
+            "Submission",
+            submission_id,
+            "feedback_flow_id",
+        )
+        feedback_flow_id = str(feedback_flow_id or "").strip()
+        return feedback_flow_id or GLIFIC_FEEDBACK_FLOW_ID
 
     def _get_submission_comment_glific_id(self, submission_id):
         if not submission_id:
@@ -382,16 +393,16 @@ class FeedbackConsumer:
         Atomically claim a pending feedback-flow request.
 
         Both the public API and RabbitMQ consumer use this gate. Exactly one
-        caller can flip send_feedback from yes to no for a terminal submission,
-        which prevents duplicate Glific flows.
+        caller can set feedback_flow_triggered_at for a terminal submission
+        with a feedback_flow_id, which prevents duplicate Glific flows while
+        preserving the configured flow ID for audit.
         """
         result = frappe.db.sql(
             """
             UPDATE `tabSubmission`
-            SET send_feedback = 'no',
-                feedback_flow_triggered_at = NOW()
+            SET feedback_flow_triggered_at = NOW()
             WHERE name = %s
-              AND send_feedback = 'yes'
+              AND COALESCE(feedback_flow_id, '') != ''
               AND feedback_flow_triggered_at IS NULL
               AND status IN ('Completed', 'Failed')
             RETURNING name
@@ -408,7 +419,7 @@ class FeedbackConsumer:
             submission_state = frappe.db.get_value(
                 "Submission",
                 submission_id,
-                ["status", "send_feedback", "feedback_flow_triggered_at"],
+                ["status", "feedback_flow_id", "feedback_flow_triggered_at"],
                 as_dict=True,
             )
             frappe.logger().info(
@@ -537,6 +548,7 @@ class FeedbackConsumer:
             student_id = message_data.get("student_id") or frappe.db.get_value(
                 "Submission", submission_id, "student_id"
             )
+            feedback_flow_id = self._get_feedback_flow_id(submission_id)
             comment_glific_id = self._get_submission_comment_glific_id(submission_id)
 
             if not student_id and not comment_glific_id:
@@ -549,7 +561,7 @@ class FeedbackConsumer:
                 id_type = "direct_glific" if self._uses_direct_glific_contact_id(student_id) else "student"
             frappe.logger().info(
                 f"Preparing Glific feedback notification: submission_id={submission_id}, "
-                f"student_id={student_id}, id_type={id_type}, flow_id={GLIFIC_FEEDBACK_FLOW_ID}"
+                f"student_id={student_id}, id_type={id_type}, flow_id={feedback_flow_id}"
             )
 
             if comment_glific_id:
@@ -607,20 +619,20 @@ class FeedbackConsumer:
             # from Student.glific_id or supplied directly by the demo API.
             frappe.logger().info(
                 f"Triggering Glific feedback flow: submission_id={submission_id}, "
-                f"flow_id={GLIFIC_FEEDBACK_FLOW_ID}, glific_id={glific_id}, "
+                f"flow_id={feedback_flow_id}, glific_id={glific_id}, "
                 f"glific_id_source={glific_id_source}, "
                 f"overall_feedback_chars={len(overall_feedback or '')}, "
                 f"translated_feedback_chars={len(default_results['overall_feedback_translated'] or '')}, "
                 f"default_result_keys={list(default_results.keys())}"
             )
             success = start_contact_flow(
-                flow_id=GLIFIC_FEEDBACK_FLOW_ID,
+                flow_id=feedback_flow_id,
                 contact_id=str(glific_id),
                 default_results=default_results,
             )
             frappe.logger().info(
                 f"Glific start_contact_flow returned: submission_id={submission_id}, "
-                f"flow_id={GLIFIC_FEEDBACK_FLOW_ID}, glific_id={glific_id}, "
+                f"flow_id={feedback_flow_id}, glific_id={glific_id}, "
                 f"success={success}"
             )
 

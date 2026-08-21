@@ -83,7 +83,7 @@ def _create_submission(assignment_id, glific_id, payload, language):
     submission_doc.status = "Pending"
 
     now = datetime.now()
-    _set_if_field(submission_doc, "send_feedback", "yes")
+    _set_if_field(submission_doc, "feedback_flow_id", GLIFIC_FEEDBACK_FLOW_ID)
     _set_if_field(submission_doc, "feedback_requested_at", now)
     _set_if_field(submission_doc, "translation_language", language)
 
