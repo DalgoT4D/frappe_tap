@@ -11,7 +11,11 @@
         "campaign",
         "agent_id",
         "rendered_prompt",
-        "reengaged_within_48h"
+        "reengaged_within_48h",
+        "vocallabs_call_id",
+        "recording_url",
+        "duration_seconds",
+        "provider"
     ],
     "fields": [
         {
@@ -65,12 +69,39 @@
             "in_list_view": 1,
             "label": "Re-engaged 48h",
             "read_only": 1
+        },
+        {
+            "fieldname": "vocallabs_call_id",
+            "fieldtype": "Data",
+            "label": "Vocallabs Call ID",
+            "read_only": 1,
+            "description": "Call ID from provider. Used to fetch recording."
+        },
+        {
+            "fieldname": "recording_url",
+            "fieldtype": "Data",
+            "label": "Recording URL",
+            "read_only": 1
+        },
+        {
+            "fieldname": "duration_seconds",
+            "fieldtype": "Int",
+            "label": "Duration (seconds)",
+            "read_only": 1
+        },
+        {
+            "fieldname": "provider",
+            "fieldtype": "Select",
+            "label": "Provider",
+            "options": "Vocallabs\nElevenLabs",
+            "default": "Vocallabs",
+            "read_only": 1
         }
     ],
     "index_web_pages_for_search": 0,
     "istable": 1,
     "links": [],
-    "modified": "2026-07-19 00:00:00.000000",
+    "modified": "2026-08-21 00:00:00.000000",
     "modified_by": "Administrator",
     "module": "TAP LMS",
     "name": "VoiceCallHistory",

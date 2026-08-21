@@ -8,6 +8,7 @@
     "engine": "InnoDB",
     "field_order": [
         "campaign_name",
+        "provider",
         "status",
         "col1",
         "scheduled_at",
@@ -253,10 +254,19 @@
             "label": "Per-Situation Breakdown",
             "options": "VoiceCallCampaignAnalytics",
             "read_only": 1
+        },
+        {
+            "default": "Vocallabs",
+            "description": "Which voice call provider to use for this campaign.",
+            "fieldname": "provider",
+            "fieldtype": "Select",
+            "in_list_view": 1,
+            "label": "Provider",
+            "options": "Vocallabs\nElevenLabs"
         }
     ],
     "links": [],
-    "modified": "2026-07-08 12:00:00.000000",
+    "modified": "2026-08-21 00:00:00.000000",
     "modified_by": "Administrator",
     "module": "TAP LMS",
     "name": "VoiceCallCampaign",
