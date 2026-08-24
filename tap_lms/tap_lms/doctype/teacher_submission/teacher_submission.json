@@ -1,0 +1,178 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "TSUB-.#####",
+ "creation": "2026-08-20 00:00:00.000000",
+ "default_view": "List",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "phone_number",
+  "teacher",
+  "school_id",
+  "is_unknown_number",
+  "column_break_head",
+  "submitted_at",
+  "status",
+  "section_break_details",
+  "course",
+  "grade",
+  "section_break_images",
+  "image_count",
+  "media_match_status",
+  "column_break_images",
+  "source_time",
+  "source_row_ids",
+  "image_urls"
+ ],
+ "fields": [
+  {
+   "description": "Sender's WhatsApp number, stored as 91 + 10 digits.",
+   "fieldname": "phone_number",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Phone Number",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "description": "Resolved from the phone number. Empty when the number is not registered.",
+   "fieldname": "teacher",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Teacher",
+   "options": "Teacher",
+   "search_index": 1
+  },
+  {
+   "description": "Denormalised for weekly school-level reporting.",
+   "fieldname": "school_id",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "School",
+   "options": "School",
+   "search_index": 1
+  },
+  {
+   "default": "0",
+   "description": "Number not linked to any teacher. Needs PI review.",
+   "fieldname": "is_unknown_number",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Unknown Number"
+  },
+  {
+   "fieldname": "column_break_head",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Timestamp sent by Glific. Falls back to server time when absent.",
+   "fieldname": "submitted_at",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Submitted At",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "default": "Started",
+   "description": "Started = phone captured. Details Added = course and grade saved.",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Status",
+   "options": "Started\nDetails Added",
+   "search_index": 1
+  },
+  {
+   "fieldname": "section_break_details",
+   "fieldtype": "Section Break",
+   "label": "Course Details"
+  },
+  {
+   "fieldname": "course",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Course",
+   "options": "Course Verticals"
+  },
+  {
+   "fieldname": "grade",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Grade",
+   "options": "\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12"
+  },
+  {
+   "fieldname": "section_break_images",
+   "fieldtype": "Section Break",
+   "label": "Images"
+  },
+  {
+   "description": "Number of URLs held in Image URLs. Kept in step automatically on every save.",
+   "fieldname": "image_count",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Image Count",
+   "read_only": 1
+  },
+  {
+   "default": "Pending",
+   "description": "Pending = not looked for yet. Ambiguous = more than one plausible source; needs a human.",
+   "fieldname": "media_match_status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Image Match Status",
+   "options": "Pending\nMatched\nNot Found\nAmbiguous",
+   "search_index": 1
+  },
+  {
+   "fieldname": "column_break_images",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Timestamp of the source row the images came from (BigQuery), not the match time.",
+   "fieldname": "source_time",
+   "fieldtype": "Datetime",
+   "label": "Source Time"
+  },
+  {
+   "description": "Source row identifiers already attached, one per line. Prevents the same row being attached twice on a re-run.",
+   "fieldname": "source_row_ids",
+   "fieldtype": "Small Text",
+   "label": "Source Row IDs"
+  },
+  {
+   "description": "One URL per line. A teacher may send up to 20 files in one submission.",
+   "fieldname": "image_urls",
+   "fieldtype": "Long Text",
+   "label": "Image URLs"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-08-20 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Tap Lms",
+ "name": "Teacher Submission",
+ "naming_rule": "Expression (old style)",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

@@ -67,6 +67,15 @@ doc_events = {
 #                    Batch.current_calendar_week and unblocks max_allowed_week
 #                    on each PE
 scheduler_events = {
+    "cron": {
+        # Teacher submission images: pull gcs_urls from BigQuery and attach them
+        # to the matching submission. Every 20 minutes so PI sees photos the
+        # same day. The job exits immediately unless BigQuery Settings is
+        # enabled, so this is inert until someone turns it on.
+        "*/20 * * * *": [
+            "tap_lms.teacher_bot.bigquery_sync.sync_submission_images",
+        ],
+    },
     # "daily": [
     #     "tap_lms.tap_lms.page.onboarding_flow_trigger.onboarding_flow_trigger.update_incomplete_stages",
     #     "tap_lms.summer_program.scheduler.run_daily_actions",
