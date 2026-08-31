@@ -26,6 +26,7 @@ GLIFIC_NEW_STUDENT_CSV_HEADERS = [
     "grade",
     "level",
     "course",
+    "student_id",
 ]
 GLIFIC_EXISTING_STUDENT_CSV_HEADERS = [
     "name",
@@ -38,6 +39,7 @@ GLIFIC_EXISTING_STUDENT_CSV_HEADERS = [
     "grade",
     "level",
     "course",
+    "student_id",
 ]
 GLIFIC_CSV_HEADERS = GLIFIC_NEW_STUDENT_CSV_HEADERS
 

@@ -24,6 +24,14 @@
   "duplicate_rows",
   "counts_column_break_3",
   "failed_rows",
+  "files_section",
+  "glific_contact_file_url",
+  "files_column_break",
+  "not_done_rows_file_url",
+  "failure_files_section",
+  "duplicate_phone_numbers_file_url",
+  "failure_files_column_break",
+  "other_failures_file_url",
   "details_section",
   "summary_json",
   "last_error"
@@ -120,6 +128,48 @@
    "fieldtype": "Int",
    "in_list_view": 1,
    "label": "Failed Rows",
+   "read_only": 1
+  },
+  {
+   "fieldname": "files_section",
+   "fieldtype": "Section Break",
+   "label": "Files"
+  },
+  {
+   "fieldname": "glific_contact_file_url",
+   "fieldtype": "Long Text",
+   "label": "Glific Contact File URL",
+   "read_only": 1
+  },
+  {
+   "fieldname": "files_column_break",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "not_done_rows_file_url",
+   "fieldtype": "Long Text",
+   "label": "Not Done Rows File URL",
+   "read_only": 1
+  },
+  {
+   "fieldname": "failure_files_section",
+   "fieldtype": "Section Break",
+   "label": "Failure Files"
+  },
+  {
+   "fieldname": "duplicate_phone_numbers_file_url",
+   "fieldtype": "Long Text",
+   "label": "Duplicate Phone Numbers File URL",
+   "read_only": 1
+  },
+  {
+   "fieldname": "failure_files_column_break",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "other_failures_file_url",
+   "fieldtype": "Long Text",
+   "label": "Other Failures File URL",
    "read_only": 1
   },
   {

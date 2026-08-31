@@ -50,6 +50,7 @@ class TestGlificContactCsvHeaders(unittest.TestCase):
             "language": "Hindi",
             "delete": 0,
             "school_id": "SCH-001",
+            "student_id": "ST00000001",
         }
 
         rendered = render_glific_contact_csv([row], headers=GLIFIC_NEW_STUDENT_CSV_HEADERS)
@@ -57,7 +58,9 @@ class TestGlificContactCsvHeaders(unittest.TestCase):
 
         self.assertEqual(csv_rows[0][:4], ["name", "phone", "language", "delete"])
         self.assertIn("school_id", csv_rows[0])
+        self.assertIn("student_id", csv_rows[0])
         self.assertEqual(csv_rows[1][csv_rows[0].index("delete")], "0")
+        self.assertEqual(csv_rows[1][csv_rows[0].index("student_id")], "ST00000001")
 
     def test_existing_student_contact_csv_excludes_language_and_delete(self):
         row = {
@@ -66,6 +69,7 @@ class TestGlificContactCsvHeaders(unittest.TestCase):
             "language": "Hindi",
             "delete": "0",
             "school_id": "SCH-002",
+            "student_id": "ST00000002",
         }
 
         rendered = render_glific_contact_csv([row], headers=GLIFIC_EXISTING_STUDENT_CSV_HEADERS)
@@ -75,6 +79,8 @@ class TestGlificContactCsvHeaders(unittest.TestCase):
         self.assertNotIn("language", csv_rows[0])
         self.assertNotIn("delete", csv_rows[0])
         self.assertIn("school_id", csv_rows[0])
+        self.assertIn("student_id", csv_rows[0])
+        self.assertEqual(csv_rows[1][csv_rows[0].index("student_id")], "ST00000002")
 
 
 if __name__ == "__main__":

@@ -165,23 +165,20 @@ def prepare_student_sheet_registration(log_fn=None, progress_fn=None) -> dict:
     if status_updates:
         _write_status_updates(session, status_updates)
 
-    prepared_file_url = _create_and_upload_prepared_workbook(prepared_rows)
     failed_rows = [row for row in prepared_rows if row.get("prepare_status") != "Ready"]
     failed_rows_file_url = _create_and_upload_failed_rows_workbook(failed_rows) if failed_rows else ""
-    not_done_rows_file_url = _create_and_upload_not_done_rows_csv(failed_rows) if failed_rows else ""
+    failure_csv_urls = _create_and_upload_failure_csvs(failed_rows)
 
     summary = {
         "raw_rows": raw_count,
         "skipped_done_rows": skipped_done,
         "prepared_rows": len([row for row in prepared_rows if row.get("prepare_status") == "Ready"]),
         "failed_rows": len(failed_rows),
-        "duplicate_rows": len([
-            row for row in failed_rows
-            if str(row.get("message") or "").startswith("Duplicate contact_phone_number")
-        ]),
-        "prepared_file_url": prepared_file_url,
+        "duplicate_rows": len(_duplicate_phone_failure_rows(failed_rows)),
+        "prepared_file_url": "",
         "failed_rows_file_url": failed_rows_file_url,
-        "not_done_rows_file_url": not_done_rows_file_url,
+        "not_done_rows_file_url": failure_csv_urls["other_failures_file_url"],
+        **failure_csv_urls,
         "sheets": [
             {
                 "language": sheet.language,
@@ -285,18 +282,22 @@ def upload_prepared_student_sheet_registration(
         _write_status_updates(session, status_updates)
 
     failed_rows_file_url = _create_and_upload_failed_rows_workbook(failed_rows) if failed_rows else ""
-    not_done_rows_file_url = _create_and_upload_not_done_rows_csv(failed_rows) if failed_rows else ""
+    failure_csv_urls = _create_and_upload_failure_csvs(failed_rows)
     glific_contact_files = _create_and_upload_glific_contact_csvs(success_rows)
+    glific_contact_file_url = (
+        glific_contact_files[0].get("file_path", "")
+        if glific_contact_files
+        else ""
+    )
     summary = {
         "prepared_rows": len(ready_rows),
         "uploaded_rows": len(success_rows),
         "failed_rows": len(failed_rows),
-        "duplicate_rows": len([
-            row for row in failed_rows
-            if str(row.get("message") or "").startswith("Duplicate contact_phone_number")
-        ]),
+        "duplicate_rows": len(_duplicate_phone_failure_rows(failed_rows)),
         "failed_rows_file_url": failed_rows_file_url,
-        "not_done_rows_file_url": not_done_rows_file_url,
+        "not_done_rows_file_url": failure_csv_urls["other_failures_file_url"],
+        **failure_csv_urls,
+        "glific_contact_file_url": glific_contact_file_url,
         "glific_contact_files": glific_contact_files,
     }
     _emit(log_fn, f"[student-sheet-registration] uploaded summary={summary}")
@@ -382,6 +383,7 @@ def _prepare_source_row(
     if not frappe.db.exists("Batch", batch):
         return _prepared_error(base, f"Batch not found: {batch}")
     base["batch"] = batch
+    base["model_id"] = str(getattr(school_enrollment, "model", None) or "").strip()
 
     course_result = _get_course_from_school_enrollment(school_enrollment, grade)
     if course_result.get("error"):
@@ -841,14 +843,30 @@ def _get_course_from_school_enrollment(school_enrollment, grade: str) -> dict:
             return {"error": "Selected School Batch Enrollment grades_courses is invalid JSON"}
     if not isinstance(grades_courses, dict):
         return {"error": "Selected School Batch Enrollment grades_courses must be a JSON object"}
+    grades_courses = _normalize_grade_course_map(grades_courses)
 
     value = grades_courses.get(str(grade))
-    if isinstance(value, str) and value.strip():
-        course_names = [value.strip()]
-    elif isinstance(value, list):
-        course_names = [str(item).strip() for item in value if str(item or "").strip()]
-    else:
-        course_names = []
+    course_names = _course_names_from_mapping_value(value)
+
+    if not course_names:
+        fallback = _previous_grade_course_mapping(grades_courses, grade)
+        if not fallback:
+            return {
+                "error": (
+                    f"Course mapping not found for grade {grade}; "
+                    "previous grade mapping not found"
+                )
+            }
+        fallback_grade, fallback_value = fallback
+        grades_courses = _add_inferred_grade_course_mapping(
+            grades_courses,
+            grade,
+            fallback_grade,
+            fallback_value,
+        )
+        _save_school_enrollment_grades_courses(school_enrollment, grades_courses)
+        value = grades_courses.get(str(grade))
+        course_names = _course_names_from_mapping_value(value)
 
     if not course_names:
         return {"error": f"Course mapping not found for grade {grade}"}
@@ -863,6 +881,95 @@ def _get_course_from_school_enrollment(school_enrollment, grade: str) -> dict:
     if not course_vertical:
         return {"error": f"Course vertical not found: {course_names[0]}"}
     return {"course_names": course_names, "course_vertical": course_vertical}
+
+
+def _normalize_grade_course_map(grades_courses: dict) -> dict:
+    return {
+        str(key).strip(): value
+        for key, value in grades_courses.items()
+        if str(key).strip()
+    }
+
+
+def _course_names_from_mapping_value(value) -> list[str]:
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item or "").strip()]
+    return []
+
+
+def _previous_grade_course_mapping(grades_courses: dict, grade: str):
+    try:
+        target_grade = int(str(grade).strip())
+    except Exception:
+        return None
+
+    candidates = []
+    for grade_key, value in grades_courses.items():
+        if not _course_names_from_mapping_value(value):
+            continue
+        try:
+            candidate_grade = int(str(grade_key).strip())
+        except Exception:
+            continue
+        if candidate_grade < target_grade:
+            candidates.append((candidate_grade, str(grade_key), value))
+
+    if not candidates:
+        return None
+    _, grade_key, value = max(candidates, key=lambda item: item[0])
+    return grade_key, _copy_course_mapping_value(value)
+
+
+def _copy_course_mapping_value(value):
+    if isinstance(value, list):
+        return list(value)
+    return value
+
+
+def _add_inferred_grade_course_mapping(
+    grades_courses: dict,
+    grade: str,
+    fallback_grade: str,
+    fallback_value,
+) -> dict:
+    grade = str(grade).strip()
+    fallback_grade = str(fallback_grade).strip()
+    updated = {}
+    inserted = False
+
+    for grade_key, value in grades_courses.items():
+        grade_key = str(grade_key).strip()
+        if grade_key == grade:
+            continue
+        updated[grade_key] = value
+        if grade_key == fallback_grade:
+            updated[grade] = _copy_course_mapping_value(fallback_value)
+            inserted = True
+
+    if not inserted:
+        updated[grade] = _copy_course_mapping_value(fallback_value)
+    return updated
+
+
+def _save_school_enrollment_grades_courses(school_enrollment, grades_courses: dict) -> None:
+    serialized = json.dumps(grades_courses, ensure_ascii=True)
+    if isinstance(school_enrollment, dict):
+        school_enrollment["grades_courses"] = serialized
+        row_name = school_enrollment.get("name")
+    else:
+        school_enrollment.grades_courses = serialized
+        row_name = getattr(school_enrollment, "name", None)
+
+    if row_name:
+        frappe.db.set_value(
+            "School Batch Enrollment",
+            row_name,
+            "grades_courses",
+            serialized,
+            update_modified=False,
+        )
 
 
 def _collect_done_phones(sheets: Iterable[SourceSheet]) -> set[str]:
@@ -941,7 +1048,7 @@ def _process_status_update(row: dict, value: str) -> dict:
 
 def _process_status_for_row(row: dict) -> str:
     message = str(row.get("message") or "")
-    if message.startswith("Duplicate contact_phone_number"):
+    if _is_duplicate_phone_failure(row):
         return PROCESS_STATUS_COMPLETE
     return PROCESS_STATUS_FAIL
 
@@ -970,12 +1077,50 @@ def _create_and_upload_failed_rows_workbook(rows: list[dict]) -> str:
     )
 
 
-def _create_and_upload_not_done_rows_csv(rows: list[dict]) -> str:
+def _is_duplicate_phone_failure(row: dict) -> bool:
+    return str(row.get("message") or "").startswith("Duplicate contact_phone_number")
+
+
+def _duplicate_phone_failure_rows(rows: list[dict]) -> list[dict]:
+    return [row for row in rows if _is_duplicate_phone_failure(row)]
+
+
+def _other_failure_rows(rows: list[dict]) -> list[dict]:
+    return [row for row in rows if not _is_duplicate_phone_failure(row)]
+
+
+def _create_and_upload_failure_csvs(rows: list[dict]) -> dict[str, str]:
+    duplicate_rows = _duplicate_phone_failure_rows(rows)
+    other_rows = _other_failure_rows(rows)
+    return {
+        "duplicate_phone_numbers_file_url": (
+            _create_and_upload_not_done_rows_csv(
+                duplicate_rows,
+                folder="not-done/duplicate-phone-numbers",
+                filename_prefix="student_sheet_registration_duplicate_phone_numbers",
+            )
+            if duplicate_rows
+            else ""
+        ),
+        "other_failures_file_url": (
+            _create_and_upload_not_done_rows_csv(
+                other_rows,
+                folder="not-done/other-failures",
+                filename_prefix="student_sheet_registration_other_failures",
+            )
+            if other_rows
+            else ""
+        ),
+    }
+
+
+def _create_and_upload_not_done_rows_csv(
+    rows: list[dict],
+    folder: str = "not-done",
+    filename_prefix: str = "student_sheet_registration_not_done",
+) -> str:
     timestamp = frappe.utils.now_datetime().strftime("%Y%m%d_%H%M%S")
-    object_name = (
-        "student-sheet-registration/not-done/"
-        f"student_sheet_registration_not_done_{timestamp}.csv"
-    )
+    object_name = f"student-sheet-registration/{folder}/{filename_prefix}_{timestamp}.csv"
     return _upload_bytes_to_gcs(
         _render_not_done_rows_csv(rows),
         object_name,
@@ -1087,8 +1232,7 @@ def _glific_contact_row(row: dict) -> dict:
     course_vertical = row.get("course_vertical") or ""
     state_id = frappe.db.get_value("School", school_id, "state") if school_id else ""
     state_name = frappe.db.get_value("State", state_id, "state_name") if state_id else ""
-    model_id = frappe.db.get_value("School", school_id, "model") if school_id else ""
-    model_name = frappe.db.get_value("Tap Models", model_id, "mname") if model_id else ""
+    model_name = _get_glific_model_name(school_id, batch, row.get("model_id") or "")
     batch_id = frappe.db.get_value("Batch", batch, "batch_id") if batch else ""
     course = (
         frappe.db.get_value("Course Verticals", course_vertical, "name2")
@@ -1107,8 +1251,50 @@ def _glific_contact_row(row: dict) -> dict:
         "grade": row.get("grade") or "",
         "level": row.get("level") or "",
         "course": course or "",
+        "student_id": row.get("student_id") or "",
     }
     return {header: str(data.get(header) or "") for header in GLIFIC_CSV_HEADERS}
+
+
+def _get_glific_model_name(school_id: str, batch: str, preferred_model_id: str = "") -> str:
+    model_id = frappe.db.get_value("School", school_id, "model") if school_id else ""
+    if not model_id:
+        model_id = str(preferred_model_id or "").strip()
+    if not model_id:
+        model_id = _get_school_batch_enrollment_model_id(school_id, batch)
+    return frappe.db.get_value("Tap Models", model_id, "mname") if model_id else ""
+
+
+def _get_school_batch_enrollment_model_id(school_id: str, batch: str) -> str:
+    if not school_id:
+        return ""
+
+    if batch:
+        rows = frappe.db.sql("""
+            SELECT model
+              FROM "tabSchool Batch Enrollment"
+             WHERE parent = %s
+               AND parenttype = 'School'
+               AND parentfield = 'batch_enrollments'
+               AND batch_number = %s
+               AND COALESCE(model, '') != ''
+             ORDER BY doj DESC NULLS LAST, idx DESC NULLS LAST
+             LIMIT 1
+        """, (school_id, batch), as_dict=True)
+        if rows:
+            return rows[0].get("model") or ""
+
+    rows = frappe.db.sql("""
+        SELECT model
+          FROM "tabSchool Batch Enrollment"
+         WHERE parent = %s
+           AND parenttype = 'School'
+           AND parentfield = 'batch_enrollments'
+           AND COALESCE(model, '') != ''
+         ORDER BY doj DESC NULLS LAST, idx DESC NULLS LAST
+         LIMIT 1
+    """, (school_id,), as_dict=True)
+    return rows[0].get("model") if rows else ""
 
 
 def _canonicalize_phone(value: object) -> str | None:

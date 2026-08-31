@@ -103,6 +103,7 @@ def _build_teacher_glific_fields(teacher_doc, school_meta, school_id):
 
 def _build_student_glific_fields(student_doc, school_meta, school_id):
     return {
+        "student_id": getattr(student_doc, "name", "") or "",
         "school_id": school_id,
         "school": school_id,
         "state": school_meta["state_name"],
@@ -134,6 +135,7 @@ def _ensure_glific_registration_fields():
         return
 
     required_fields = (
+        ("student_id", "student_id"),
         ("school_id", "School ID"),
         ("school", "School"),
         ("state", "State"),

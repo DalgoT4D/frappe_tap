@@ -1,4 +1,5 @@
 import csv
+import json
 import sys
 import types
 import unittest
@@ -251,6 +252,176 @@ class TestStudentSheetRegistrationEnrollmentSelection(unittest.TestCase):
         self.assertIn("School Batch Enrollment not found on or before", error)
 
 
+class TestStudentSheetRegistrationCourseMapping(unittest.TestCase):
+    def test_missing_grade_mapping_copies_nearest_lower_grade_and_persists(self):
+        enrollment = SimpleNamespace(
+            name="SBE-001",
+            grades_courses={
+                "10": "Financial Literacy",
+                "3": "Arts",
+                "4": "Arts",
+                "5": "Science Lab",
+                "6": "Financial Literacy",
+                "7": "Coding",
+                "8": "Science Lab",
+                "9": "Coding",
+            },
+        )
+
+        with patch.object(
+            student_sheet_registration.frappe.db,
+            "get_value",
+            return_value="CV-FL",
+        ), patch.object(
+            student_sheet_registration.frappe.db,
+            "set_value",
+        ) as set_value:
+            result = student_sheet_registration._get_course_from_school_enrollment(
+                enrollment,
+                "12",
+            )
+
+        saved_mapping = json.loads(enrollment.grades_courses)
+        self.assertEqual(result["course_names"], ["Financial Literacy"])
+        self.assertEqual(result["course_vertical"], "CV-FL")
+        self.assertEqual(saved_mapping["12"], "Financial Literacy")
+        self.assertEqual(list(saved_mapping), ["10", "12", "3", "4", "5", "6", "7", "8", "9"])
+        set_value.assert_called_once_with(
+            "School Batch Enrollment",
+            "SBE-001",
+            "grades_courses",
+            enrollment.grades_courses,
+            update_modified=False,
+        )
+
+    def test_missing_grade_mapping_prefers_grade_11_over_grade_10(self):
+        enrollment = SimpleNamespace(
+            name="SBE-002",
+            grades_courses={
+                "10": "Financial Literacy",
+                "11": "Coding",
+            },
+        )
+
+        with patch.object(
+            student_sheet_registration.frappe.db,
+            "get_value",
+            return_value="CV-CODING",
+        ), patch.object(
+            student_sheet_registration.frappe.db,
+            "set_value",
+        ):
+            result = student_sheet_registration._get_course_from_school_enrollment(
+                enrollment,
+                "12",
+            )
+
+        saved_mapping = json.loads(enrollment.grades_courses)
+        self.assertEqual(result["course_names"], ["Coding"])
+        self.assertEqual(result["course_vertical"], "CV-CODING")
+        self.assertEqual(saved_mapping["12"], "Coding")
+
+    def test_multiple_course_options_leave_course_vertical_blank(self):
+        enrollment = SimpleNamespace(
+            name="SBE-003",
+            grades_courses={
+                "8": ["Coding", "Science Lab"],
+            },
+        )
+
+        result = student_sheet_registration._get_course_from_school_enrollment(
+            enrollment,
+            "8",
+        )
+
+        self.assertEqual(result["course_names"], ["Coding", "Science Lab"])
+        self.assertEqual(result["course_vertical"], "")
+
+
+class TestStudentSheetRegistrationGlificContactRow(unittest.TestCase):
+    def test_model_falls_back_to_school_batch_enrollment_when_course_blank(self):
+        def get_value(doctype, name_or_filters=None, fieldname=None):
+            if doctype == "School" and fieldname == "state":
+                return "STATE-001"
+            if doctype == "State" and fieldname == "state_name":
+                return "Delhi"
+            if doctype == "School" and fieldname == "model":
+                return ""
+            if doctype == "Tap Models" and fieldname == "mname":
+                return "Batch Enrolment Model"
+            if doctype == "Batch" and fieldname == "batch_id":
+                return "BT27"
+            return ""
+
+        row = {
+            "student_name": "Student One",
+            "phone": "919876543210",
+            "language": "English",
+            "school_id": "SC00002099",
+            "batch": "BT00000027",
+            "course_vertical": "",
+            "grade": "12",
+            "level": "Level 4",
+            "student_id": "ST00000001",
+        }
+
+        with patch.object(
+            student_sheet_registration.frappe.db,
+            "get_value",
+            side_effect=get_value,
+        ), patch.object(
+            student_sheet_registration.frappe.db,
+            "sql",
+            return_value=[{"model": "MODEL-001"}],
+        ):
+            contact_row = student_sheet_registration._glific_contact_row(row)
+
+        self.assertEqual(contact_row["model"], "Batch Enrolment Model")
+        self.assertEqual(contact_row["course"], "")
+
+    def test_model_uses_selected_enrollment_when_multiple_courses_leave_course_blank(self):
+        def get_value(doctype, name_or_filters=None, fieldname=None):
+            if doctype == "School" and fieldname == "state":
+                return "STATE-001"
+            if doctype == "State" and fieldname == "state_name":
+                return "Delhi"
+            if doctype == "School" and fieldname == "model":
+                return ""
+            if doctype == "Tap Models" and fieldname == "mname":
+                return "Selected Enrolment Model"
+            if doctype == "Batch" and fieldname == "batch_id":
+                return "BT27"
+            return ""
+
+        row = {
+            "student_name": "Student One",
+            "phone": "919876543210",
+            "language": "English",
+            "school_id": "SC00002099",
+            "batch": "BT00000027",
+            "course_vertical": "",
+            "course_names": ["Coding", "Science Lab"],
+            "model_id": "MODEL-SELECTED",
+            "grade": "8",
+            "level": "Level 2",
+            "student_id": "ST00000001",
+        }
+
+        with patch.object(
+            student_sheet_registration.frappe.db,
+            "get_value",
+            side_effect=get_value,
+        ), patch.object(
+            student_sheet_registration.frappe.db,
+            "sql",
+        ) as sql:
+            contact_row = student_sheet_registration._glific_contact_row(row)
+
+        self.assertEqual(contact_row["model"], "Selected Enrolment Model")
+        self.assertEqual(contact_row["course"], "")
+        sql.assert_not_called()
+
+
 class TestStudentSheetRegistrationProcessStatus(unittest.TestCase):
     def test_duplicate_rows_are_complete_process_status(self):
         self.assertEqual(
@@ -314,6 +485,40 @@ class TestStudentSheetRegistrationNotDoneCsv(unittest.TestCase):
         )
         self.assertEqual(upload.call_args.kwargs["content_type"], "text/csv")
 
+    def test_failure_csvs_split_duplicate_phone_numbers_from_other_failures(self):
+        with patch.object(
+            student_sheet_registration.frappe.utils,
+            "now_datetime",
+            return_value=datetime(2026, 8, 21, 12, 30, 0),
+        ), patch.object(
+            student_sheet_registration,
+            "_upload_bytes_to_gcs",
+            side_effect=[
+                "https://example.com/duplicates.csv",
+                "https://example.com/other.csv",
+            ],
+        ) as upload:
+            file_urls = student_sheet_registration._create_and_upload_failure_csvs([
+                {"message": "Duplicate contact_phone_number already registered"},
+                {"message": "Invalid grade"},
+            ])
+
+        self.assertEqual(
+            file_urls["duplicate_phone_numbers_file_url"],
+            "https://example.com/duplicates.csv",
+        )
+        self.assertEqual(file_urls["other_failures_file_url"], "https://example.com/other.csv")
+        self.assertEqual(
+            upload.call_args_list[0].args[1],
+            "student-sheet-registration/not-done/duplicate-phone-numbers/"
+            "student_sheet_registration_duplicate_phone_numbers_20260821_123000.csv",
+        )
+        self.assertEqual(
+            upload.call_args_list[1].args[1],
+            "student-sheet-registration/not-done/other-failures/"
+            "student_sheet_registration_other_failures_20260821_123000.csv",
+        )
+
 
 class TestStudentSheetRegistrationCronCounts(unittest.TestCase):
     def test_duplicate_rows_have_separate_count(self):
@@ -341,6 +546,35 @@ class TestStudentSheetRegistrationCronCounts(unittest.TestCase):
         self.assertEqual(
             updates["not_done_rows_file_url"],
             "https://example.com/not-done.csv",
+        )
+
+    def test_cron_log_file_fields_use_explicit_glific_url(self):
+        fields = student_sheet_registration_job._cron_log_file_fields({
+            "glific_contact_file_url": "https://example.com/glific.csv",
+            "not_done_rows_file_url": "https://example.com/not-done.csv",
+            "duplicate_phone_numbers_file_url": "https://example.com/duplicates.csv",
+            "other_failures_file_url": "https://example.com/other.csv",
+        })
+
+        self.assertEqual(fields["glific_contact_file_url"], "https://example.com/glific.csv")
+        self.assertEqual(fields["not_done_rows_file_url"], "https://example.com/not-done.csv")
+        self.assertEqual(
+            fields["duplicate_phone_numbers_file_url"],
+            "https://example.com/duplicates.csv",
+        )
+        self.assertEqual(fields["other_failures_file_url"], "https://example.com/other.csv")
+
+    def test_cron_log_file_fields_fallback_to_glific_contact_files(self):
+        fields = student_sheet_registration_job._cron_log_file_fields({
+            "glific_contact_files": [
+                {"file_path": "https://example.com/glific-1.csv"},
+                {"file_path": "https://example.com/glific-2.csv"},
+            ],
+        })
+
+        self.assertEqual(
+            fields["glific_contact_file_url"],
+            "https://example.com/glific-1.csv\nhttps://example.com/glific-2.csv",
         )
 
 

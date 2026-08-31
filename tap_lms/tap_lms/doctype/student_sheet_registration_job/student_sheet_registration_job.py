@@ -116,6 +116,36 @@ def _cron_log_counts(summary: dict) -> dict:
     }
 
 
+def _cron_log_file_fields(summary: dict) -> dict:
+    return {
+        "glific_contact_file_url": _glific_contact_file_url(summary),
+        "not_done_rows_file_url": str(summary.get("not_done_rows_file_url") or ""),
+        "duplicate_phone_numbers_file_url": str(
+            summary.get("duplicate_phone_numbers_file_url") or ""
+        ),
+        "other_failures_file_url": str(summary.get("other_failures_file_url") or ""),
+    }
+
+
+def _glific_contact_file_url(summary: dict) -> str:
+    explicit_url = str(summary.get("glific_contact_file_url") or "").strip()
+    if explicit_url:
+        return explicit_url
+
+    files = summary.get("glific_contact_files") or []
+    if not isinstance(files, list):
+        return ""
+
+    urls = []
+    for file_row in files:
+        if not isinstance(file_row, dict):
+            continue
+        file_url = str(file_row.get("file_path") or file_row.get("file_url") or "").strip()
+        if file_url:
+            urls.append(file_url)
+    return "\n".join(urls)
+
+
 def _complete_cron_log(logname: str, status: str, summary: dict, last_error: str = "") -> None:
     if not logname:
         return
@@ -126,6 +156,7 @@ def _complete_cron_log(logname: str, status: str, summary: dict, last_error: str
         last_error=last_error,
         summary_json=json.dumps(summary or {}, indent=2, sort_keys=True),
         **_cron_log_counts(summary or {}),
+        **_cron_log_file_fields(summary or {}),
     )
 
 

@@ -547,6 +547,7 @@ def _create_and_upload_glific_contact_csvs(tab_names: list[str]) -> list[dict]:
             x.source_priority,
             x.row_in_tab,
             COALESCE(x.existed_before_import, false) AS existed_before_import,
+            COALESCE(x.student_id, '') AS student_id,
             COALESCE(s.name1, '') AS name,
             COALESCE(s.phone, '') AS phone,
             COALESCE(lang.language_name, '') AS language,

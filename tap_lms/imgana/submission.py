@@ -512,7 +512,7 @@ def enqueue_submission(submission_id, retry_count=0):
             )
 
 
-@frappe.whitelist()
+@frappe.whitelist(allow_guest=True)
 def get_assignment_context(assignment_id, student_id=None):
     """Get complete assignment context for RAG service"""
     try:

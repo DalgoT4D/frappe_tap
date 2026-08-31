@@ -72,6 +72,7 @@ class TestRegistrationGlificSyncFields(unittest.TestCase):
 
     def test_student_fields_include_school_and_school_id_and_mapped_level(self):
         student = FakeDoc(
+            name="ST00000001",
             name1="Student One",
             grade="5",
             enrollment=[
@@ -94,6 +95,7 @@ class TestRegistrationGlificSyncFields(unittest.TestCase):
                 "SCH-002",
             )
 
+        self.assertEqual(fields["student_id"], "ST00000001")
         self.assertEqual(fields["school_id"], "SCH-002")
         self.assertEqual(fields["school"], "SCH-002")
         self.assertEqual(fields["grade"], "8")
@@ -117,6 +119,7 @@ class TestRegistrationGlificSyncFields(unittest.TestCase):
             ]
             self.assertIn("school_id", shortcodes)
             self.assertIn("school", shortcodes)
+            self.assertIn("student_id", shortcodes)
             self.assertIn("level", shortcodes)
         finally:
             glific_sync._SCRATCH_REGISTRATION_FIELDS_BOOTSTRAPPED = original_bootstrapped
