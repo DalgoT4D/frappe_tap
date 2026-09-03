@@ -14,8 +14,7 @@ Authorization = "token "
 API_KEY = ""
 
 PHONE_NUMBER = ""
-FIRST_NAME = "API"
-LAST_NAME = "Teacher"   
+TEACHER_NAME = "API Teacher"
 GENDER = "Female"
 ROLE = "Teacher"
 LANGUAGE = "English"
@@ -183,8 +182,7 @@ class TestTeacherRegistrationAPI(unittest.TestCase):
             "create_teacher_web",
             {
                 "api_key": API_KEY,
-                "firstName": FIRST_NAME,
-                "lastName": LAST_NAME,
+                "name": TEACHER_NAME,
                 "gender": GENDER,
                 "phone": PHONE_NUMBER,
                 "role": ROLE,
@@ -255,8 +253,7 @@ class TestTeacherRegistrationAPI(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200, data)
         self.assertIsInstance(data, dict)
-        self.assertEqual(data["firstName"], FIRST_NAME)
-        self.assertEqual(data["lastName"], LAST_NAME)
+        self.assertEqual(data["name"], TEACHER_NAME)
         self.assert_phone_matches(data["phone"])
         self.assertIn("state", data)
         self.assertIn("district", data)
@@ -275,8 +272,7 @@ class TestTeacherRegistrationAPI(unittest.TestCase):
             "update_teacher_details",
             {
                 "phone": PHONE_NUMBER,
-                "firstName": FIRST_NAME,
-                "lastName": LAST_NAME,
+                "name": TEACHER_NAME,
                 "role": ROLE,
                 "language": LANGUAGE,
                 "school": self._resolve_school_option(),

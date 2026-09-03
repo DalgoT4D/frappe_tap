@@ -5,22 +5,51 @@ from urllib.parse import urlparse
 import frappe
 
 
-GLIFIC_FEEDBACK_FLOW_ID = "41749"
+GLIFIC_FEEDBACK_FLOW_ID = "34108"
 FEEDBACK_PIPELINE_MAX_RETRIES = 5
-FEEDBACK_PIPELINE_RETRY_LOG_TITLE = "Feedback Pipeline Retry"
-FEEDBACK_PIPELINE_DLQ_LOG_TITLE = "Feedback Pipeline DLQ - manual replay required"
-
-
-def get_rabbitmq_settings():
-    settings = frappe.get_single("RabbitMQ Settings")
-    return {
-        "host": settings.host,
-        "port": int(settings.port),
-        "virtual_host": settings.virtual_host,
-        "username": settings.username,
-        "password": settings.get_password("password"),
-        "queue": settings.submission_queue,
-    }
+FEEDBACK_PIPELINE_RETRY_LOG_TITLE = "Demo Feedback Pipeline Retry"
+FEEDBACK_PIPELINE_DLQ_LOG_TITLE = "Demo Feedback Pipeline DLQ - manual replay required"
+DEMO_GLIFIC_COMMENT_SOURCE = "demo_submission"
+DEMO_GLIFIC_COMMENT_TYPE = "feedback_glific_contact"
+DEMO_STUDENT_BY_LANGUAGE = {
+    "english": "ST00034562",
+    "hindi": "ST00055893",
+    "marathi": "ST00388465",
+    "punjabi": "ST00223226",
+    "kannada": "ST00223225",
+}
+DEMO_STUDENT_PAYLOAD_DETAILS = {
+    "ST00034562": {
+        "student_id": "ST00034562",
+        "grade": 5,
+        "level": 2,
+        "language": "English",
+    },
+    "ST00055893": {
+        "student_id": "ST00055893",
+        "grade": 5,
+        "level": 2,
+        "language": "Hindi",
+    },
+    "ST00388465": {
+        "student_id": "ST00388465",
+        "grade": 5,
+        "level": 2,
+        "language": "Marathi",
+    },
+    "ST00223226": {
+        "student_id": "ST00223226",
+        "grade": 5,
+        "level": 2,
+        "language": "Punjabi",
+    },
+    "ST00223225": {
+        "student_id": "ST00223225",
+        "grade": 5,
+        "level": 2,
+        "language": "Kannada",
+    },
+}
 
 
 def _normalize_unicode_surrogates(value):
@@ -70,27 +99,32 @@ def _set_if_field(doc, fieldname, value):
         setattr(doc, fieldname, value)
 
 
-def _resolve_student_language(student_id):
-    language = frappe.db.get_value("Student", student_id, "language")
-    return _normalize_required_text(language, "Student language")
-
-
 def _get_student_payload_details(student_id):
-    try:
-        student = frappe.get_doc("Student", student_id)
-        return {
-            "student_id": student.name,
-            "grade": student.grade,
-            "level": student.level,
-            "language": student.language,
-        }
-    except frappe.DoesNotExistError:
-        return {
+    return DEMO_STUDENT_PAYLOAD_DETAILS.get(
+        student_id,
+        {
             "student_id": student_id,
             "grade": None,
             "level": None,
             "language": None,
-        }
+        },
+    )
+
+
+def _normalize_language(language):
+    return _normalize_required_text(language, "Language")
+
+
+def _resolve_demo_student_id(language):
+    language_key = language.strip().lower()
+    student_id = DEMO_STUDENT_BY_LANGUAGE.get(language_key)
+    if not student_id:
+        frappe.throw(
+            "Unsupported language. Supported languages: "
+            + ", ".join(sorted(DEMO_STUDENT_BY_LANGUAGE))
+        )
+
+    return student_id
 
 
 def _create_submission(assignment_id, student_id, payload, language):
@@ -112,16 +146,44 @@ def _create_submission(assignment_id, student_id, payload, language):
     submission_doc.insert(ignore_permissions=True)
     submission_doc._raw_submission = payload["raw_submission"]
     frappe.logger("submission").info(
-        f"Created Submission: submission_id={submission_doc.name}, "
+        f"Created demo Submission: submission_id={submission_doc.name}, "
         f"assignment_id={assignment_id}, student_id={student_id}, "
         f"language={language}, status={submission_doc.status}"
     )
     return submission_doc
 
 
+def _add_demo_glific_id_comment(submission_doc, glific_id):
+    content = json.dumps(
+        {
+            "source": DEMO_GLIFIC_COMMENT_SOURCE,
+            "type": DEMO_GLIFIC_COMMENT_TYPE,
+            "glific_id": glific_id,
+            "student_id": submission_doc.student_id,
+            "assignment_id": submission_doc.assign_id,
+        },
+        sort_keys=True,
+    )
+    comment_doc = frappe.get_doc(
+        {
+            "doctype": "Comment",
+            "comment_type": "Comment",
+            "reference_doctype": "Submission",
+            "reference_name": submission_doc.name,
+            "content": content,
+        }
+    )
+    comment_doc.insert(ignore_permissions=True)
+    frappe.logger("submission").info(
+        f"Stored demo Glific ID comment: submission_id={submission_doc.name}, "
+        f"student_id={submission_doc.student_id}, comment_id={comment_doc.name}"
+    )
+    return comment_doc
+
+
 def _queue_submission_processing(submission_doc):
     job = frappe.enqueue(
-        "tap_lms.imgana.submission.process_submission_async",
+        "tap_lms.imgana.demo_submission.process_submission_async",
         queue="long",
         timeout=600,
         enqueue_after_commit=True,
@@ -129,13 +191,13 @@ def _queue_submission_processing(submission_doc):
         raw_submission=getattr(submission_doc, "_raw_submission", None),
     )
     frappe.logger("submission").info(
-        f"Registered submission processing job after commit: "
+        f"Registered demo submission processing job after commit: "
         f"submission_id={submission_doc.name}, student_id={submission_doc.student_id}, "
         f"queue=long, job_id={getattr(job, 'id', None)}"
     )
 
 
-def _build_submission_response(submission_doc):
+def _build_submission_response(submission_doc, glific_id):
     return {
         "success": True,
         "status": "accepted",
@@ -143,34 +205,37 @@ def _build_submission_response(submission_doc):
         "submission_id": submission_doc.name,
         "assignment_id": submission_doc.assign_id,
         "student_id": submission_doc.student_id,
+        "glific_id": glific_id,
     }
 
 
 @frappe.whitelist(allow_guest=True)
-def submit_artwork(assignment_id, student_id, submission):
+def submit_artwork(assignment_id, glific_id, submission, language):
     """
-    Create a regular student Submission and publish it to the RabbitMQ feedback
-    pipeline. Language is resolved from the Student record.
+    Create a demo Submission for the language-specific demo Student and publish
+    it to the RabbitMQ feedback pipeline. This endpoint intentionally does not
+    inspect enrollment state.
     """
     try:
         assignment_id = _normalize_unicode_surrogates(
             _normalize_required_text(assignment_id, "Assignment ID")
         )
-        student_id = _normalize_unicode_surrogates(
-            _normalize_required_text(student_id, "Student ID")
-        )
+        glific_id = _normalize_required_text(glific_id, "Glific ID")
+        language = _normalize_language(language)
+        student_id = _resolve_demo_student_id(language)
         raw_submission = str(submission or "")
 
         frappe.logger("submission").info(
-            f"submit_artwork received: assignment_id={assignment_id}, "
-            f"student_id={student_id}, submission_chars={len(raw_submission)}, "
+            f"Demo submit_artwork received: assignment_id={assignment_id}, "
+            f"student_id={student_id}, glific_id={glific_id}, language={language}, "
+            f"submission_chars={len(raw_submission)}, "
             f"submission_is_url={_looks_like_url(raw_submission) if raw_submission.strip() else False}"
         )
 
         if not frappe.db.exists("Assignment", assignment_id):
             frappe.logger("submission").warning(
-                f"submit_artwork rejected: assignment not found, "
-                f"assignment_id={assignment_id}, student_id={student_id}"
+                f"Demo submit_artwork rejected: assignment not found, "
+                f"assignment_id={assignment_id}, glific_id={glific_id}"
             )
             frappe.local.response.update(
                 {
@@ -181,21 +246,6 @@ def submit_artwork(assignment_id, student_id, submission):
             )
             return
 
-        if not frappe.db.exists("Student", student_id):
-            frappe.logger("submission").warning(
-                f"submit_artwork rejected: student not found, "
-                f"assignment_id={assignment_id}, student_id={student_id}"
-            )
-            frappe.local.response.update(
-                {
-                    "success": False,
-                    "status": "not_found",
-                    "error_detail": f"Student {student_id} not found",
-                }
-            )
-            return
-
-        language = _resolve_student_language(student_id)
         payload = _normalize_submission_payload(submission)
         submission_doc = _create_submission(
             assignment_id,
@@ -203,20 +253,21 @@ def submit_artwork(assignment_id, student_id, submission):
             payload,
             language,
         )
+        _add_demo_glific_id_comment(submission_doc, glific_id)
         _queue_submission_processing(submission_doc)
         frappe.db.commit()
         frappe.logger("submission").info(
-            f"submit_artwork committed: submission_id={submission_doc.name}, "
+            f"Demo submit_artwork committed: submission_id={submission_doc.name}, "
             f"assignment_id={assignment_id}, student_id={student_id}, "
-            f"language={language}"
+            f"glific_id={glific_id}, language={language}"
         )
 
-        return _build_submission_response(submission_doc)
+        return _build_submission_response(submission_doc, glific_id)
     except frappe.ValidationError as exc:
         frappe.db.rollback()
         frappe.logger("submission").warning(
-            f"submit_artwork validation error: assignment_id={assignment_id}, "
-            f"student_id={student_id}, error={str(exc)}"
+            f"Demo submit_artwork validation error: assignment_id={assignment_id}, "
+            f"glific_id={glific_id}, error={str(exc)}"
         )
         frappe.local.response.update(
             {
@@ -230,8 +281,8 @@ def submit_artwork(assignment_id, student_id, submission):
         frappe.db.rollback()
         frappe.log_error(
             f"submit_artwork failed for assignment_id={assignment_id}, "
-            f"student_id={student_id}: {type(exc).__name__}: {exc}",
-            "Submit Artwork",
+            f"glific_id={glific_id}: {type(exc).__name__}: {exc}",
+            "Demo Submit Artwork",
         )
         frappe.local.response.update(
             {
@@ -246,7 +297,7 @@ def submit_artwork(assignment_id, student_id, submission):
 @frappe.whitelist(allow_guest=True)
 def submission_feedback(submission_id):
     """
-    API endpoint to get feedback for a regular submission.
+    API endpoint to get feedback for a demo submission.
     """
     try:
         submission = frappe.get_doc("Submission", submission_id)
@@ -266,22 +317,22 @@ def submission_feedback(submission_id):
 
     except Exception as exc:
         frappe.log_error(
-            f"Error checking submission status: {str(exc)}",
-            "Submission Status Error",
+            f"Error checking demo submission status: {str(exc)}",
+            "Demo Submission Status Error",
         )
         return {"error": "An error occurred while checking submission status"}
 
 
 def process_submission_async(submission_id, raw_submission=None, submission_url=None):
     """
-    Normalize the raw submission, upload URL media to GCS, then publish the
+    Normalize the raw demo submission, upload URL media to GCS, then publish the
     normalized Submission payload to RabbitMQ for feedback generation.
     """
     try:
         submission_doc = frappe.get_doc("Submission", submission_id)
         raw_submission = (raw_submission or submission_url or "").strip()
         frappe.logger("submission").info(
-            f"Async processing started: submission_id={submission_id}, "
+            f"Demo async processing started: submission_id={submission_id}, "
             f"assignment_id={submission_doc.assign_id}, student_id={submission_doc.student_id}, "
             f"raw_submission_chars={len(raw_submission)}, raw_submission_is_url={_looks_like_url(raw_submission) if raw_submission else False}"
         )
@@ -292,7 +343,7 @@ def process_submission_async(submission_id, raw_submission=None, submission_url=
 
             media_type = detect_url_media_type(raw_submission, default="image")
             frappe.logger("submission").info(
-                f"Async media detected: submission_id={submission_id}, media_type={media_type}"
+                f"Demo async media detected: submission_id={submission_id}, media_type={media_type}"
             )
             uploaded_url = upload_to_gcs(
                 raw_submission,
@@ -300,7 +351,7 @@ def process_submission_async(submission_id, raw_submission=None, submission_url=
                 media_type=media_type,
             )
             frappe.logger("submission").info(
-                f"Async media uploaded to GCS: submission_id={submission_id}, "
+                f"Demo async media uploaded to GCS: submission_id={submission_id}, "
                 f"media_type={media_type}, uploaded_url={uploaded_url}"
             )
             submission_doc.submission_type = media_type
@@ -311,7 +362,7 @@ def process_submission_async(submission_id, raw_submission=None, submission_url=
                 "emoji" if _contains_only_emoji(raw_submission) else "text"
             )
             frappe.logger("submission").info(
-                f"Async text normalized: submission_id={submission_id}, "
+                f"Demo async text normalized: submission_id={submission_id}, "
                 f"submission_type={submission_doc.submission_type}"
             )
             submission_doc.submission_text = raw_submission
@@ -324,7 +375,7 @@ def process_submission_async(submission_id, raw_submission=None, submission_url=
         submission_doc.save(ignore_permissions=True)
         frappe.db.commit()
         frappe.logger("submission").info(
-            f"Async processing saved: submission_id={submission_id}, "
+            f"Demo async processing saved: submission_id={submission_id}, "
             f"status={submission_doc.status}, submission_type={submission_doc.submission_type}"
         )
 
@@ -332,9 +383,9 @@ def process_submission_async(submission_id, raw_submission=None, submission_url=
     except Exception as exc:
         frappe.db.rollback()
         frappe.log_error(
-            f"Error in background processing for submission "
+            f"Error in demo background processing for submission "
             f"{submission_id}: {str(exc)}",
-            "process_submission_async",
+            "Demo process_submission_async",
         )
 
         try:
@@ -345,9 +396,9 @@ def process_submission_async(submission_id, raw_submission=None, submission_url=
             frappe.db.commit()
         except Exception as log_error:
             frappe.log_error(
-                f"Failed to update submission {submission_id} after "
+                f"Failed to update demo submission {submission_id} after "
                 f"background error: {str(log_error)}",
-                "process_submission_async",
+                "Demo process_submission_async",
             )
 
         raise
@@ -356,10 +407,11 @@ def process_submission_async(submission_id, raw_submission=None, submission_url=
 def enqueue_submission(submission_id, retry_count=0):
     try:
         import pika
+        from tap_lms.imgana.submission import get_rabbitmq_settings
 
         submission_doc = frappe.get_doc("Submission", submission_id)
         frappe.logger("submission").info(
-            f"RabbitMQ enqueue started: submission_id={submission_id}, "
+            f"Demo RabbitMQ enqueue started: submission_id={submission_id}, "
             f"student_id={submission_doc.student_id}, "
             f"retry_count={retry_count or 0}"
         )
@@ -372,11 +424,12 @@ def enqueue_submission(submission_id, retry_count=0):
             "submission_url": submission_doc.submission_url,
             "is_primary": getattr(submission_doc, "is_primary", 1),
             "created_at": str(getattr(submission_doc, "created_at", submission_doc.creation)),
+            "source": "demo_submission",
         }
 
         rabbitmq_config = get_rabbitmq_settings()
         frappe.logger("submission").info(
-            f"RabbitMQ settings loaded: submission_id={submission_id}, "
+            f"Demo RabbitMQ settings loaded: submission_id={submission_id}, "
             f"host={rabbitmq_config['host']}, port={rabbitmq_config['port']}, "
             f"virtual_host={rabbitmq_config['virtual_host']}, queue={rabbitmq_config['queue']}"
         )
@@ -396,14 +449,14 @@ def enqueue_submission(submission_id, retry_count=0):
         try:
             connection = pika.BlockingConnection(parameters)
             frappe.logger("submission").info(
-                f"RabbitMQ connected: submission_id={submission_id}, "
+                f"Demo RabbitMQ connected: submission_id={submission_id}, "
                 f"queue={rabbitmq_config['queue']}"
             )
             channel = connection.channel()
             channel.confirm_delivery()
             channel.queue_declare(queue=rabbitmq_config["queue"], durable=True)
             frappe.logger("submission").info(
-                f"RabbitMQ queue declared: submission_id={submission_id}, "
+                f"Demo RabbitMQ queue declared: submission_id={submission_id}, "
                 f"queue={rabbitmq_config['queue']}"
             )
             channel.basic_publish(
@@ -423,18 +476,18 @@ def enqueue_submission(submission_id, retry_count=0):
                     connection.close()
                 except Exception as close_err:
                     frappe.logger("submission").warning(
-                        f"RabbitMQ close failed for submission {submission_id} "
+                        f"RabbitMQ close failed for demo submission {submission_id} "
                         f"(publish_succeeded={publish_succeeded}): {close_err}"
                     )
 
         if publish_succeeded:
             frappe.logger("submission").info(
-                f"RabbitMQ publish succeeded: submission_id={submission_id}, "
+                f"Demo RabbitMQ publish succeeded: submission_id={submission_id}, "
                 f"queue={rabbitmq_config['queue']}, submission_type={submission_doc.submission_type}"
             )
     except Exception as exc:
         frappe.logger("submission").error(
-            f"Failed to enqueue submission {submission_id}: {str(exc)}"
+            f"Failed to enqueue demo submission {submission_id}: {str(exc)}"
         )
         retry_count = (retry_count or 0) + 1
         student_id = ""
@@ -446,14 +499,14 @@ def enqueue_submission(submission_id, retry_count=0):
 
         if retry_count <= FEEDBACK_PIPELINE_MAX_RETRIES:
             frappe.logger("submission").warning(
-                f"RabbitMQ publish will retry: submission_id={submission_id}, "
+                f"Demo RabbitMQ publish will retry: submission_id={submission_id}, "
                 f"student_id={student_id or 'unknown'}, retry_count={retry_count}, "
                 f"error={str(exc)}"
             )
             frappe.log_error(
                 title=FEEDBACK_PIPELINE_RETRY_LOG_TITLE,
                 message=(
-                    f"Feedback pipeline transient failure "
+                    f"Demo feedback pipeline transient failure "
                     f"(attempt {retry_count}/{FEEDBACK_PIPELINE_MAX_RETRIES + 1}) "
                     f"for submission {submission_id} "
                     f"(student_id={student_id or 'unknown'}): {exc}"
@@ -461,19 +514,19 @@ def enqueue_submission(submission_id, retry_count=0):
             )
             try:
                 frappe.enqueue(
-                    "tap_lms.imgana.submission.enqueue_submission",
+                    "tap_lms.imgana.demo_submission.enqueue_submission",
                     queue="default",
                     timeout=120,
                     submission_id=submission_id,
                     retry_count=retry_count,
                 )
                 frappe.logger("submission").info(
-                    f"RabbitMQ retry job queued: submission_id={submission_id}, "
+                    f"Demo RabbitMQ retry job queued: submission_id={submission_id}, "
                     f"retry_count={retry_count}, queue=default"
                 )
             except Exception as enqueue_err:
                 frappe.logger("submission").error(
-                    f"RabbitMQ retry enqueue failed: submission_id={submission_id}, "
+                    f"Demo RabbitMQ retry enqueue failed: submission_id={submission_id}, "
                     f"retry_count={retry_count}, error={str(enqueue_err)}"
                 )
                 frappe.log_error(
@@ -493,7 +546,7 @@ def enqueue_submission(submission_id, retry_count=0):
                 )
         else:
             frappe.logger("submission").error(
-                f"RabbitMQ retry budget exhausted: submission_id={submission_id}, "
+                f"Demo RabbitMQ retry budget exhausted: submission_id={submission_id}, "
                 f"student_id={student_id or 'unknown'}, retries_attempted={retry_count}, "
                 f"error={str(exc)}"
             )
@@ -510,105 +563,3 @@ def enqueue_submission(submission_id, retry_count=0):
                     default=str,
                 ),
             )
-
-
-@frappe.whitelist(allow_guest=True)
-def get_assignment_context(assignment_id, student_id=None):
-    """Get complete assignment context for RAG service"""
-    try:
-        assignment_id = _normalize_unicode_surrogates(assignment_id)
-        assignment = frappe.get_doc("Assignment", assignment_id)
-        images = []
-        for row in assignment.get("reference_images") or []:
-            file_url = row.get("image")
-            if not file_url:
-                continue
-
-            try:
-                file_doc = frappe.get_doc("File", {"file_url": file_url})
-                file_path = file_doc.get_full_path()
-                with open(file_path, "rb") as image_file:
-                    content = base64.b64encode(image_file.read()).decode("utf-8")
-
-                content_type = mimetypes.guess_type(file_doc.file_name or file_url)[0] or "image/jpeg"
-                images.append({
-                    "name": row.get("image_name") or file_doc.file_name,
-                    "content_type": content_type,
-                    "content": content,
-                })
-            except Exception:
-                frappe.log_error(
-                    frappe.get_traceback(),
-                    f"Assignment Context Image Error - {assignment_id}",
-                )
-
-        rubrics = {}
-        for grade in assignment.get("rubric_grades") or []:
-            rubric_key = grade.get("rubric_name") or grade.get("skill_name") or "General"
-            rubrics.setdefault(rubric_key, []).append({
-                "grade_value": grade.get("grade_value"),
-                "grade_name": grade.get("grade_name"),
-                "grade_description": grade.get("grade_description"),
-                "skill_name": grade.get("skill_name"),
-            })
-
-        learning_objectives = []
-        for objective_row in assignment.get("learning_objectives") or []:
-            objective_name = objective_row.get("learning_objective")
-            if not objective_name:
-                continue
-
-            learning_objectives.append({
-                "objective": objective_name,
-                "description": frappe.db.get_value(
-                    "Learning Objective",
-                    objective_name,
-                    "description",
-                ),
-            })
-
-        submission_rules = []
-        for rule in assignment.get("submission_rules") or []:
-            submission_rules.append({
-                "submission_title": rule.get("submission_title"),
-                "allowed_submission_types": [
-                    item.strip()
-                    for item in (rule.get("allowed_submission_types") or "").split(",")
-                    if item.strip()
-                ],
-                "guided_text": rule.get("guided_text"),
-                "unguided_text": rule.get("unguided_text"),
-                "valid_criteria": rule.get("valid_criteria"),
-                "invalid_criteria": rule.get("invalid_criteria"),
-            })
-
-        context = {
-            "assignment": {
-                "name": assignment.get("assignment_name"),
-                "program_name": assignment.get("program_name"),
-                "description": assignment.get("description"),
-                "assignment_type": assignment.get("assignment_type"),
-                "activity_type": assignment.get("activity_type"),
-                "course_vertical": assignment.get("subject"),
-                "difficulty_tier": assignment.get("difficulty_tier"),
-                "submission_guidelines": assignment.get("submission_guidelines"),
-                "submission_rules": submission_rules,
-                "reference_images": images,
-                "max_score": assignment.get("max_score"),
-                "rubrics": rubrics,
-            },
-            "learning_objectives": learning_objectives,
-        }
-
-        # Add custom feedback prompt if enabled
-        if assignment.enable_auto_feedback and assignment.feedback_prompt:
-            context["feedback_prompt"] = assignment.feedback_prompt
-            
-        return context
-        
-    except Exception as e:
-        frappe.log_error(
-            f"Error getting assignment context: {str(e)}",
-            "RAG Context Error"
-        )
-        return None

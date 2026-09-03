@@ -1,7 +1,5 @@
 """
-Tests for FeedbackConsumer.send_glific_notification — specifically that it
-resolves Student.glific_id from the Frappe Student doc name before calling
-Glific's start_contact_flow.
+Tests for FeedbackConsumer.send_glific_notification.
 
 Background (2026-05-19 fix): the RabbitMQ feedback-pipeline payload's
 `student_id` field carries the Frappe Student doc name (e.g. "ST00051238"),
@@ -11,7 +9,9 @@ addresses contacts by their internal numeric contactByPhone-style ID
 (e.g. "13325"). The visible symptom was the generic
 "Something unexpected has happened" error in frappe.log.
 
-The fix resolves Student.glific_id and uses THAT as the contact_id.
+The current rule is prefix-based: values starting with ST are Student IDs and
+must resolve Student.glific_id; all other values are already Glific contact IDs.
+Both branches trigger flow 34108.
 
 Tests in this file:
   1. test_resolves_glific_id_from_student
@@ -20,26 +20,25 @@ Tests in this file:
   2. test_skip_when_student_has_no_glific_id
        If the Student row has no glific_id, send_glific_notification must
        skip cleanly without calling start_contact_flow.
-  3. test_skip_when_no_overall_feedback
-       Negative control — empty feedback means no Glific call.
+  3. test_calls_flow_when_no_overall_feedback
+       Empty overall_feedback still triggers the feedback flow.
+  4. test_direct_glific_id_does_not_resolve_student
+       Non-ST student_id values are passed directly to Glific.
+  5. test_submission_comment_glific_id_overrides_student_glific_id
+       Demo Submission JSON comments override Student.glific_id for routing.
 """
+import json
+from unittest.mock import patch
+
 import frappe
 from frappe.tests.utils import FrappeTestCase
-from unittest.mock import patch, MagicMock
 
-from tap_lms.feedback_handler.feedback_consumer import FeedbackConsumer
-
-
-def _ensure_glific_flow():
-    """Create the 'feedback' Glific Flow row that send_glific_notification reads."""
-    existing = frappe.get_value("Glific Flow", {"label": "feedback"}, "name")
-    if existing:
-        return existing
-    doc = frappe.new_doc("Glific Flow")
-    doc.label = "feedback"
-    doc.flow_id = "test-feedback-flow-id-001"
-    doc.insert(ignore_permissions=True)
-    return doc.name
+from tap_lms.feedback_handler.feedback_consumer import (
+    DEMO_GLIFIC_COMMENT_SOURCE,
+    DEMO_GLIFIC_COMMENT_TYPE,
+    FeedbackConsumer,
+    GLIFIC_FEEDBACK_FLOW_ID,
+)
 
 
 def _ensure_student(suffix, glific_id):
@@ -65,18 +64,6 @@ def _ensure_student(suffix, glific_id):
 class TestFeedbackConsumerGlificResolution(FrappeTestCase):
     """send_glific_notification must address the contact by Glific contact ID,
     NOT by Frappe Student doc name."""
-
-    @classmethod
-    def setUpClass(cls):
-        super().setUpClass()
-        try:
-            _ensure_glific_flow()
-        except Exception:
-            # If Glific Flow doctype doesn't exist on the test site, fall back
-            # to letting the function find None — the no-flow guard skips
-            # gracefully. The point of THIS test is the glific_id resolution
-            # path, not the flow lookup.
-            pass
 
     @patch("tap_lms.feedback_handler.feedback_consumer.start_contact_flow")
     def test_resolves_glific_id_from_student(self, mock_start_flow):
@@ -107,6 +94,7 @@ class TestFeedbackConsumerGlificResolution(FrappeTestCase):
             f"start_contact_flow received contact_id={kwargs.get('contact_id')!r}, "
             f"expected the resolved Glific contact ID {EXPECTED_GLIFIC_ID!r}."
         )
+        self.assertEqual(kwargs.get("flow_id"), GLIFIC_FEEDBACK_FLOW_ID)
         self.assertNotEqual(
             kwargs.get("contact_id"), FRAPPE_STUDENT_ID,
             "start_contact_flow received the Frappe Student doc name as "
@@ -132,9 +120,10 @@ class TestFeedbackConsumerGlificResolution(FrappeTestCase):
         mock_start_flow.assert_not_called()
 
     @patch("tap_lms.feedback_handler.feedback_consumer.start_contact_flow")
-    def test_skip_when_no_overall_feedback(self, mock_start_flow):
-        """Negative control: empty overall_feedback means no Glific call."""
+    def test_calls_flow_when_no_overall_feedback(self, mock_start_flow):
+        """Empty overall_feedback still triggers the configured feedback flow."""
         FRAPPE_STUDENT_ID = _ensure_student("03", "glific-fcg-003")
+        mock_start_flow.return_value = True
 
         consumer = FeedbackConsumer.__new__(FeedbackConsumer)
 
@@ -144,4 +133,60 @@ class TestFeedbackConsumerGlificResolution(FrappeTestCase):
             "feedback": {"overall_feedback": ""},   # empty
         })
 
-        mock_start_flow.assert_not_called()
+        mock_start_flow.assert_called_once()
+        kwargs = mock_start_flow.call_args.kwargs
+        self.assertEqual(kwargs.get("contact_id"), "glific-fcg-003")
+        self.assertEqual(kwargs.get("flow_id"), GLIFIC_FEEDBACK_FLOW_ID)
+        self.assertEqual(kwargs.get("default_results", {}).get("feedback"), "")
+
+    @patch("tap_lms.feedback_handler.feedback_consumer.start_contact_flow")
+    def test_direct_glific_id_does_not_resolve_student(self, mock_start_flow):
+        """A non-ST student_id is already a Glific contact ID."""
+        DIRECT_GLIFIC_ID = "13325"
+        mock_start_flow.return_value = True
+
+        consumer = FeedbackConsumer.__new__(FeedbackConsumer)
+
+        consumer.send_glific_notification({
+            "submission_id": "SUB-FCG-004",
+            "student_id": DIRECT_GLIFIC_ID,
+            "feedback": {"overall_feedback": "Direct contact feedback"},
+        })
+
+        mock_start_flow.assert_called_once()
+        kwargs = mock_start_flow.call_args.kwargs
+        self.assertEqual(kwargs.get("contact_id"), DIRECT_GLIFIC_ID)
+        self.assertEqual(kwargs.get("flow_id"), GLIFIC_FEEDBACK_FLOW_ID)
+
+    @patch("tap_lms.feedback_handler.feedback_consumer.start_contact_flow")
+    def test_submission_comment_glific_id_overrides_student_glific_id(self, mock_start_flow):
+        """Demo submissions store the request Glific ID in a JSON comment."""
+        COMMENT_GLIFIC_ID = "523175"
+        STUDENT_GLIFIC_ID = "student-static-glific-id"
+        FRAPPE_STUDENT_ID = _ensure_student("05", STUDENT_GLIFIC_ID)
+        mock_start_flow.return_value = True
+
+        consumer = FeedbackConsumer.__new__(FeedbackConsumer)
+        comment_content = json.dumps(
+            {
+                "source": DEMO_GLIFIC_COMMENT_SOURCE,
+                "type": DEMO_GLIFIC_COMMENT_TYPE,
+                "glific_id": COMMENT_GLIFIC_ID,
+            }
+        )
+
+        with patch(
+            "tap_lms.feedback_handler.feedback_consumer.frappe.get_all",
+            return_value=[{"name": "COMMENT-FCG-005", "content": comment_content}],
+        ):
+            consumer.send_glific_notification({
+                "submission_id": "SUB-FCG-005",
+                "student_id": FRAPPE_STUDENT_ID,
+                "feedback": {"overall_feedback": "Comment-routed feedback"},
+            })
+
+        mock_start_flow.assert_called_once()
+        kwargs = mock_start_flow.call_args.kwargs
+        self.assertEqual(kwargs.get("contact_id"), COMMENT_GLIFIC_ID)
+        self.assertNotEqual(kwargs.get("contact_id"), STUDENT_GLIFIC_ID)
+        self.assertEqual(kwargs.get("flow_id"), GLIFIC_FEEDBACK_FLOW_ID)

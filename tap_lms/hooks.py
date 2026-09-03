@@ -66,6 +66,7 @@ doc_events = {
 #   - 0 0 * * 1    — auto_advance_batch_week: weekly Monday sweep that bumps
 #                    Batch.current_calendar_week and unblocks max_allowed_week
 #                    on each PE
+#   - 30 20 * * *  — student sheet registration daily run; 20:30 UTC = 02:00 IST
 scheduler_events = {
     "cron": {
         # Teacher submission images: pull gcs_urls from BigQuery and attach them

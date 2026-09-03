@@ -68,6 +68,7 @@
   {
    "fieldname": "phone_number",
    "fieldtype": "Data",
+   "in_standard_filter": 1,
    "label": "Phone Number"
   },
   {
@@ -98,7 +99,7 @@
    "fieldname": "teacher_role",
    "fieldtype": "Select",
    "label": "Teacher Role",
-   "options": "\nPrincipal/ HOS\nNodal Teacher\nTeacher\nGovt Nodal Officer"
+   "options": "\nPrincipal/ HOS\nPrincipal/ School Head\nHead Teacher/Incharge Head Teacher\nNodal Teacher\nTeacher\nGovt Nodal Office\nMentor Teachers\nZonal Coordinators"
   },
   {
    "fieldname": "teacher_batch",

@@ -6,8 +6,8 @@ import requests
 import random
 import string
 import urllib.parse
-from .glific_integration import create_contact, start_contact_flow, get_contact_by_phone, update_contact_fields, add_contact_to_group, create_or_get_teacher_group_for_batch
-from .background_jobs import enqueue_glific_actions
+from ..glific_integration import create_contact, start_contact_flow, get_contact_by_phone, update_contact_fields, add_contact_to_group, create_or_get_teacher_group_for_batch
+from ..background_jobs import enqueue_glific_actions
 
 
 
@@ -2300,3 +2300,197 @@ def search_schools_by_city():
         }
 
 
+#akshay modified for glific chat bot ( Teacher Ativity)
+@frappe.whitelist(allow_guest=True)
+def glific_get_courses():
+    try:
+        # Fetch all courses sorted by vertical_id
+        data = frappe.get_all(
+            "Course Verticals",
+            fields=["name", "name1", "name2", "vertical_id"],
+            order_by="vertical_id asc"
+        )
+
+        # Format: 1. Name / 2. Name
+        lines = []
+        for idx, d in enumerate(data, start=1):
+            lines.append(f"{d.name} ({d.vertical_id})")
+
+        return {
+            "courses_list": "\n".join(lines),
+            "courses": data
+        }
+
+    except Exception as e:
+        frappe.log_error(frappe.get_traceback(), "Glific Get Courses Error")
+        return {"error": str(e)}
+
+
+# your_app/api/glific_webhook.py
+
+import frappe
+import json
+
+@frappe.whitelist(allow_guest=True)
+def glific_list_grades(vertical: str = None):
+
+    # ------------------------------------------------------------------
+    # 1. Input validation
+    # ------------------------------------------------------------------
+    if not vertical:
+        return {"error": "Missing required parameter: vertical"}
+
+    vertical = frappe.utils.strip_html(vertical).strip()
+
+    # ------------------------------------------------------------------
+    # 2. Fetch all Course Levels for this vertical
+    # ------------------------------------------------------------------
+    course_levels = frappe.db.get_all(
+        "Course Level",
+        filters={"vertical": vertical},
+        fields=["name", "stage", "name1"],  # name1 is your display field
+        order_by="name"
+    )
+
+    if not course_levels:
+        return {"results": []}
+
+    results = []
+
+    for cl in course_levels:
+        stage_name = cl.get("stage")
+        if not stage_name:
+            continue
+
+        try:
+            stage = frappe.get_doc("Stage Grades", stage_name)
+        except frappe.DoesNotExistError:
+            continue
+
+        from_grade_raw = stage.from_grade or ""
+        to_grade_raw = stage.to_grade
+
+        # Convert to integers safely
+        try:
+            from_grades = [int(x.strip()) for x in str(from_grade_raw).split(",") if x.strip()]
+            to_grade = int(to_grade_raw) if to_grade_raw else None
+        except (ValueError, TypeError):
+            from_grades = []
+            to_grade = None
+
+        # ------------------------------------------------------------------
+        # Smart Grade Range Logic: Expand 6→8 as 6,7,8
+        # ------------------------------------------------------------------
+        if to_grade is not None and from_grades:
+            # Take the last from_grade as start (common pattern), or first
+            start = from_grades[-1] if from_grades else to_grade
+            end = to_grade
+
+            # If it's a continuous range like 6 to 8 → include all in between
+            if end >= start:
+                expanded_grades = list(range(start, end + 1))
+            else:
+                expanded_grades = from_grades + [to_grade]  # fallback
+        else:
+            expanded_grades = from_grades
+
+        # Remove duplicates and sort
+        expanded_grades = sorted(set(expanded_grades))
+
+        # Build final list of "Grade X"
+        grade_parts = [f"{g}" for g in expanded_grades]
+
+        # Format final string: "Grade 6,7 & 8" or "Grade 6,7 & 10"
+        if len(grade_parts) > 1:
+            grade_range = ", ".join(grade_parts[:-1]) + " & " + grade_parts[-1]
+        elif len(grade_parts) == 1:
+            grade_range = grade_parts[0]
+        else:
+            grade_range = "—"
+
+
+
+        results.append({
+            "label": f"Grade {grade_range}",
+            "value": cl.name1 or cl.name
+        })
+
+    return {"results": results}
+
+@frappe.whitelist(allow_guest=True)
+def get_batch_keywords_by_phone(phone_number):
+    """
+    Get batch keywords for a teacher by phone number
+    Logic:
+    1. Get teacher by phone number
+    2. Get their school_id
+    3. Find batch onboarding records with that school
+    4. Get the latest modified batch onboarding
+    5. Return its keywords
+    """
+    try:
+        if not phone_number:
+            return {
+                "success": False,
+                "message": "Phone number is required"
+            }
+        
+        # Step 1: Get teacher by phone number
+        teachers = frappe.get_all(
+            "Teacher",
+            filters={"phone_number": phone_number},
+            fields=["name", "first_name", "last_name", "school_id", "phone_number"],
+            limit=1
+        )
+        
+        if not teachers:
+            return {
+                "success": False,
+                "message": f"No teacher found with phone number {phone_number}"
+            }
+        
+        teacher = teachers[0]
+        school_id = teacher.school_id
+        
+        if not school_id:
+            return {
+                "success": False,
+                "message": "Teacher does not have a school assigned"
+            }
+        
+        # Step 2 & 3: Get batch onboarding records for this school, ordered by modified date
+        batch_onboarding_records = frappe.get_all(
+            "Batch onboarding",
+            filters={"school": school_id},
+            fields=["name",  "batch_skeyword"],
+            order_by="modified desc",
+            limit=1
+        )
+        
+        if not batch_onboarding_records:
+            return {
+                "success": False,
+                "message": f"No batch onboarding found for school {school_id}"
+            }
+        
+        # Step 4: Get the latest modified batch onboarding
+        latest_batch_onboarding = batch_onboarding_records[0]
+        
+        # Step 5: Return the keywords
+        return {
+            "success": True,
+            "teacher_name": f"{teacher.first_name or ''} {teacher.last_name or ''}".strip(),
+            "phone_number": phone_number,
+            "school_id": school_id,
+            "batch_onboarding_id": latest_batch_onboarding.name,
+            "batch_id": latest_batch_onboarding.batch,
+            "keywords": latest_batch_onboarding.batch_skeyword or "",
+            "modified": latest_batch_onboarding.modified
+        }
+        
+    except Exception as e:
+        frappe.log_error(frappe.get_traceback(), "Get Batch Keywords By Phone Error")
+        return {
+            "success": False,
+            "message": str(e)
+        }

@@ -1,0 +1,220 @@
+{
+ "actions": [],
+ "allow_import": 1,
+ "allow_rename": 1,
+ "autoname": "format:SSRC-{#####}",
+ "creation": "2026-08-18 00:00:00.000000",
+ "default_view": "List",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "run_name",
+  "status",
+  "student_sheet_registration_job",
+  "run_details_section",
+  "started_at",
+  "run_details_column_break",
+  "completed_at",
+  "counts_section",
+  "processed_rows",
+  "counts_column_break_1",
+  "successful_rows",
+  "counts_column_break_2",
+  "duplicate_rows",
+  "counts_column_break_3",
+  "failed_rows",
+  "files_section",
+  "glific_contact_file_url",
+  "files_column_break",
+  "not_done_rows_file_url",
+  "failure_files_section",
+  "duplicate_phone_numbers_file_url",
+  "failure_files_column_break",
+  "other_failures_file_url",
+  "details_section",
+  "summary_json",
+  "last_error"
+ ],
+ "fields": [
+  {
+   "fieldname": "run_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Run Name",
+   "reqd": 1
+  },
+  {
+   "default": "Started",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Status",
+   "options": "Started\nQueued\nRunning\nCompleted\nFailed\nSkipped",
+   "read_only": 1
+  },
+  {
+   "fieldname": "student_sheet_registration_job",
+   "fieldtype": "Link",
+   "label": "Student Sheet Registration Job",
+   "options": "Student Sheet Registration Job",
+   "read_only": 1
+  },
+  {
+   "fieldname": "run_details_section",
+   "fieldtype": "Section Break",
+   "label": "Run Details"
+  },
+  {
+   "fieldname": "started_at",
+   "fieldtype": "Datetime",
+   "label": "Started At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "run_details_column_break",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "completed_at",
+   "fieldtype": "Datetime",
+   "label": "Completed At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "counts_section",
+   "fieldtype": "Section Break",
+   "label": "Counts"
+  },
+  {
+   "default": "0",
+   "fieldname": "processed_rows",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Processed Rows",
+   "read_only": 1
+  },
+  {
+   "fieldname": "counts_column_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "successful_rows",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Successful Rows",
+   "read_only": 1
+  },
+  {
+   "fieldname": "counts_column_break_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "duplicate_rows",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Duplicate Rows",
+   "read_only": 1
+  },
+  {
+   "fieldname": "counts_column_break_3",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "failed_rows",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Failed Rows",
+   "read_only": 1
+  },
+  {
+   "fieldname": "files_section",
+   "fieldtype": "Section Break",
+   "label": "Files"
+  },
+  {
+   "fieldname": "glific_contact_file_url",
+   "fieldtype": "Long Text",
+   "label": "Glific Contact File URL",
+   "read_only": 1
+  },
+  {
+   "fieldname": "files_column_break",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "not_done_rows_file_url",
+   "fieldtype": "Long Text",
+   "label": "Not Done Rows File URL",
+   "read_only": 1
+  },
+  {
+   "fieldname": "failure_files_section",
+   "fieldtype": "Section Break",
+   "label": "Failure Files"
+  },
+  {
+   "fieldname": "duplicate_phone_numbers_file_url",
+   "fieldtype": "Long Text",
+   "label": "Duplicate Phone Numbers File URL",
+   "read_only": 1
+  },
+  {
+   "fieldname": "failure_files_column_break",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "other_failures_file_url",
+   "fieldtype": "Long Text",
+   "label": "Other Failures File URL",
+   "read_only": 1
+  },
+  {
+   "fieldname": "details_section",
+   "fieldtype": "Section Break",
+   "label": "Details"
+  },
+  {
+   "fieldname": "summary_json",
+   "fieldtype": "Long Text",
+   "label": "Summary JSON",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_error",
+   "fieldtype": "Long Text",
+   "label": "Last Error",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-08-18 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Tap Lms",
+ "name": "Student Sheet Registration Cron Log",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "run_name",
+ "track_changes": 1
+}

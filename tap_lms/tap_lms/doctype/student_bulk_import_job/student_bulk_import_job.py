@@ -11,6 +11,10 @@ from frappe.model.document import Document
 from tap_lms.onboarding.bulk_student_registration import run_import
 
 
+STUDENT_BULK_IMPORT_TIMEOUT_SECONDS = 7200
+STUDENT_BULK_IMPORT_STOP_BEFORE_TIMEOUT_SECONDS = 600
+
+
 class StudentBulkImportJob(Document):
     pass
 
@@ -77,6 +81,8 @@ def _update_progress(docname: str, payload: dict) -> None:
         updates["failed_rows"] = int(summary["failed_rows"] or 0)
     if "failed_rows_file_url" in summary:
         updates["failed_rows_file_url"] = str(summary["failed_rows_file_url"] or "")
+    if "remaining_rows" in summary:
+        updates["remaining_rows"] = str(summary["remaining_rows"] or "")
     if payload.get("event") == "completed":
         updates["summary_json"] = json.dumps(summary, indent=2, sort_keys=True)
         updates["elapsed"] = str(summary.get("elapsed") or "")
@@ -97,6 +103,7 @@ def start_student_bulk_import_job(docname: str) -> dict:
         frappe.throw("This student bulk import job is already queued or processing.")
 
     _parse_tab_names(doc.tab_names_json)
+    import_date = frappe.utils.getdate(doc.started_at) if doc.started_at else frappe.utils.today()
 
     _set_job_state(
         docname,
@@ -108,6 +115,7 @@ def start_student_bulk_import_job(docname: str) -> dict:
         effective_rows=0,
         failed_rows=0,
         failed_rows_file_url="",
+        remaining_rows="",
         summary_json="",
         last_error="",
         processing_log={"entries": []},
@@ -118,14 +126,15 @@ def start_student_bulk_import_job(docname: str) -> dict:
     job = frappe.enqueue(
         "tap_lms.tap_lms.doctype.student_bulk_import_job.student_bulk_import_job.run_student_bulk_import_job",
         queue="long",
-        timeout=7200,
+        timeout=STUDENT_BULK_IMPORT_TIMEOUT_SECONDS,
         job_name=f"student_bulk_import_job_{docname}",
         docname=docname,
+        import_date=str(import_date),
     )
     return {"job_id": job.id, "status": "Queued"}
 
 
-def run_student_bulk_import_job(docname: str) -> dict:
+def run_student_bulk_import_job(docname: str, import_date: str | None = None) -> dict:
     doc = frappe.get_doc("Student Bulk Import Job", docname)
     started_at = frappe.utils.now_datetime()
 
@@ -154,6 +163,9 @@ def run_student_bulk_import_job(docname: str) -> dict:
             batch_size=int(doc.batch_size or 100),
             import_user=doc.owner or "Administrator",
             job_name=doc.job_name or doc.name,
+            import_date=import_date,
+            timeout_seconds=STUDENT_BULK_IMPORT_TIMEOUT_SECONDS,
+            stop_before_timeout_seconds=STUDENT_BULK_IMPORT_STOP_BEFORE_TIMEOUT_SECONDS,
             log_fn=log_fn,
             progress_fn=progress_fn,
         )
@@ -164,6 +176,7 @@ def run_student_bulk_import_job(docname: str) -> dict:
             status="Completed",
             completed_at=frappe.utils.now_datetime(),
             elapsed=str(summary.get("elapsed") or ""),
+            remaining_rows=str(summary.get("remaining_rows") or ""),
             summary_json=json.dumps(summary, indent=2, sort_keys=True),
             last_error="",
         )
