@@ -79,20 +79,11 @@ def start_submission():
         doc.insert(ignore_permissions=True)
         frappe.db.commit()
 
-        school_row = (
-            _get_school_row_by_id(teacher.school_id)
-            if teacher and teacher.school_id
-            else None
-        )
 
         _respond(200, {
             "status": "success",
             "submission_id": doc.name,
             "known": bool(teacher),
-            "phone": _phone_for_response(phone),
-            "teacher_name": (teacher.first_name or "").strip() if teacher else "",
-            "school_id": (teacher.school_id or "") if teacher else "",
-            "school_name": school_row["school_name"] if school_row else "",
             "submitted_at": str(doc.submitted_at),
             "image_count": doc.image_count or 0,
         })
@@ -158,8 +149,6 @@ def save_course_grade():
         _respond(200, {
             "status": "success",
             "submission_id": doc.name,
-            "course": doc.course,
-            "grade": doc.grade,
             "submission_status": doc.status,
         })
     except Exception as exc:

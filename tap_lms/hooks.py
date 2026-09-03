@@ -69,11 +69,15 @@ doc_events = {
 scheduler_events = {
     "cron": {
         # Teacher submission images: pull gcs_urls from BigQuery and attach them
-        # to the matching submission. Every 20 minutes so PI sees photos the
-        # same day. The job exits immediately unless BigQuery Settings is
+        # to the matching submission. Runs every night at 2 am. 
+        # The job exits immediately unless BigQuery Settings is
         # enabled, so this is inert until someone turns it on.
-        "*/20 * * * *": [
+        "0 2 * * *": [
             "tap_lms.teacher_bot.bigquery_sync.sync_submission_images",
+        ],
+        "30 20 * * *": [
+            "tap_lms.tap_lms.doctype.student_sheet_registration_job."
+            "student_sheet_registration_job.enqueue_daily_student_sheet_registration",
         ],
     },
     # "daily": [
