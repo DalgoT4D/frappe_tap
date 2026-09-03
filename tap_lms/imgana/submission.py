@@ -5,7 +5,8 @@ from urllib.parse import urlparse
 import frappe
 
 
-GLIFIC_FEEDBACK_FLOW_ID = "41749"
+# GLIFIC_FEEDBACK_FLOW_ID = "41749"
+GLIFIC_FEEDBACK_FLOW_ID = ""
 FEEDBACK_PIPELINE_MAX_RETRIES = 5
 FEEDBACK_PIPELINE_RETRY_LOG_TITLE = "Feedback Pipeline Retry"
 FEEDBACK_PIPELINE_DLQ_LOG_TITLE = "Feedback Pipeline DLQ - manual replay required"
@@ -257,6 +258,7 @@ def submission_feedback(submission_id):
                 "overall_feedback": submission.overall_feedback,
                 "overall_feedback_translated": submission.overall_feedback_translated,
                 "audio_feedback_url": submission.audio_feedback_url,
+                "submission_validity": submission.submission_validity,
             }
 
         return {"status": submission.status}
