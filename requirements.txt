@@ -3,4 +3,4 @@ pika
 elevenlabs
 fuzzywuzzy
 google-cloud-storage
-google-genai
+google-cloud-bigquery

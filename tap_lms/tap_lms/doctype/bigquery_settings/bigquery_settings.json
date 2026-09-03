@@ -1,0 +1,156 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "creation": "2026-08-24 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "enabled",
+  "section_break_conn",
+  "project_id",
+  "messages_table",
+  "media_table",
+  "column_break_conn",
+  "credentials_json",
+  "section_break_tuning",
+  "lookback_days",
+  "match_window_minutes",
+  "batch_limit",
+  "column_break_tuning",
+  "source_timezone",
+  "flow_label_filter",
+  "section_break_run",
+  "last_run_at",
+  "last_run_summary"
+ ],
+ "fields": [
+  {
+   "default": "0",
+   "description": "When unticked the scheduled job exits immediately and does nothing.",
+   "fieldname": "enabled",
+   "fieldtype": "Check",
+   "label": "Enabled"
+  },
+  {
+   "fieldname": "section_break_conn",
+   "fieldtype": "Section Break",
+   "label": "Connection"
+  },
+  {
+   "description": "GCP project, e.g. central-phalanx-297915",
+   "fieldname": "project_id",
+   "fieldtype": "Data",
+   "label": "Project ID"
+  },
+  {
+   "description": "Fully qualified messages table, e.g. central-phalanx-297915.918454812392.messages",
+   "fieldname": "messages_table",
+   "fieldtype": "Data",
+   "label": "Messages Table"
+  },
+  {
+   "description": "Fully qualified media table, e.g. central-phalanx-297915.918454812392.messages_media",
+   "fieldname": "media_table",
+   "fieldtype": "Data",
+   "label": "Messages Media Table"
+  },
+  {
+   "fieldname": "column_break_conn",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Service account key JSON. Needs BigQuery Data Viewer + Job User. Stored encrypted.",
+   "fieldname": "credentials_json",
+   "fieldtype": "Password",
+   "label": "Credentials JSON"
+  },
+  {
+   "fieldname": "section_break_tuning",
+   "fieldtype": "Section Break",
+   "label": "Tuning"
+  },
+  {
+   "default": "2",
+   "description": "How far back to query. Keep small — the job runs often and BigQuery bills per byte scanned.",
+   "fieldname": "lookback_days",
+   "fieldtype": "Int",
+   "label": "Lookback Days"
+  },
+  {
+   "default": "5",
+   "description": "How far forward from the last media message to look for the submission. Set from measured drift, not instinct.",
+   "fieldname": "match_window_minutes",
+   "fieldtype": "Int",
+   "label": "Match Window (minutes)"
+  },
+  {
+   "default": "200",
+   "description": "Maximum submissions processed per run.",
+   "fieldname": "batch_limit",
+   "fieldtype": "Int",
+   "label": "Batch Limit"
+  },
+  {
+   "fieldname": "column_break_tuning",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "UTC",
+   "description": "Timezone of inserted_at in BigQuery. DATETIME carries no timezone, so it must be stated here.",
+   "fieldname": "source_timezone",
+   "fieldtype": "Data",
+   "label": "Source Timezone"
+  },
+  {
+   "default": "%image_capture%",
+   "description": "SQL LIKE pattern matched against the Glific flow label.",
+   "fieldname": "flow_label_filter",
+   "fieldtype": "Data",
+   "label": "Flow Label Filter"
+  },
+  {
+   "fieldname": "section_break_run",
+   "fieldtype": "Section Break",
+   "label": "Last Run"
+  },
+  {
+   "fieldname": "last_run_at",
+   "fieldtype": "Datetime",
+   "label": "Last Run At",
+   "read_only": 1
+  },
+  {
+   "description": "Counts from the most recent run, for spotting a rising number of unmatched rows.",
+   "fieldname": "last_run_summary",
+   "fieldtype": "Small Text",
+   "label": "Last Run Summary",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-08-24 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Tap Lms",
+ "name": "BigQuery Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}
