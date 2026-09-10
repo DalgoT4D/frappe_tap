@@ -206,7 +206,7 @@ class FeedbackProcessor:
         if "Flagged" in plagiarism_status:
             overall_feedback_translated, audio_feedback_url = self._use_stock(plagiarism_status, f"plagiarism status: {plagiarism_status}", translation_language)
         elif "system error" in overall_feedback_translated.lower():
-            overall_feedback_translated, audio_feedback_url = self._use_stock("system_error", "system error in feedback", translation_language)
+            overall_feedback_translated, audio_feedback_url = self._use_stock("resend_unclear_photo", "system error in feedback", translation_language)
         elif "Submission does not match assignment requirements" in overall_feedback_translated.lower():
             overall_feedback_translated, audio_feedback_url = self._use_stock("requirements_mismatch", "requirements mismatch in feedback", translation_language)
 
