@@ -102,6 +102,7 @@ def _create_submission(assignment_id, student_id, payload, language):
     submission_doc.submission_text = payload["submission_text"]
     submission_doc.submission_url = payload["submission_url"]
     submission_doc.status = "Pending"
+    submission_doc.audio_feedback_url = "Null"
 
     now = datetime.now()
     _set_if_field(submission_doc, "feedback_flow_id", GLIFIC_FEEDBACK_FLOW_ID)
