@@ -39,6 +39,7 @@ def get_stock_feedback_and_audio(plagiarism_status: str, translation_language: s
         "Flagged - Reference Plagiarism" : "invalid_submission_reference_plagiarism",
         "system_error": "resend_technical_issue",
         "requirements_mismatch": "invalid_submission_wrong_work",
+        "resend_unclear_photo": "resend_technical_issue",
     }
     print(f"Getting stock feedback for plagiarism status: {plagiarism_status} and language: {translation_language}")
 
@@ -61,7 +62,7 @@ def get_stock_feedback_and_audio(plagiarism_status: str, translation_language: s
         if entry.get("message_type") == message_type:
             return {
                 "translated_feedback": entry.get("translated_feedback"),
-                "audio_feedback_url": entry.get("audio_feedback_url"),
+                "audio_feedback_url": entry.get("stock_audio_feedback_url"),
             }
 
     return {"translated_feedback": None, "audio_feedback_url": None}
@@ -207,7 +208,7 @@ class FeedbackProcessor:
             overall_feedback_translated, audio_feedback_url = self._use_stock(plagiarism_status, f"plagiarism status: {plagiarism_status}", translation_language)
         elif "system error" in overall_feedback_translated.lower():
             overall_feedback_translated, audio_feedback_url = self._use_stock("resend_unclear_photo", "system error in feedback", translation_language)
-        elif "Submission does not match assignment requirements" in overall_feedback_translated.lower():
+        elif "submission does not match assignment requirements" in overall_feedback_translated.lower():
             overall_feedback_translated, audio_feedback_url = self._use_stock("requirements_mismatch", "requirements mismatch in feedback", translation_language)
 
         # Creating TTS for valid submissions and feedback.
@@ -234,7 +235,10 @@ class FeedbackProcessor:
                     f"Failed to generate audio feedback for submission {submission_id}: {str(e)}"
                 )
                 # Continue without audio - don't fail the entire submission update
-                audio_feedback_url = ""
+                audio_feedback_url = "Null"
+
+        if not audio_feedback_url:
+            audio_feedback_url = "Null"
 
         update_data = {
             "status": "Completed",
