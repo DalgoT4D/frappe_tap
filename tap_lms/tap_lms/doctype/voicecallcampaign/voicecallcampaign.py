@@ -424,6 +424,53 @@ class VoiceCallCampaign(Document):
             "message": f"Archived {deleted} queue rows from {len(old_campaigns)} old campaigns.",
         }
 
+
+    @frappe.whitelist()
+    def fetch_recordings(self):
+        """Pull recording URLs from provider for all answered calls in this campaign."""
+        from tap_lms.summer_program.vocallabs import _get_voice_agent_settings, _get_auth_token
+
+        settings = _get_voice_agent_settings()
+        token = _get_auth_token(settings)
+
+        rows = frappe.db.get_all(
+            "VoiceCallHistory",
+            filters={
+                "campaign": self.name,
+                "parenttype": "ProgramEnrollment",
+                "outcome": "answered",
+                "vocallabs_call_id": ["is", "set"],
+                "recording_url": ["is", "not set"],
+            },
+            fields=["name", "vocallabs_call_id"],
+        )
+
+        fetched = 0
+        failed = 0
+
+        for row in rows:
+            try:
+                import requests as _req
+                url = f"{settings.service_url.rstrip('/')}/b2b/vocallabs/getCallRecording/{row.vocallabs_call_id}"
+                resp = _req.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=15)
+                resp.raise_for_status()
+                result = resp.json()
+                recording_url = result.get("recording_url") or result.get("url")
+                duration = result.get("duration_seconds") or result.get("duration")
+                if recording_url:
+                    frappe.db.set_value(
+                        "VoiceCallHistory", row.name,
+                        {"recording_url": recording_url, "duration_seconds": duration or 0},
+                        update_modified=False,
+                    )
+                    fetched += 1
+            except Exception as exc:
+                failed += 1
+                frappe.log_error(title="Didi fetch_recordings", message=f"Call {row.vocallabs_call_id}: {exc}")
+
+        frappe.db.commit()
+        return {"ok": True, "message": f"Fetched {fetched} recordings. Failed: {failed}."}
+
     def _refresh_stats(self):
         counts = {"Pending": 0, "Calling": 0, "Answered": 0,
                   "No Answer": 0, "Failed": 0, "Skipped": 0,

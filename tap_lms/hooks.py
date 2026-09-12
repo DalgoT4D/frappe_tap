@@ -9,36 +9,34 @@ app_description = "Lms system for tap"
 app_email = "tech4dev@gmail.com"
 app_license = "MIT"
 
-before_migrate = "tap_lms.migrate.before_migrate"
-
 
 # Document Events
 doc_events = {
     "School": {
         "before_save": "tap_lms.tap_lms.doctype.school.school.before_save"
     },
-    # "Teacher": {
-    #     "on_update": "tap_lms.glific_webhook.update_glific_contact"
-    # },
-    # "StudentStageProgress": {
-    #     "after_insert": "tap_lms.tap_lms.doctype.studentonboardingprogress.studentonboardingprogress.update_student_progress",
-    #     "on_update": "tap_lms.tap_lms.doctype.studentonboardingprogress.studentonboardingprogress.update_student_progress"
-    # },
+    "Teacher": {
+        "on_update": "tap_lms.glific_webhook.update_glific_contact"
+    },
+    "StudentStageProgress": {
+        "after_insert": "tap_lms.tap_lms.doctype.studentonboardingprogress.studentonboardingprogress.update_student_progress",
+        "on_update": "tap_lms.tap_lms.doctype.studentonboardingprogress.studentonboardingprogress.update_student_progress"
+    },
     # CR-002 v2 gamification (2026-05-13): VideoClass completion via
     # StudentContentLog drives the activity-points handler. The handler also
     # arms the grace clock on the first VideoClass of each week (CR-003
     # follow-up 2: atomic Postgres CASE WHEN on `weekly_video_done`). Without
     # this hook the activity-points pipeline AND the grace clock are dead.
-    # "StudentContentLog": {
-    #     "after_insert": "tap_lms.summer_program.activity_points.handle_content_log"
-    # },
+    "StudentContentLog": {
+        "after_insert": "tap_lms.summer_program.activity_points.handle_content_log"
+    },
     # CR-002 v2 gamification (2026-05-13): quiz attempts award per-question
     # points (correct → q.points; wrong → q.failed_points). The handler is
     # idempotent via `attempt.points_earned` so re-saves of completed
     # attempts are no-ops.
-    # "StudentQuizAttempt": {
-    #     "on_update": "tap_lms.summer_program.quiz_points.handle_attempt_update"
-    # }
+    "StudentQuizAttempt": {
+        "on_update": "tap_lms.summer_program.quiz_points.handle_attempt_update"
+    }
 }
 
 # Scheduled Tasks
@@ -67,100 +65,104 @@ doc_events = {
 #                    Batch.current_calendar_week and unblocks max_allowed_week
 #                    on each PE
 scheduler_events = {
-    # "daily": [
-    #     "tap_lms.tap_lms.page.onboarding_flow_trigger.onboarding_flow_trigger.update_incomplete_stages",
-    #     "tap_lms.summer_program.scheduler.run_daily_actions",
-    #     "tap_lms.summer_program.batch_activation.check_auto_activate",
-    # ],
+    "daily": [
+        "tap_lms.tap_lms.page.onboarding_flow_trigger.onboarding_flow_trigger.update_incomplete_stages",
+        "tap_lms.summer_program.scheduler.run_daily_actions",
+        "tap_lms.summer_program.batch_activation.check_auto_activate",
+    ],
     "cron": {
-    #     "*/1 * * * *": [
-    #         "tap_lms.summer_program.pe_dispatcher.process_program_actions",
-    #     ],
-    #     # Retired 2026-05-21 (task #50): the legacy escalation_runner ran in
-    #     # parallel with pe_dispatcher.handle_escalation (system A, post-CR-003)
-    #     # without gating on canonical PE state. It double-escalated students
-    #     # who already submitted and disagreed with the per-PE escalation
-    #     # counter. The per-PE dispatcher fires escalations correctly when
-    #     # next_action_at + next_action_type='escalation' are armed by T1
-    #     # (content_no_response). escalation_runner.py is preserved as dead
-    #     # code for one release cycle; remove the module after launch.
-    #     # "0 */2 * * *": [
-    #     #     "tap_lms.summer_program.escalation_runner.run_escalation_check",
-    #     # ],
-    #     "0 0 * * 1": [
-    #         "tap_lms.summer_program.batch_admin.auto_advance_batch_week",
-    #     ],
-    #     # CR-027 (2026-06-09): Monday 06:00 UTC weekly content sweep. Runs
-    #     # AFTER auto_advance_batch_week (Monday 00:00 UTC) bumps
-    #     # Batch.current_calendar_week, so the sweep sees the new calendar week.
-    #     # Phase 1 demotes behind students (wk < calendar_week, no video) to
-    #     # normal_escalation via t2_start_escalation; Phase 2 delivers this
-    #     # week's content to current-week candidates via a temp Glific sweep
-    #     # collection. Requires `bench migrate` to register this entry in
-    #     # tabScheduledJobType (L-049) — `bench restart` alone is not enough.
-    #     "0 6 * * 1": [
-    #         "tap_lms.summer_program.scheduler.weekly_content_sweep",
-    #     ],
-    #     # CR-005 (2026-05-15): Tuesday 03:30 UTC = Tuesday 09:00 IST.
-    #     # Fires SP_Content_Delivery against each active BPR's `main`
-    #     # Glific collection. Membership is maintained continuously by
-    #     # state-machine transitions (Approach B) — this cron just fires.
-    #     "30 3 * * 2": [
-    #         "tap_lms.summer_program.scheduler.weekly_content_delivery_trigger",
-    #     ],
-    #     # Task #56 (2026-05-16): hourly watchdog for PEs stuck in
-    #     # feedback_ready because Glific's F5 callback dropped silently.
-    #     # LOG-only — does NOT auto-transition; operator replays manually.
-    #     # See pre_launch.feedback_ready_watchdog for full rationale.
-    #     # Task #17 (2026-05-28): two more hourly watchers added at the same
-    #     # cadence. Both are read-only — they turn silent async failures
-    #     # (Glific sync DLQ, RQ queue depth) into Error Log entries operators
-    #     # can see in the Frappe Desk Error Log list view.
-    #     "0 * * * *": [
-    #         "tap_lms.summer_program.pre_launch.feedback_ready_watchdog",
-    #         "tap_lms.summer_program.scheduler.glific_sync_dlq_watcher",
-    #         "tap_lms.summer_program.scheduler.rq_queue_depth_watcher",
-    #         # CR-025 (2026-06-09): hourly probe to detect stale Glific tokens.
-    #         # Invalidates the stored token when it gets a 401, so the next real
-    #         # API call triggers a fresh login instead of queuing 6 retries against
-    #         # a dead token. Requires `bench migrate` to register this scheduler
-    #         # entry in tabScheduledJobType (L-049).
-    #         "tap_lms.glific_integration.probe_token_health",
-    #     ],
-    #     # Task #97 / removed 2026-05-26 (L-027 MVP discipline):
-    #     # `periodic_glific_reconcile` was wired here at */10 cadence as a
-    #     # drift safety net. After diagnosing the real root cause of the
-    #     # Himani / ST00051295 rendering bug (missing createContactsField
-    #     # definitions, NOT value drift), the cron stopped being MVP-
-    #     # justified — in production normal operation, students don't have
-    #     # Desk access and code paths fire the sync hook correctly. The
-    #     # `set_value` bypass is operator-driven (console backfills).
-    #     #
-    #     # The function `scheduler.periodic_glific_reconcile` is preserved
-    #     # for MANUAL invocation from bench console when needed. Same for
-    #     # `dev_tools.reconcile_pe_to_glific(pe_name)` and
-    #     # `dev_tools.reconcile_batch_to_glific(batch_name)`.
-    #     #
-    #     # If post-launch logs show silent value drift, re-enable here at a
-    #     # cadence appropriate to the observed frequency (likely daily, not
-    #     # */10) — uncomment and `bench migrate`.
-    #     # "*/10 * * * *": [
-    #     #     "tap_lms.summer_program.scheduler.periodic_glific_reconcile",
-    #     # ],
-        # Didi voice agent: hourly campaign processor + reengagement check
+        "*/1 * * * *": [
+            "tap_lms.summer_program.pe_dispatcher.process_program_actions",
+        ],
+        # Retired 2026-05-21 (task #50): the legacy escalation_runner ran in
+        # parallel with pe_dispatcher.handle_escalation (system A, post-CR-003)
+        # without gating on canonical PE state. It double-escalated students
+        # who already submitted and disagreed with the per-PE escalation
+        # counter. The per-PE dispatcher fires escalations correctly when
+        # next_action_at + next_action_type='escalation' are armed by T1
+        # (content_no_response). escalation_runner.py is preserved as dead
+        # code for one release cycle; remove the module after launch.
+        # "0 */2 * * *": [
+        #     "tap_lms.summer_program.escalation_runner.run_escalation_check",
+        # ],
+        "0 0 * * 1": [
+            "tap_lms.summer_program.batch_admin.auto_advance_batch_week",
+            # Didi: trim VoiceCallHistory to last 50 rows per enrollment
+            "tap_lms.summer_program.campaign_processor.archive_old_call_history",
+        ],
+        # CR-027 (2026-06-09): Monday 06:00 UTC weekly content sweep. Runs
+        # AFTER auto_advance_batch_week (Monday 00:00 UTC) bumps
+        # Batch.current_calendar_week, so the sweep sees the new calendar week.
+        # Phase 1 demotes behind students (wk < calendar_week, no video) to
+        # normal_escalation via t2_start_escalation; Phase 2 delivers this
+        # week's content to current-week candidates via a temp Glific sweep
+        # collection. Requires `bench migrate` to register this entry in
+        # tabScheduledJobType (L-049) — `bench restart` alone is not enough.
+        "0 6 * * 1": [
+            "tap_lms.summer_program.scheduler.weekly_content_sweep",
+        ],
+        # CR-005 (2026-05-15): Tuesday 03:30 UTC = Tuesday 09:00 IST.
+        # Fires SP_Content_Delivery against each active BPR's `main`
+        # Glific collection. Membership is maintained continuously by
+        # state-machine transitions (Approach B) — this cron just fires.
+        "30 3 * * 2": [
+            "tap_lms.summer_program.scheduler.weekly_content_delivery_trigger",
+        ],
+        # Task #56 (2026-05-16): hourly watchdog for PEs stuck in
+        # feedback_ready because Glific's F5 callback dropped silently.
+        # LOG-only — does NOT auto-transition; operator replays manually.
+        # See pre_launch.feedback_ready_watchdog for full rationale.
+        # Task #17 (2026-05-28): two more hourly watchers added at the same
+        # cadence. Both are read-only — they turn silent async failures
+        # (Glific sync DLQ, RQ queue depth) into Error Log entries operators
+        # can see in the Frappe Desk Error Log list view.
+        "0 * * * *": [
+            "tap_lms.summer_program.pre_launch.feedback_ready_watchdog",
+            "tap_lms.summer_program.scheduler.glific_sync_dlq_watcher",
+            "tap_lms.summer_program.scheduler.rq_queue_depth_watcher",
+            # CR-025 (2026-06-09): hourly probe to detect stale Glific tokens.
+            # Invalidates the stored token when it gets a 401, so the next real
+            # API call triggers a fresh login instead of queuing 6 retries against
+            # a dead token. Requires `bench migrate` to register this scheduler
+            # entry in tabScheduledJobType (L-049).
+            "tap_lms.glific_integration.probe_token_health",
+        ],
+        # Task #97 / removed 2026-05-26 (L-027 MVP discipline):
+        # `periodic_glific_reconcile` was wired here at */10 cadence as a
+        # drift safety net. After diagnosing the real root cause of the
+        # Himani / ST00051295 rendering bug (missing createContactsField
+        # definitions, NOT value drift), the cron stopped being MVP-
+        # justified — in production normal operation, students don't have
+        # Desk access and code paths fire the sync hook correctly. The
+        # `set_value` bypass is operator-driven (console backfills).
+        #
+        # The function `scheduler.periodic_glific_reconcile` is preserved
+        # for MANUAL invocation from bench console when needed. Same for
+        # `dev_tools.reconcile_pe_to_glific(pe_name)` and
+        # `dev_tools.reconcile_batch_to_glific(batch_name)`.
+        #
+        # If post-launch logs show silent value drift, re-enable here at a
+        # cadence appropriate to the observed frequency (likely daily, not
+        # */10) — uncomment and `bench migrate`.
+        # "*/10 * * * *": [
+        #     "tap_lms.summer_program.scheduler.periodic_glific_reconcile",
+        # ],
+        # Didi voice nudge: BigQuery -> Frappe sync for StudentGlificContext.
+        "0 */6 * * *": [
+            "tap_lms.summer_program.bigquery_sync.sync_bigquery_glific_context",
+        ],
+        # Didi voice nudge: check for scheduled campaigns due to start.
+        # Runs hourly. Triggers generate_queue + start_calls for any
+        # VoiceCallCampaign with scheduled_at <= now and status Draft/Ready.
         "0 * * * *": [
             "tap_lms.summer_program.campaign_processor.trigger_scheduled_campaigns",
             "tap_lms.summer_program.campaign_processor.check_reengagement",
-        ],
-        # Didi voice agent: BigQuery sync Mon-Sat 12:00 UTC (5:30 PM IST)
-        "0 12 * * 1-6": [
-            "tap_lms.summer_program.bigquery_sync.sync_bigquery_glific_context",
         ],
     },
 }
 
 # Page configurations
-# page_js = {"onboarding-flow-trigger": "public/js/onboarding_flow_trigger.js"}
+page_js = {"onboarding-flow-trigger": "public/js/onboarding_flow_trigger.js"}
 
 # Reports
 report_script_custom_doctypes = ["StudentStageProgress"]

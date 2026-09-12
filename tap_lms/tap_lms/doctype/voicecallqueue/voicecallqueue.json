@@ -17,7 +17,8 @@
         "call_placed_at",
         "call_outcome",
         "retry_count",
-        "error_message"
+        "error_message",
+        "provider"
     ],
     "fields": [
         {
@@ -98,12 +99,21 @@
             "fieldname": "error_message",
             "fieldtype": "Small Text",
             "label": "Error / Skip Reason"
+        },
+        {
+            "default": "Vocallabs",
+            "fieldname": "provider",
+            "fieldtype": "Select",
+            "in_list_view": 1,
+            "label": "Provider",
+            "options": "Vocallabs\nElevenLabs",
+            "read_only": 1
         }
     ],
     "index_web_pages_for_search": 0,
     "istable": 1,
     "links": [],
-    "modified": "2026-07-19 00:00:00.000000",
+    "modified": "2026-08-21 00:00:00.000000",
     "modified_by": "Administrator",
     "module": "TAP LMS",
     "name": "VoiceCallQueue",

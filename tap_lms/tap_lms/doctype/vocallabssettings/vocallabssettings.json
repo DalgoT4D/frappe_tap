@@ -1,0 +1,91 @@
+{
+    "actions": [],
+    "creation": "2026-08-22 00:00:00.000000",
+    "doctype": "DocType",
+    "engine": "InnoDB",
+    "field_order": [
+        "service_url",
+        "client_id",
+        "client_secret",
+        "auth_token_cache_ttl",
+        "agents_section",
+        "agents",
+        "defaults_section",
+        "default_parent_call_config"
+    ],
+    "fields": [
+        {
+            "default": "https://api.superflow.run",
+            "description": "Vocallabs API base URL.",
+            "fieldname": "service_url",
+            "fieldtype": "Data",
+            "label": "Service URL",
+            "reqd": 1
+        },
+        {
+            "description": "Vocallabs OAuth2 client ID.",
+            "fieldname": "client_id",
+            "fieldtype": "Data",
+            "label": "Client ID",
+            "reqd": 1
+        },
+        {
+            "description": "Vocallabs OAuth2 client secret.",
+            "fieldname": "client_secret",
+            "fieldtype": "Password",
+            "label": "Client Secret",
+            "reqd": 1
+        },
+        {
+            "default": "3600",
+            "description": "How long to cache the Vocallabs auth token in seconds. Default 3600 (1 hour).",
+            "fieldname": "auth_token_cache_ttl",
+            "fieldtype": "Int",
+            "label": "Auth Token Cache TTL (seconds)"
+        },
+        {
+            "fieldname": "agents_section",
+            "fieldtype": "Section Break",
+            "label": "Per-Language Agents"
+        },
+        {
+            "description": "Map each language to its Vocallabs agent UUID. Agent must be configured on the Vocallabs dashboard.",
+            "fieldname": "agents",
+            "fieldtype": "Table",
+            "label": "Agents",
+            "options": "VoiceAgentMapping"
+        },
+        {
+            "fieldname": "defaults_section",
+            "fieldtype": "Section Break",
+            "label": "Defaults"
+        },
+        {
+            "description": "Fallback ParentCallConfig when no language or nudge type match is found.",
+            "fieldname": "default_parent_call_config",
+            "fieldtype": "Link",
+            "label": "Default Parent Call Config",
+            "options": "ParentCallConfig"
+        }
+    ],
+    "issingle": 1,
+    "links": [],
+    "modified": "2026-08-22 00:00:00.000000",
+    "modified_by": "Administrator",
+    "module": "Tap Lms",
+    "name": "VocalLabsSettings",
+    "owner": "Administrator",
+    "permissions": [
+        {
+            "create": 1,
+            "delete": 0,
+            "read": 1,
+            "role": "System Manager",
+            "write": 1
+        }
+    ],
+    "sort_field": "modified",
+    "sort_order": "DESC",
+    "states": [],
+    "track_changes": 1
+}

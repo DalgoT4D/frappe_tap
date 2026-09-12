@@ -1,194 +1,90 @@
 {
     "actions": [],
-    "allow_rename": 1,
-    "creation": "2026-05-04 18:16:05.050029",
-    "default_view": "List",
+    "creation": "2026-08-22 00:00:00.000000",
     "doctype": "DocType",
-    "editable_grid": 1,
     "engine": "InnoDB",
     "field_order": [
         "enabled",
-        "service_url",
-        "client_id",
-        "client_secret",
-        "default_contact_group_id",
-        "agent_id",
-        "default_parent_call_config",
-        "auth_token_cache_ttl",
-        "webhook_secret",
-        "agents_section",
-        "agents",
+        "default_provider",
         "call_settings_section",
         "call_window_start",
         "call_window_end",
         "max_calls_per_student_per_week",
         "call_cooldown_hours",
-        "enable_continuation_calls",
-        "bq_section",
-        "glific_bq_project",
-        "glific_bq_dataset",
-        "glific_sync_enabled",
-        "glific_sync_interval_hours"
+        "enable_continuation_calls"
     ],
     "fields": [
         {
             "default": "0",
-            "description": "Master feature flag. When unchecked, no Vocallabs call is placed for any student regardless of agent configuration below.",
+            "description": "Master switch. When disabled, no calls are placed by any provider.",
             "fieldname": "enabled",
             "fieldtype": "Check",
+            "in_list_view": 1,
             "label": "Enabled"
         },
         {
-            "description": "Vocallabs API base URL (e.g. https://api.vocallabs.ai). Trailing slash optional \u2014 stripped at use site.",
-            "fieldname": "service_url",
-            "fieldtype": "Data",
-            "label": "Service URL"
-        },
-        {
-            "description": "Vocallabs OAuth client ID (used by createAuthToken).",
-            "fieldname": "client_id",
-            "fieldtype": "Data",
-            "label": "Client ID"
-        },
-        {
-            "description": "Vocallabs OAuth client secret. Stored encrypted; access via `settings.get_password(\"client_secret\")`.",
-            "fieldname": "client_secret",
-            "fieldtype": "Password",
-            "label": "Client Secret"
-        },
-        {
-            "description": "Default Vocallabs prospect group ID. Used when adding new prospects via addMultipleContactsToGroup.",
-            "fieldname": "default_contact_group_id",
-            "fieldtype": "Data",
-            "label": "Default Contact Group ID"
-        },
-        {
-            "description": "Fallback Vocallabs agent UUID. Used when (a) the student's language has no enabled row in the Agents table below, or (b) the student has no language set. If this is also empty AND no enabled mapping matches, the parent call is skipped with a logged warning (not retried). Per-language overrides live in the Agents child table.",
-            "fieldname": "agent_id",
-            "fieldtype": "Data",
-            "label": "Fallback Agent ID"
-        },
-        {
-            "description": "Default ParentCallConfig used by the parent-call resolver when no per-LearningUnit override exists. Per-language scripts are routed via LU lineage (each language has its own LU that points to a language-specific ParentCallConfig via UnitContentItem) \u2014 there is NO language field on ParentCallConfig itself. This fallback fires when neither the LU override nor a more specific path resolves a config.",
-            "fieldname": "default_parent_call_config",
-            "fieldtype": "Link",
-            "label": "Default Parent Call Config",
-            "options": "ParentCallConfig"
-        },
-        {
-            "default": "3600",
-            "description": "Bearer-token cache TTL in seconds. The Vocallabs token is fetched once via createAuthToken and reused across calls until this TTL expires. Default 3600 (1 hour). Lower for testing if tokens behave oddly; raise to reduce auth calls in steady state.",
-            "fieldname": "auth_token_cache_ttl",
-            "fieldtype": "Int",
-            "label": "Auth Token Cache TTL"
-        },
-        {
-            "description": "Shared secret for the inbound Vocallabs webhook receiver (CR-030 / ADR-007). Embedded in the configured Webhook URL as `?token=<secret>`; the receiver compares it constant-time. Stored encrypted; access via `settings.get_password(\"webhook_secret\")`. Falls back to site_config `vocallabs_webhook_secret` if unset.",
-            "fieldname": "webhook_secret",
-            "fieldtype": "Password",
-            "label": "Webhook Secret"
-        },
-        {
-            "fieldname": "agents_section",
-            "fieldtype": "Section Break",
-            "label": "Per-Language Agents"
-        },
-        {
-            "description": "Per-language Vocallabs agent assignments. Resolver picks the first enabled row whose language matches the student's `Student.language`; falls back to the Fallback Agent ID above if no row matches. Add one row per language you want to serve with a distinct agent. Controller validates that at most ONE enabled row exists per language (disabled rows may stage new agent_ids before cutover).",
-            "fieldname": "agents",
-            "fieldtype": "Table",
-            "label": "Agents",
-            "options": "VoiceAgentMapping"
+            "default": "Vocallabs",
+            "description": "Default voice call provider used when a campaign does not specify one.",
+            "fieldname": "default_provider",
+            "fieldtype": "Select",
+            "in_list_view": 1,
+            "label": "Default Provider",
+            "options": "Vocallabs\nElevenLabs"
         },
         {
             "fieldname": "call_settings_section",
             "fieldtype": "Section Break",
-            "label": "Call Timing and Rate Limits"
+            "label": "Call Window and Rate Limits"
         },
         {
-            "description": "Earliest time of day to place a Vocallabs call (IST). Leave blank to allow calls at any time. Values confirmed with Manu and research team.",
+            "default": "09:00:00",
+            "description": "Earliest time calls can be placed (Asia/Kolkata). Leave blank for no restriction.",
             "fieldname": "call_window_start",
             "fieldtype": "Time",
             "label": "Call Window Start"
         },
         {
-            "description": "Latest time of day to place a Vocallabs call (IST). Leave blank to allow calls at any time.",
+            "default": "21:00:00",
+            "description": "Latest time calls can be placed (Asia/Kolkata). Leave blank for no restriction.",
             "fieldname": "call_window_end",
             "fieldtype": "Time",
             "label": "Call Window End"
         },
         {
             "default": "2",
-            "description": "Maximum Vocallabs calls per student per week. Checked against ProgramEnrollment.weekly_call_count before placing a call. Values from Manu and research team.",
+            "description": "Maximum number of calls placed to the same student per week across all campaigns.",
             "fieldname": "max_calls_per_student_per_week",
             "fieldtype": "Int",
             "label": "Max Calls Per Student Per Week"
         },
         {
             "default": "48",
-            "description": "Minimum hours between two Vocallabs calls to the same student. Checked against ProgramEnrollment.last_call_at before placing a call.",
+            "description": "Minimum hours between calls to the same student.",
             "fieldname": "call_cooldown_hours",
             "fieldtype": "Int",
             "label": "Call Cooldown Hours"
         },
         {
             "default": "0",
-            "description": "Master switch for continuation calls: Vocallabs calls triggered by escalation steps other than parent_call when EscalationStep.enable_voice_call is ticked. Leave off until Track B is fully tested.",
+            "description": "When enabled, EscalationStep rows with enable_voice_call = 1 will trigger continuation calls via Didi.",
             "fieldname": "enable_continuation_calls",
             "fieldtype": "Check",
             "label": "Enable Continuation Calls"
-        },
-        {
-            "fieldname": "bq_section",
-            "fieldtype": "Section Break",
-            "label": "BigQuery Sync (Glific Context)"
-        },
-        {
-            "default": "central-phalanx-297915",
-            "description": "Google Cloud project ID for BigQuery. Used by the Glific context sync job.",
-            "fieldname": "glific_bq_project",
-            "fieldtype": "Data",
-            "label": "BigQuery Project ID"
-        },
-        {
-            "default": "918454812392",
-            "description": "BigQuery dataset ID containing the Glific contacts and messages tables.",
-            "fieldname": "glific_bq_dataset",
-            "fieldtype": "Data",
-            "label": "BigQuery Dataset ID"
-        },
-        {
-            "default": "0",
-            "description": "Enable the periodic BigQuery sync that populates StudentGlificContext with Glific contact fields.",
-            "fieldname": "glific_sync_enabled",
-            "fieldtype": "Check",
-            "label": "Enable BigQuery Sync"
-        },
-        {
-            "default": "6",
-            "description": "How often the BigQuery sync runs (hours). Synced fields are at most this many hours stale at call time.",
-            "fieldname": "glific_sync_interval_hours",
-            "fieldtype": "Int",
-            "label": "Sync Interval Hours"
         }
     ],
-    "index_web_pages_for_search": 1,
     "issingle": 1,
     "links": [],
-    "modified": "2026-07-06 00:00:00.000000",
+    "modified": "2026-08-22 00:00:00.000000",
     "modified_by": "Administrator",
-    "module": "TAP LMS",
+    "module": "Tap Lms",
     "name": "VoiceAgentSettings",
     "owner": "Administrator",
     "permissions": [
         {
             "create": 1,
-            "delete": 1,
-            "email": 1,
-            "print": 1,
+            "delete": 0,
             "read": 1,
             "role": "System Manager",
-            "share": 1,
             "write": 1
         }
     ],

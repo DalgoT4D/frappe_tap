@@ -1,0 +1,75 @@
+{
+    "actions": [],
+    "creation": "2026-08-15 00:00:00.000000",
+    "doctype": "DocType",
+    "engine": "InnoDB",
+    "field_order": [
+        "enabled",
+        "base_url",
+        "api_key",
+        "phone_number_id",
+        "agents_section",
+        "agents"
+    ],
+    "fields": [
+        {
+            "default": "0",
+            "description": "Enable ElevenLabs as a call provider. Campaigns can select ElevenLabs when this is enabled.",
+            "fieldname": "enabled",
+            "fieldtype": "Check",
+            "label": "Enabled"
+        },
+        {
+            "default": "https://api.elevenlabs.io",
+            "description": "ElevenLabs API base URL.",
+            "fieldname": "base_url",
+            "fieldtype": "Data",
+            "label": "Base URL"
+        },
+        {
+            "description": "ElevenLabs API key (xi-api-key header). Get from ElevenLabs dashboard.",
+            "fieldname": "api_key",
+            "fieldtype": "Password",
+            "label": "API Key",
+            "reqd": 0
+        },
+        {
+            "description": "ElevenLabs phone number ID to place calls from. Get from ElevenLabs dashboard under Phone Numbers.",
+            "fieldname": "phone_number_id",
+            "fieldtype": "Data",
+            "label": "Phone Number ID"
+        },
+        {
+            "fieldname": "agents_section",
+            "fieldtype": "Section Break",
+            "label": "Per-Language Agents"
+        },
+        {
+            "description": "Map each language to its ElevenLabs agent ID. Agent must be configured on the ElevenLabs dashboard with the Didi prompt.",
+            "fieldname": "agents",
+            "fieldtype": "Table",
+            "label": "Agents",
+            "options": "VoiceAgentMapping"
+        }
+    ],
+    "issingle": 1,
+    "links": [],
+    "modified": "2026-08-15 00:00:00.000000",
+    "modified_by": "Administrator",
+    "module": "Tap Lms",
+    "name": "ElevenLabsSettings",
+    "owner": "Administrator",
+    "permissions": [
+        {
+            "create": 1,
+            "delete": 0,
+            "read": 1,
+            "role": "System Manager",
+            "write": 1
+        }
+    ],
+    "sort_field": "modified",
+    "sort_order": "DESC",
+    "states": [],
+    "track_changes": 1
+}
